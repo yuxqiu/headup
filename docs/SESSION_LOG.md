@@ -151,3 +151,9 @@
 - OTA endpoint found in the app (subagent, spot-checked). With the user's approval, sent the version check with the
   SN: the newest firmware is 7.0.0.526 (earbuds run .516). Downloaded and unpacked it into research/firmware/526/:
   HiSilicon BS25 `[inferred]`, readable bootloader, the rest encrypted or compressed. FINDINGS "Firmware image".
+
+## 2026-11-11 18:15 UTC
+- The v0.1.0 Release run had failed in "Install build dependencies": the GitHub runners could not resolve the Ubuntu
+  mirrors (transient, not a workflow bug). CI on main (71ca177) passes.
+- Moved v0.1.0 to 71ca177 as a signed tag (user's tag.gpgsign) and reran the release via workflow_dispatch: both
+  builds passed; 4 assets uploaded. The x86_64 tarball's sha256 checks out and `headup --help` runs (with libdbus).

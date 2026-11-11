@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 18:05 UTC
+Last updated: 2026-11-11 18:15 UTC
 
 ## Current state
 - The protocol works.
@@ -23,8 +23,9 @@ Last updated: 2026-11-11 18:05 UTC
 - Voice: Piper alba clips embedded (assets/voice). espeak-ng is in the dev shell only.
 - Runs as a daemon with BlueZ auto-detect; Home Manager module in nix/hm-module.nix.
 - Layout: model-specific files under `freeclip2/` in src/devices, docs/devices, tools, tests/fixtures.
-- MIT license. CI: `nix flake check` (build+tests, clippy, fmt; passes locally). Release workflow builds tarballs
-  when a `vX.Y.Z` release is published. Neither has run on GitHub yet (repo not pushed).
+- MIT license. CI: `nix flake check` (build+tests, clippy, fmt) passes on GitHub. v0.1.0 is released: the tag is
+  signed and points to 71ca177 (moved from 2389515). The first release run failed on a runner DNS outage (Ubuntu
+  mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
 0. FreeClip 2 tracking needs this computer to stream audio, and goes silent ~5 s into any still hold, even
