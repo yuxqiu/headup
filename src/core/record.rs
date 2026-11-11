@@ -12,18 +12,20 @@ use std::io::{IsTerminal, Write};
 /// Everything that appears as `{"t":…,"event":"<name>"}` in the log.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum LogEvent {
-    /// Earbuds taken off (FreeClip 2: either one): monitoring paused.
+    /// Earbuds no longer worn well enough for tracking: monitoring paused.
     Paused,
     /// Earbuds worn again: monitoring resumes after recalibration.
     Resumed,
     /// The head kept moving on every calibration attempt; headup asks again later.
     CalibrationFailed,
-    /// The device can deliver head tracking (FreeClip 2: this computer started streaming audio).
+    /// The device can deliver head tracking again.
     TrackingAvailable,
     /// The device stopped being able to deliver head tracking.
     TrackingUnavailable,
     /// Unavailable for long enough that the posture reference is dropped; recalibrates on resume.
     TrackingLost,
+    /// Upright was re-anchored after a recovery (the head settled above the old upright).
+    Rebaselined,
     /// A reminder cue was played.
     Cue(Cue),
 }
@@ -37,6 +39,7 @@ impl LogEvent {
             LogEvent::TrackingAvailable => "TrackingAvailable",
             LogEvent::TrackingUnavailable => "TrackingUnavailable",
             LogEvent::TrackingLost => "TrackingLost",
+            LogEvent::Rebaselined => "Rebaselined",
             LogEvent::Cue(Cue::Tone) => "Tone",
             LogEvent::Cue(Cue::Speak) => "Speak",
             LogEvent::Cue(Cue::Notify) => "Notify",

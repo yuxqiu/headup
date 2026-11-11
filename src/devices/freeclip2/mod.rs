@@ -2,15 +2,17 @@
 //!
 //! - 43/88 switches the spatial-audio pose stream on/off; 43/89 carries relative quaternions that
 //!   re-centre themselves and restart with each new stream ([`rebuild`] makes them continuous).
-//! - 43/37 reports per-earbud wear state, pushed on change and answered when queried.
+//! - 43/37 reports per-earbud wear state, pushed on change and answered when queried. Tracking
+//!   stops when either earbud is off, so [`Event::Worn`] means both are worn.
 //! - 43/54 reports each connected source device's audio state; head tracking only flows while
 //!   this computer is streaming audio, which becomes [`Event::Available`].
+//! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts`]).
 
 mod mbb;
 mod rebuild;
 
 use crate::core::quat::Quat;
-use crate::core::tracker::{Event, HeadTracker};
+use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::{Context, Result, bail, ensure};
 use bluer::rfcomm::{SocketAddr, Stream};
 use mbb::{Decoder, Frame};
@@ -215,9 +217,16 @@ impl HeadTracker for FreeClip2 {
             .await
     }
 
-    fn tracking_hint(&self) -> &'static str {
-        // Head tracking is only sent while this computer streams audio to the earbuds (FINDINGS).
-        "play audio on this computer; FreeClip 2 only tracks your head while it is playing"
+    fn traits(&self) -> TrackerTraits {
+        TrackerTraits {
+            // Head tracking is only sent while this computer streams audio to the earbuds (FINDINGS).
+            tracking_hint: Some(
+                "play audio on this computer; FreeClip 2 only tracks your head while it is playing",
+            ),
+            // Each re-centre lands ~10° off, always towards "looking up", so the rebuilt pose drifts
+            // over a session (FINDINGS "Ground truth").
+            pose_drifts: true,
+        }
     }
 }
 

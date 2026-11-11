@@ -4,7 +4,7 @@
 
 pub mod freeclip2;
 
-use crate::core::tracker::{Event, HeadTracker};
+use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::{Context, Result};
 use bluer::Address;
 use std::time::Duration;
@@ -97,9 +97,9 @@ impl HeadTracker for AnyTracker {
         }
     }
 
-    fn tracking_hint(&self) -> &'static str {
+    fn traits(&self) -> TrackerTraits {
         match self {
-            AnyTracker::FreeClip2(t) => t.tracking_hint(),
+            AnyTracker::FreeClip2(t) => t.traits(),
         }
     }
 }

@@ -11,12 +11,12 @@ pub enum Event {
     /// yaw > 0 = turned left, roll > 0 = tilted right. The frame may change after `Worn(true)`, or
     /// when tracking resumes after a long `Available(false)`; the session recalibrates in both cases.
     Pose(Quat),
-    /// Whether the earbuds are worn well enough for head tracking (for FreeClip 2: both of them).
-    /// Sent on change; a backend should report the initial state soon after connecting.
+    /// Whether the earbuds are worn well enough for head tracking (the backend decides what that
+    /// takes). Sent on change; a backend should report the initial state soon after connecting.
     Worn(bool),
-    /// Whether the device can deliver head tracking right now, beyond being worn (for FreeClip 2:
-    /// this computer is streaming audio to the earbuds). Sent on change; assume available until
-    /// told otherwise. While available, silence means the head is still.
+    /// Whether the device can deliver head tracking right now, beyond being worn (a device
+    /// precondition; see [`TrackerTraits::tracking_hint`]). Sent on change; assume available until told otherwise.
+    /// While available, silence means the head is still.
     Available(bool),
 }
 
@@ -31,9 +31,21 @@ pub trait HeadTracker {
     /// Stop streaming and leave the device in its normal state.
     async fn stop(&mut self) -> Result<()>;
 
+    /// What the session needs to know about this tracker. Quirks the backend can absorb itself
+    /// (re-centring, wear rules, preconditions behind `Available`) do not belong here.
+    fn traits(&self) -> TrackerTraits {
+        TrackerTraits::default()
+    }
+}
+
+/// Device properties that change how the session behaves. Every field defaults to "no quirk", so
+/// adding a field leaves existing backends unchanged.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TrackerTraits {
     /// What the user can do when no head tracking arrives, e.g. a device precondition. Shown in
     /// "waiting for head tracking" messages.
-    fn tracking_hint(&self) -> &'static str {
-        ""
-    }
+    pub tracking_hint: Option<&'static str>,
+    /// The reported orientation accumulates error over a session, so returning to the same pose
+    /// can read differently later. The session then re-anchors upright after each recovery.
+    pub pose_drifts: bool,
 }

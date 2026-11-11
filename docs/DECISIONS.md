@@ -140,3 +140,47 @@
 - Reason: during the tracking outage (FINDINGS "Tracking outage"), tracking returned right after a probe that sent
   43/90. Whether 43/90 arms the stream is unverified. It is a read-only query, so it costs nothing. If an outage
   recurs with it in place, 43/90 is ruled out.
+
+## 2026-11-11: Glide detection after 1.0 s of stillness
+- `GLIDE_AFTER_STILL_S` lowered from 2.5 s to 1.0 s (src/devices/freeclip2/rebuild.rs). A live glide began ~2 s after
+  the head settled, so headup saw a return to upright and never reminded (FINDINGS "Re-centre glide").
+- Test `hides_glide_after_short_hold` replays that session (`tests/fixtures/freeclip2/short_hold_glide.csv`) and
+  fails with 2.5 s. All other tests pass with any value from 0.5 to 2.5 s; 1.0 s keeps margin both ways.
+- v0.1.0 ships with the 2.5 s threshold, so a slouch held very still can go unnoticed there.
+
+## 2026-11-11: Re-anchor upright after each recovery (user approved as a compromise)
+- The FreeClip 2's re-centres are ~10° off (always towards "looking up"), so the summed pose drifts and later slouches
+  go undetected (FINDINGS "Ground truth"). No drift-free signal exists on this device, and the user chose not to model
+  the error.
+- `Detector` (src/core/detector.rs): after a recovery, the first time the head holds still (pitch within 2° over
+  ≥0.8 s of a 1 s window), a pitch above upright (< 0) becomes the new upright. Once per recovery; a new slouch cancels
+  the wait. Assumption: people sit back up to their upright, not beyond it. Logged as `Rebaselined`.
+- Replayed on data/slouch_guided.csv: upright −1…+2°, every look-down 29–48° (without: upright to −41°, last look-down
+  +6°). On data/session6_raw.jsonl: upright about −8…+7°, the missed 14:21/14:23 slouches 21–42°, 4 re-anchors.
+- Rejected: a continuous clamp after recovery (ratchets upright upward: +19…+28° by the end of session 6, i.e. false
+  reminders); re-anchoring at the earbuds' next re-centre (fires mid-movement; uprights −10…−16°); the one-sided
+  guard (pitch < −8° for 3 s), which also re-anchors on a plain look up.
+- Tests: four detector unit tests, and `repeated_slouches_stay_detectable_end_to_end` on the new fixture
+  `tests/fixtures/freeclip2/slouch_guided.csv` (fails without re-anchoring).
+- Abstraction (user): re-anchoring is off by default. `TrackerTraits::pose_drifts` (default `false`) says whether a
+  tracker's pose accumulates error; the session sets `Config::reanchor_after_recovery` from it. FreeClip 2 returns
+  `true`, with the reason in its backend. Session test `reanchors_only_for_drifting_trackers` covers both cases.
+- Core comments no longer name FreeClip 2 behaviour (wear rule, audio precondition, re-centre numbers); those live in
+  `src/devices/freeclip2/mod.rs` and FINDINGS.
+
+## 2026-11-11: Correlated state lives in one type (user, general rule)
+- Fields that are only valid together, or exclude each other, are grouped into one enum or struct so illegal states
+  cannot compile.
+- `Detector` now holds `posture: Posture`, with `Upright(Option<Settling>)` (waiting to re-anchor) and
+  `Slouching(Episode { since, toned, notified, last_speak: Option<f64> })`, replacing the loose `slouch_since`,
+  `cued`, `last_speak` and `settling` fields. Behaviour unchanged; 42 tests pass.
+
+## 2026-11-11: Device quirks: absorb in the backend, declare the rest in `TrackerTraits` (user approved)
+- A quirk crosses into core only if handling it needs session knowledge (messages shown, slouch/recovery state).
+  Re-centring, glides, the both-earbuds rule, the audio precondition (as `Available`) and the 43/90 query stay in
+  the backend.
+- The rest are fields of one struct, `HeadTracker::traits() -> TrackerTraits` (`tracking_hint: Option<&str>`,
+  `pose_drifts: bool`), each defaulting to "no quirk". It replaces the per-quirk methods `tracking_hint()` and
+  `pose_drifts()`, so adding a quirk adds a field, not a trait method. Pattern as in libinput's quirks files
+  `[from memory]`.
+- Rejected: letting backends tune the detector's `Config` directly (puts posture policy in device code).

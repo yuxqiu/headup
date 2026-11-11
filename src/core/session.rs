@@ -16,11 +16,11 @@ const CALIBRATION_TRIES: usize = 4;
 const CALIBRATION_RETRY_S: f64 = 60.0;
 /// Say that headup is waiting if head tracking has not started after this long.
 const TRACKING_WAIT_NOTE_S: f64 = 5.0;
-/// Tracker unavailable this long counts as tracking lost (for FreeClip 2: no audio playing on this
-/// computer). Shorter gaps, like skipping a track, carry the posture over; after a longer gap the
-/// head may have moved unseen and a resumed stream measures from a new pose, so headup drops its
-/// slouch state (no reminders from stale data) and recalibrates when tracking resumes. Silence
-/// while available just means the head is still and never ends monitoring.
+/// Tracker unavailable this long counts as tracking lost. Shorter gaps carry the posture over;
+/// after a longer gap the head may have moved unseen and resumed tracking may measure from a new
+/// pose, so headup drops its slouch state (no reminders from stale data) and recalibrates when
+/// tracking resumes. Silence while available just means the head is still and never ends
+/// monitoring.
 const TRACKING_LOST_S: f64 = 30.0;
 /// How long to wait for a tracker event before re-checking timers.
 const POLL: Duration = Duration::from_secs(1);
@@ -101,10 +101,10 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
 
     /// The tracker's hint as a message suffix (" (hint)"), or "" if it has none.
     fn tracking_hint_suffix(&self) -> String {
-        match self.tracker.tracking_hint() {
-            "" => String::new(),
-            hint => format!(" ({hint})"),
-        }
+        self.tracker
+            .traits()
+            .tracking_hint
+            .map_or(String::new(), |hint| format!(" ({hint})"))
     }
 
     fn event(&mut self, event: LogEvent) -> Result<()> {
@@ -176,8 +176,8 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     }
 
     /// Wait for the first head pose; `None` if the earbuds were taken off first. Tracking can take
-    /// a moment to start (for FreeClip 2: until this computer plays audio), so this waits without a
-    /// deadline.
+    /// a while to start (until the device's precondition is met; see `TrackerTraits`), so this
+    /// waits without a deadline.
     async fn first_pose(&mut self) -> Result<Option<Quat>> {
         let start = self.now();
         let mut noted = false;
@@ -237,7 +237,10 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
 
     /// Monitor until the earbuds are taken off or head tracking is lost.
     async fn monitor(&mut self, baseline: Quat) -> Result<MonitorEnd> {
-        let mut det = Detector::new(Config::default());
+        let mut det = Detector::new(Config {
+            reanchor_after_recovery: self.tracker.traits().pose_drifts,
+            ..Config::default()
+        });
         let mut last_status = f64::NEG_INFINITY;
         loop {
             let step = self.next(POLL).await?;
@@ -249,7 +252,12 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 Step::Pose(q) => {
                     let angles = (baseline.conj() * q).euler();
                     self.rec.pose(t, angles)?;
-                    det.update(t, angles.pitch)
+                    let upright = det.upright();
+                    let cues = det.update(t, angles.pitch);
+                    if det.upright() != upright {
+                        self.rec.event(t, LogEvent::Rebaselined)?;
+                    }
+                    cues
                 }
             };
             for cue in cues {
@@ -294,6 +302,7 @@ fn mean_and_p90(samples: &[Quat]) -> (Quat, f64) {
 mod tests {
     use super::*;
     use crate::core::detector::Cue;
+    use crate::core::tracker::TrackerTraits;
     use anyhow::bail;
     use std::cell::RefCell;
     use std::collections::VecDeque;
@@ -342,25 +351,28 @@ mod tests {
         Quiet(f64),
     }
 
-    struct FakeTracker(VecDeque<Script>);
+    struct FakeTracker {
+        script: VecDeque<Script>,
+        drifts: bool,
+    }
 
     impl HeadTracker for FakeTracker {
         async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
             const SAMPLE: f64 = 0.02;
             loop {
-                let Some(front) = self.0.front_mut() else {
+                let Some(front) = self.script.front_mut() else {
                     bail!("script finished");
                 };
                 match front {
                     Script::Ev(e) => {
                         let e = *e;
-                        self.0.pop_front();
+                        self.script.pop_front();
                         return Ok(Some(e));
                     }
                     Script::Poses(_, left) | Script::Wobble(_, _, left) | Script::Quiet(left)
                         if *left <= 1e-9 =>
                     {
-                        self.0.pop_front();
+                        self.script.pop_front();
                     }
                     Script::Poses(pitch, left) => {
                         *left -= SAMPLE;
@@ -391,6 +403,13 @@ mod tests {
         async fn stop(&mut self) -> Result<()> {
             Ok(())
         }
+
+        fn traits(&self) -> TrackerTraits {
+            TrackerTraits {
+                pose_drifts: self.drifts,
+                ..TrackerTraits::default()
+            }
+        }
     }
 
     /// Records prompts and cues instead of playing them.
@@ -409,13 +428,24 @@ mod tests {
 
     /// Runs a script to its end; returns (prompts and cues, logged event names).
     async fn run_script(name: &str, script: Vec<Script>) -> (Vec<String>, Vec<String>) {
+        run_script_with(name, script, false).await
+    }
+
+    async fn run_script_with(
+        name: &str,
+        script: Vec<Script>,
+        drifts: bool,
+    ) -> (Vec<String>, Vec<String>) {
         let path = std::env::temp_dir().join(format!(
             "headup-session-{name}-{}.jsonl",
             std::process::id()
         ));
         let mut rec = Recorder::new(Some(std::fs::File::create(&path).unwrap()));
         let cues = FakeCues::default();
-        let mut tracker = FakeTracker(script.into());
+        let mut tracker = FakeTracker {
+            script: script.into(),
+            drifts,
+        };
         let err = run(&mut tracker, &cues, &mut rec).await.unwrap_err();
         assert_eq!(err.to_string(), "script finished");
         let log = std::fs::read_to_string(&path).unwrap();
@@ -429,6 +459,16 @@ mod tests {
     }
 
     use Script::*;
+
+    // Sitting back up "past" upright re-anchors only for trackers whose pose drifts.
+    #[tokio::test(start_paused = true)]
+    async fn reanchors_only_for_drifting_trackers() {
+        let script = || vec![Poses(0.0, 4.0), Poses(40.0, 15.0), Poses(-10.0, 3.0)];
+        let (_, events) = run_script_with("drift", script(), true).await;
+        assert_eq!(events, ["Tone", "Recovered", "Rebaselined"]);
+        let (_, events) = run_script_with("nodrift", script(), false).await;
+        assert_eq!(events, ["Tone", "Recovered"]);
+    }
 
     #[tokio::test(start_paused = true)]
     async fn sustained_slouch_cues_even_while_head_is_still() {
@@ -483,9 +523,9 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn long_unavailability_drops_posture_and_recalibrates() {
-        // Slouch from ~4 s; audio stops at 6 s. Tone (~14 s) and Speak (~34 s) still fire within
-        // the 30 s grace, but tracking is lost at 36 s, so the 60 s notification (~64 s) must not
-        // fire from that stale data.
+        // Slouch from ~4 s; tracking becomes unavailable at 6 s. Tone (~14 s) and Speak (~34 s)
+        // still fire within the 30 s grace, but tracking is lost at 36 s, so the 60 s notification
+        // (~64 s) must not fire from that stale data.
         let (cues, events) = run_script(
             "long-gap",
             vec![

@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 18:15 UTC
+Last updated: 2026-11-11 21:30 UTC
 
 ## Current state
 - The protocol works.
@@ -28,6 +28,14 @@ Last updated: 2026-11-11 18:15 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- Uncommitted (staged fixtures): re-anchor upright after each recovery, enabled via `TrackerTraits::pose_drifts`
+  (DECISIONS "Re-anchor upright"); detector state enum; `traits()`. 42 tests pass. Live-verified
+  (data/session7*.jsonl): 6/6 slouches cued, corrected slouches 38–63°, upright −1…+5°, 5 re-anchors matching the
+  offline replay, none on a plain ceiling look. Waiting-message hint: user to confirm. Next: commit, rebuild the
+  service, release v0.1.1 (glide fix + re-anchor + traits).
+- Uncommitted: glide threshold 2.5 s -> 1.0 s plus test fixture `short_hold_glide.csv` (staged). Live-verified with
+  `target/release`: Tone 10 s and Speak 30 s into a still slouch, Recovered on looking up. The installed service
+  needs a rebuild after the commit; v0.1.0 has the bug, so consider releasing v0.1.1.
 0. FreeClip 2 tracking needs this computer to stream audio, and goes silent ~5 s into any still hold, even
    during playback (FINDINGS). Implemented `Event::Available` from 43/54; TrackingLost only after 30 s
    unavailable; lookup robustness. 28 tests pass. Live: calibration while audio played, unsupported-address

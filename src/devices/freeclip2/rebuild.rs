@@ -40,7 +40,8 @@ pub struct Rebuilder {
 }
 
 /// A suspected re-centre glide: after the head has been still, the earbuds slew the reported
-/// orientation to identity at a constant rate (~1.6–1.9° per sample, data/hold_test.csv).
+/// orientation to identity at a constant rate (~1.6–1.9° per sample in hold_test.csv, 0.67° in
+/// short_hold_glide.csv).
 struct Glide {
     prev_angle: f64,
     step: Option<f64>,
@@ -49,8 +50,9 @@ struct Glide {
 /// A pose counts as stationary when every sample in the last `STILL_WINDOW_S` is within `STILL_DEG`.
 const STILL_DEG: f64 = 3.0;
 const STILL_WINDOW_S: f64 = 0.5;
-/// Glides were observed after ~4 s of stillness; only suspect one after this long.
-const GLIDE_AFTER_STILL_S: f64 = 2.5;
+/// Glides were observed after ~4 s of stillness (hold_test.csv) and after only ~2 s
+/// (short_hold_glide.csv); only suspect one after this long.
+const GLIDE_AFTER_STILL_S: f64 = 1.0;
 /// Per-sample decrease of the angle to identity: minimum, and allowed deviation from the first step.
 const GLIDE_MIN_STEP_DEG: f64 = 0.3;
 const GLIDE_STEP_TOL_DEG: f64 = 0.6;
@@ -298,6 +300,63 @@ mod tests {
             (220..=300).contains(&held_back),
             "held back {held_back} samples"
         );
+    }
+
+    // Live session (2026-11-11): look down at ~15.2 s and hold. The earbuds glide to identity at
+    // 19.27–20.49 s (0.67°/sample), only ~2 s after the head settled. The glide must stay hidden.
+    #[test]
+    fn hides_glide_after_short_hold() {
+        let mut rb = Rebuilder::default();
+        for r in read_csv("short_hold_glide.csv") {
+            if let Some((abs, _)) = rb.push(r.t, r.seq, r.raw)
+                && r.t > 16.0
+            {
+                let pitch = abs.euler().pitch;
+                assert!(
+                    pitch > 40.0,
+                    "t={:.2}: still looking down, but pitch {pitch:.1}",
+                    r.t
+                );
+            }
+        }
+    }
+
+    // Ground truth (guided.py --slouch): five upright → look-down cycles back to the same screen
+    // point. The earbuds' re-centres add ~10° towards "looking up" per cycle; without the detector's
+    // re-anchoring, upright drifts to about -40° and the last look-down never counts as a slouch.
+    #[test]
+    fn repeated_slouches_stay_detectable_end_to_end() {
+        use crate::core::detector::{Config, Detector};
+        let mut rb = Rebuilder::default();
+        let mut det = Detector::new(Config {
+            reanchor_after_recovery: true, // as the session sets it for this device
+            ..Config::default()
+        });
+        let mut phases: Vec<(String, bool, f64)> = Vec::new(); // (phase, slouched, last smoothed)
+        for Row { phase, t, seq, raw } in read_csv("slouch_guided.csv") {
+            if phases.last().is_none_or(|p| p.0 != phase) {
+                phases.push((phase.clone(), false, 0.0));
+            }
+            if let Some((abs, _)) = rb.push(t, seq, raw) {
+                det.update(t, abs.euler().pitch); // baseline = stream start (upright)
+            }
+            let p = phases.last_mut().unwrap();
+            p.1 |= det.slouching();
+            p.2 = det.smoothed().unwrap_or(0.0);
+        }
+        for (name, slouched, end) in &phases {
+            if name.starts_with("down") {
+                assert!(
+                    slouched,
+                    "{name}: look-down not detected; phases {phases:?}"
+                );
+            } else {
+                assert!(
+                    end.abs() < 6.0,
+                    "{name}: upright ends at {end:.1}; phases {phases:?}"
+                );
+            }
+        }
     }
 
     // A real head lift after a still hold must still come through (possibly a little late).

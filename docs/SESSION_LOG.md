@@ -157,3 +157,33 @@
   mirrors (transient, not a workflow bug). CI on main (71ca177) passes.
 - Moved v0.1.0 to 71ca177 as a signed tag (user's tag.gpgsign) and reran the release via workflow_dispatch: both
   builds passed; 4 assets uploaded. The x86_64 tarball's sha256 checks out and `headup --help` runs (with libdbus).
+
+## 2026-11-11 19:00 UTC
+- User: no reminders while slouching. A diagnostic run showed tracking intact but a re-centre glide ~2 s into the
+  hold passed as movement back to upright (threshold 2.5 s). Lowered `GLIDE_AFTER_STILL_S` to 1.0 s; new fixture
+  and test `hides_glide_after_short_hold` (fails before the fix). 35 tests pass, clippy and fmt clean.
+- Live with the fixed build: Tone at 22.2 s, Speak at 42.2 s, Recovered at 46.4 s; pitch held at ~51° through the
+  glide and the silence after it.
+
+## 2026-11-11 19:55 UTC
+- Missed slouches at 14:21 and 14:23 (session 6): glides were held correctly, but upright had drifted to −14…−45°.
+  Every re-centre is a ~68-sample blend; small ones happen 3–9×/min.
+- Guided ground truth (`guided.py --slouch`, new; prompts are now printed too): the earbuds report the return from a
+  look down 10–16° larger than the look down itself. Rebuild order and glide blending can't fix that. A guarded
+  re-baseline (pitch < −8° for 3 s) fixes both recordings in replay. Awaiting the user's go-ahead.
+
+## 2026-11-11 20:30 UTC
+- Researched drift-free alternatives: no gravity or raw-IMU command on the FreeClip 2 (43/151 no reply, 43/152
+  unsupported, 43/88 modes 2/3 no stream); Galaxy Buds expose gravity, so their projects have no drift problem.
+- With the user, chose re-anchoring upright after each recovery over the 3 s guard. Replays compared four variants;
+  the stillness-triggered one won (DECISIONS). Implemented in `Detector`, logged as `Rebaselined`; 40 tests pass.
+- User flagged leaked device details. Re-anchoring is now opt-in via `HeadTracker::pose_drifts()` (FreeClip 2: true);
+  core comments made generic (FreeClip specifics moved to its backend). 42 tests pass, clippy and fmt clean.
+- Detector refactored to a `Posture` state enum (user rule: correlated fields in one type). 42 tests pass.
+- Device quirks: `tracking_hint()` and `pose_drifts()` replaced by one `HeadTracker::traits() -> TrackerTraits`
+  (hint is now `Option`). 42 tests pass, clippy and fmt clean. The waiting-message hint was not re-checked live.
+
+## 2026-11-11 21:30 UTC
+- Live test (data/session7*.jsonl, 200 s): 6/6 slouches got a tone; 5 `Rebaselined` events matching the offline rule
+  exactly; corrected slouches 38–63°, upright −1…+5°; a ceiling look did not re-anchor. The earbuds' error had moved
+  real upright to −31° (relative to calibration) by the end.

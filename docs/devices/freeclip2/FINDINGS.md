@@ -162,6 +162,10 @@ Data: `tests/fixtures/freeclip2/hold_test.csv`, recorded with `tools/freeclip2/g
   - If the steps break pattern, the movement is real and reporting resumes.
   - Tests replay this recording (no glide reaches the output; tones fire in "down" and recoveries in "center").
     They fail if glide detection is disabled.
+- **Glides can start after only ~2 s of stillness** (live session 2026-11-11, `tests/fixtures/freeclip2/short_hold_glide.csv`):
+  the head settled at ~51° by ~17 s, and the glide ran 19.27–20.49 s at a slower 0.67°/sample, ending at identity.
+  With the 2.5 s threshold the glide passed as movement back to upright, so no reminders fired while slouching.
+  The threshold is now 1.0 s; real movement still breaks the constant-step pattern and is reported.
 
 ## Wear detection (tools/freeclip2/wear_test.py, 2026-11-11)
 
@@ -280,3 +284,72 @@ What we got (files in `research/firmware/526/`, gitignored):
   spatial audio, head tracking or MBB 43/88–90 (only `MBBSUBCOMPONENT`).
 - Conclusion: the firmware does not explain the 43/88 behaviour without decrypting or decompressing the main
   sections. That is a separate, open-ended project.
+
+## Prior art for re-centring (2026-11-11)
+
+- **Android spatial audio** (AOSP `frameworks/av/media/libheadtracking`, read from `refs/heads/main`): the host
+  re-centres automatically. `StillnessDetector` checks that every pose in a window stays near the newest one; after
+  `kAutoRecenterWindowDuration` = 6 s within `kAutoRecenterRotationThreshold` = 10.5°, `HeadTrackingProcessor`
+  calls `recenter()` and enables `PoseRateLimiter`, which moves the output to the new target at
+  `kMaxRotationalVelocity` = 0.8 rad/s ≈ 46°/s (`services/audiopolicy/service/SpatializerPoseController.cpp:47-76`).
+  That is the same shape as the FreeClip 2 glide (stillness, then a constant-rate slew to the new centre, ≈45°/s in
+  hold_test.csv). The firmware may use a similar pipeline `[inferred]`. The live glide in short_hold_glide.csv was
+  slower (≈38°/s), so the rate is not exactly fixed.
+- Android's head-tracker sensor reports re-centres explicitly: `head_tracker_event_t.discontinuity_count`
+  (`hardware/libhardware/include_all/hardware/sensors.h:312`). The FreeClip 2's exact identity sample plays the same
+  role.
+- **HeadOrbit** (`research/ios-refs`, `QuietRecovery.swift:189-194`) flags an unannounced reference reset when the
+  attitude jumps more than 35° while the gyroscope rate is under 8°/s. It needs a separate rotation-rate signal,
+  which AirPods give and the FreeClip 2 stream does not.
+- **cristdulcey/posture** measures tilt from the gravity vector, which re-centring cannot move, and uses the
+  attitude only for yaw (`SetupFlow.swift:269-272`). The FreeClip 2 stream has no gravity vector.
+- The other posture apps (slouchless, posture-fix, dorso) read `attitude.pitch` directly and do not handle resets.
+
+## Re-centre model and reference drift (data/session6*.jsonl, 2026-11-11, 30 min of normal work)
+
+- **Every re-centre is a fixed-length blend.** Of 74 identity samples, 32 are preceded by a straight ramp (fit residual
+  ≈0.1°) of 66–72 samples (≈1.3 s), from starting angles of 1.5° to 56°. The rest are ramps run into earlier movement
+  by the measuring script, or short irregular ramps where the head moved during the blend. So the earbuds blend over
+  a fixed ~68 samples, not at a fixed speed. Small re-centres (a few degrees) happen 3–9 times a minute during normal
+  work and are far below the rebuilder's 0.3°/sample glide threshold, so they reach the output as movement.
+- **The sequence counter keeps counting through silences** (≈53 per second), so the earbuds keep sampling and only
+  stop sending.
+- **headup's upright reference drifts.** Upright pitch went from ≈0° (minutes 0–14) to −14° (16–20) and −45° (24),
+  and roll went to ≈25°. The two missed slouches at 14:21 and 14:22:50–14:24 (t ≈ 1300 s and 1362 s) peaked at only
+  +7.6° and +13° rebuilt pitch while the raw angle reached 49–66°.
+- **Offline replays** (scratchpad scripts, not committed): blending the reference over the 68 samples before each
+  identity sample did not stop the drift with `abs = reference * raw`. With the opposite order, `abs = raw *
+  reference` (new reference = raw at glide start × old reference), the drift roughly halves (upright −10° to −14° at
+  minute 16–27 instead of −21° to −39°) and the missed slouches reach 37–46°. The error still grows by 5–10° at each
+  big slouch → glide → recovery, and stays flat during normal work. Without ground truth this cannot be separated
+  from real posture changes `[open]`.
+
+## Ground truth: the earbuds' re-centre is ~10° off (data/slouch_guided.csv, `guided.py --slouch`, 2026-11-11)
+
+- Five cycles of upright (same screen point) 20 s → look down 30 s (two of them turned left/right).
+- Raw pitch holds steady within each pose; nothing creeps during a hold. But the re-centre itself is inconsistent:
+  looking down read 39.9°, 45.1° and 30.6° at glide start, and the return to the same screen point then read −50.1°,
+  −56.1° and −46.7° (10–16° larger). Every reconstruction therefore ends each cycle 10–16° "above" upright.
+- Replays: the current rebuilder gives upright 0 → −10 → −11 → −22 → −24 → −41° and the last look down only +5.9°.
+  Neither the composition order (`reference * raw` vs `raw * reference`) nor blending over the 68 glide samples changes
+  this by more than a few degrees. The error is in what the earbuds report, so no rebuild order can remove it.
+- The error has one sign in all data so far (upright drifts towards "looking up"; session 6 likewise). That makes a
+  guarded re-baseline effective: if pitch stays below −8° for 3 s, take that pose as upright. Replayed, it keeps
+  upright within 0 to −2° and every look down at 28–48° (guided), and upright within about ±7° with the missed
+  session-6 slouches at 25–36° (3 re-baselines in 30 min). 5° and 8° thresholds gave the same guided result.
+- The user hesitated ~10 s at the "look down at your lap" step (third look down); phase values use the last 60 samples.
+
+## Searching for a drift-free signal (2026-11-11)
+
+- Probed: `43/151:1=` no reply; `43/152:1=` → 127=000186a3 (unsupported, like 43/48, 43/115, 43/124). `43/88:1=02` and
+  `43/88:1=03` are acked (`2=00`) but start no stream; `43/88:1=01,2=01` gives the normal 43/89 stream. No absolute or
+  gravity-referenced data found.
+- Other earbuds: Samsung Galaxy Buds stream a gravity-referenced game rotation vector plus raw gyroscope and
+  accelerometer at ~50 Hz (geekyshubham/Murmury, research/FINDINGS_samsung_sensors.md); AkbulutMirac/galaxy-buds-headtracker
+  measures pitch as a forward vector's angle to the horizon in that frame, so there is no drift to fix. LibrePods
+  reads AirPods orientation only for nod/shake gestures and documents no recentring or drift handling `[from search
+  summaries, repos not read]`.
+- Without an absolute reference, the remaining options are priors about posture: a one-sided bound on "looking up"
+  (proposed guard), the dominant still pose over a window as upright (fails for users who slouch most of the time),
+  or judging only the latest movement since the last re-centre (no accumulation, but misses a slouch that creeps
+  down in small held steps).

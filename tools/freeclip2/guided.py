@@ -1,7 +1,9 @@
 """Guided head-motion recording for FreeClip 2 with spoken prompts (espeak-ng).
 
-usage (inside `nix develop`): python3 -I tools/freeclip2/guided.py MAC OUT.csv [--still SECONDS] [--hold]
+usage (inside `nix develop`): python3 -I tools/freeclip2/guided.py MAC OUT.csv [--still SECONDS] [--hold | --slouch]
 --hold: long-hold schedule (look down 30 s, center 15 s, twice) to study device re-centring.
+--slouch: ground truth for reference drift: upright (screen centre) 20 s, then a 30 s look down (some turned
+left/right), five times, ending upright.
 Every sample is labelled with the phase that was active when it arrived.
 """
 import argparse, os, shutil, socket, struct, subprocess, sys, threading, time
@@ -37,12 +39,23 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--still", type=float, default=120)
     ap.add_argument("--hold", action="store_true")
+    ap.add_argument("--slouch", action="store_true")
     a = ap.parse_args()
     if shutil.which("espeak-ng") is None:
         sys.exit("espeak-ng not on PATH; run inside `nix develop`")
 
     schedule = [("upright", "Sit upright and look straight ahead. Recording starts now.", HOLD)]
-    if a.hold:
+    if a.slouch:
+        downs = [("down", "Look down at your keyboard and hold it there."),
+                 ("down_left", "Look down and to the left, and hold it there."),
+                 ("down", "Look down at your lap and hold it there."),
+                 ("down_right", "Look down and to the right, and hold it there."),
+                 ("down", "Look down at your keyboard and hold it there.")]
+        for name, text in downs:
+            schedule += [("upright", "Look at the centre of your screen and hold.", 20.0),
+                         (name, text, 30.0)]
+        schedule += [("upright", "Look at the centre of your screen and hold.", 20.0)]
+    elif a.hold:
         for _ in range(2):
             schedule += [("down", "Look down at your desk and hold it there.", 30.0),
                          ("center", "Back to straight ahead and hold.", 15.0)]
@@ -59,10 +72,11 @@ def main():
     def prompter():
         for name, text, dur in schedule:
             phase["name"] = name
-            print(f"[{name}] {text}", flush=True)
+            print(f"\n>>> {text}  ({dur:.0f} s)  [{name}]", flush=True)
             start = time.time()
             say(text)
             time.sleep(max(0.0, dur - (time.time() - start)))
+        print("\n>>> Done. Thank you.", flush=True)
         say("Done. Thank you.")
         done.set()
 
