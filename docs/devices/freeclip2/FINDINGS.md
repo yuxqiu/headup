@@ -187,3 +187,17 @@ Data: `tests/fixtures/freeclip2/stream_restart.csv` (from `--raw-log`).
 - **Fix:** `Rebuilder` treats `seq < previous seq` as a new stream and takes the last known absolute orientation
   as its reference. On this recording that reads ~51° until the user moves, then −3° to −7° when upright. Two
   tests (rebuild-only and end-to-end with the detector) fail without the fix.
+
+## Single earbud (tools/freeclip2/single_bud_test.py, 2026-11-11)
+
+- With both earbuds worn the pose stream runs at ~52 samples/s, pausing only while the head is still.
+- **As soon as either earbud is removed** (43/37 `1=01 2=00` or `1=00 2=01`), the stream stops within about 1 s
+  and stays stopped while the user keeps nodding. This held for left only, right only, and putting one earbud
+  back on after both were off.
+- That test never re-sent 43/88 while one earbud was worn. But headup re-sent it after a one-earbud wear event
+  and still got no samples. So a re-enable most likely does not revive the stream with one earbud
+  `[unverified beyond that one observation]`.
+- Consequence: the backend reports "worn" only when both earbuds are worn. The session waits for the first pose
+  before prompting calibration (previously it failed with "no head pose … during calibration" and reconnected).
+- Other frames seen around wear changes: 43/54, 43/49 (paired-device list: "pc", "iPhone"), 43/94, 43/180,
+  1/39 (battery). None of them is needed for tracking.

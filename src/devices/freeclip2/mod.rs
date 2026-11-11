@@ -21,12 +21,13 @@ const CMD_STREAM_SWITCH: u8 = 88;
 const CMD_STREAM_DATA: u8 = 89;
 const CMD_WEAR_STATE: u8 = 37;
 
-/// Wear state from a 43/37 frame: TLV 1 = left, TLV 2 = right, 1 = worn. "Worn" means either.
+/// Wear state from a 43/37 frame: TLV 1 = left, TLV 2 = right, 1 = worn. Head tracking stops as
+/// soon as either earbud comes off (tools/freeclip2/single_bud_test.py), so "worn" means both.
 fn worn_from(f: &Frame) -> Option<bool> {
     let side = |t| f.tlv(t).and_then(|v| v.first().copied());
     match (side(1), side(2)) {
-        (None, None) => None,
-        (l, r) => Some(l == Some(1) || r == Some(1)),
+        (Some(l), Some(r)) => Some(l == 1 && r == 1),
+        _ => None,
     }
 }
 
@@ -180,13 +181,14 @@ impl HeadTracker for FreeClip2 {
 mod tests {
     use super::*;
 
-    // Frames as pushed by a real FreeClip 2 during tools/freeclip2/wear_test.py.
+    // Frames as pushed by a real FreeClip 2 during tools/freeclip2/single_bud_test.py: head
+    // tracking only runs while both earbuds are worn.
     #[test]
-    fn wear_state_any_earbud_counts() {
+    fn wear_state_needs_both_earbuds() {
         let f = |l: u8, r: u8| Frame::new(43, 37, &[(1, &[l]), (2, &[r]), (3, &[0]), (4, &[0])]);
         assert_eq!(worn_from(&f(1, 1)), Some(true));
-        assert_eq!(worn_from(&f(0, 1)), Some(true)); // left off
-        assert_eq!(worn_from(&f(1, 0)), Some(true)); // right off
+        assert_eq!(worn_from(&f(0, 1)), Some(false)); // left off
+        assert_eq!(worn_from(&f(1, 0)), Some(false)); // right off
         assert_eq!(worn_from(&f(0, 0)), Some(false)); // both off
         assert_eq!(worn_from(&Frame::new(43, 37, &[(3, &[0])])), None);
     }

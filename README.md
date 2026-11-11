@@ -8,9 +8,9 @@ and no cloud; everything runs locally.
 
 ## Supported earbuds
 
-| Earbuds | Status | Head tracking | Wear detection (pauses when taken off) | Tested firmware |
+| Earbuds | Status | Head tracking | Pauses when taken off | Tested firmware |
 |---|---|---|---|---|
-| HUAWEI FreeClip 2 | Supported | Yes | Yes | HarmonyOS 7.0.0.516 |
+| HUAWEI FreeClip 2 | Supported | Yes (both earbuds worn) | Yes | HarmonyOS 7.0.0.516 |
 
 ## Requirements
 
@@ -81,8 +81,8 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
    | 60 s | a desktop notification |
    | when you look up again | a short "tink" |
 
-4. **Taking the earbuds off** pauses monitoring. When you put them back on, headup calibrates again,
-   because the earbuds sit slightly differently each time.
+4. **Taking an earbud off** pauses monitoring, because head tracking needs both earbuds. When both are
+   back on, headup calibrates again, because the earbuds sit slightly differently each time.
 
 ## License
 

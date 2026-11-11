@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 10:00 UTC
+Last updated: 2026-11-11 10:40 UTC
 
 ## Current state
 - The protocol works.
@@ -28,7 +28,8 @@ Last updated: 2026-11-11 10:00 UTC
 
 ## Next actions
 1. Live checks still owed by the user:
-   - Wear pause: take both earbuds off, then put them back on. Expect "Paused", then recalibration.
+   - Wear pause: take one or both earbuds off, then put both back on. Expect "Paused", then recalibration.
+     With only one earbud on, headup stays paused: FreeClip 2 tracking needs both (FINDINGS "Single earbud").
    - Disconnect/reconnect: earbuds into the case and back out. Expect waiting, reconnecting, recalibrating.
    - The 60 s desktop notification (not yet seen live).
    - The Home Manager service in the user's own config (`systemctl --user status headup`).

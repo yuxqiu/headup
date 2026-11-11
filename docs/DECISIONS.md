@@ -90,3 +90,9 @@
   sounds are still clipped, raise `LEAD_IN_S`. 1 s was confirmed sufficient by the user on 2026-11-11.
 - Rejected: keeping the Bluetooth output awake by streaming silence. It costs battery and may interfere with the
   earbuds switching to another device.
+
+## 2026-11-11: "Worn" means both earbuds (FreeClip 2)
+- FreeClip 2 head tracking stops when either earbud is removed (FINDINGS "Single earbud"). `worn_from` requires both,
+  so with one earbud headup pauses ("paused until both earbuds are worn") and recalibrates once both are back.
+- The session waits for the first pose before calibrating, with no deadline, noting "waiting for head tracking"
+  after 5 s. A missing pose is no longer an error that drops the connection.

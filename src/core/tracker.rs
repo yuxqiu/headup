@@ -10,8 +10,8 @@ pub enum Event {
     /// chosen by the backend), in the convention of [`Quat::euler`]: pitch > 0 = looking down,
     /// yaw > 0 = turned left, roll > 0 = tilted right. The frame may change after `Worn(true)`.
     Pose(Quat),
-    /// Whether the earbuds are being worn (at least one in/on an ear). Sent on change; a backend
-    /// should report the initial state soon after connecting.
+    /// Whether the earbuds are worn well enough for head tracking (for FreeClip 2: both of them).
+    /// Sent on change; a backend should report the initial state soon after connecting.
     Worn(bool),
 }
 

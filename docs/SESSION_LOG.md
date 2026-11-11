@@ -101,3 +101,9 @@
 
 ## 2026-11-11 10:00 UTC
 - The user confirmed the 1 s lead-in works: the tone is audible and the first prompt is complete.
+
+## 2026-11-11 10:40 UTC
+- User saw "no head pose from the earbuds during calibration" after putting on one earbud.
+  tools/freeclip2/single_bud_test.py showed the pose stream stops whenever either earbud is off.
+- "Worn" now means both earbuds. The session waits for the first pose before calibrating (no error or reconnect).
+  README and FINDINGS updated. 27 tests pass.

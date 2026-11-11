@@ -5,7 +5,7 @@ use super::detector::{Config, Detector};
 use super::quat::Quat;
 use super::record::Recorder;
 use super::tracker::{Event, HeadTracker};
-use anyhow::{Result, bail};
+use anyhow::Result;
 use std::time::{Duration, Instant};
 
 const CALIBRATION_S: f64 = 3.0;
@@ -13,6 +13,8 @@ const CALIBRATION_MAX_P90_DEG: f64 = 8.0;
 const CALIBRATION_TRIES: usize = 4;
 /// After a failed calibration (head kept moving), wait this long before asking again.
 const CALIBRATION_RETRY: Duration = Duration::from_secs(60);
+/// Say that headup is waiting if head tracking has not started after this long.
+const TRACKING_WAIT_NOTE_S: f64 = 5.0;
 
 /// What the tracker produced, from the session's point of view.
 enum Step {
@@ -90,6 +92,7 @@ impl<T: HeadTracker> Session<'_, T> {
             return Ok(());
         }
         self.event("Paused")?;
+        self.rec.note("paused until both earbuds are worn");
         while !self.worn {
             self.next(Duration::from_secs(1)).await?;
         }
@@ -107,19 +110,39 @@ impl<T: HeadTracker> Session<'_, T> {
         Ok(())
     }
 
+    /// Wait for the first head pose; `None` if the earbuds were taken off first. Tracking can take
+    /// a moment to start after the earbuds are put on, so this waits without a deadline.
+    async fn first_pose(&mut self) -> Result<Option<Quat>> {
+        let start = self.now();
+        let mut noted = false;
+        loop {
+            match self.next(Duration::from_secs(1)).await? {
+                Step::Pose(q) => return Ok(Some(q)),
+                Step::Removed => return Ok(None),
+                Step::Silence if !noted && self.now() - start >= TRACKING_WAIT_NOTE_S => {
+                    self.rec.note("waiting for head tracking from the earbuds…");
+                    noted = true;
+                }
+                Step::Silence => {}
+            }
+        }
+    }
+
     /// Capture the upright pose: CALIBRATION_S of poses whose 90th-percentile deviation from their
     /// mean is under CALIBRATION_MAX_P90_DEG. Silence means the head is still, so the last pose
     /// counts.
     async fn calibrate(&mut self) -> Result<Calibration> {
+        let Some(mut last) = self.first_pose().await? else {
+            return Ok(Calibration::Removed);
+        };
         self.cues.say(Phrase::SitUpright).await?;
-        let mut last = None;
         for attempt in 1..=CALIBRATION_TRIES {
             let end = self.now() + CALIBRATION_S;
             let mut samples = Vec::new();
             while self.now() < end {
                 match self.next(Duration::from_millis(200)).await? {
                     Step::Pose(q) => {
-                        last = Some(q);
+                        last = q;
                         samples.push(q);
                     }
                     Step::Silence => {}
@@ -127,10 +150,7 @@ impl<T: HeadTracker> Session<'_, T> {
                 }
             }
             if samples.is_empty() {
-                let Some(q) = last else {
-                    bail!("no head pose from the earbuds during calibration")
-                };
-                samples.push(q);
+                samples.push(last);
             }
             let (mean, p90) = mean_and_p90(&samples);
             self.rec.note(&format!(
