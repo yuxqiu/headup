@@ -134,3 +134,20 @@
   - CueSink trait; scripted session tests on a paused tokio clock (6 scenarios).
   - LogEvent enum; one session clock; FreeClip2 impl merge; `retry_later`.
 - 34 tests pass, clippy clean, `nix flake check` passes. Live: the waiting message shows correctly.
+
+## 2026-11-11 16:25 UTC
+- Drafted v0.1.0 release notes (no FreeClip-specific quirks, per the user). Comment-only fixes in core/detector.rs and
+  core/tracker.rs so core docs don't depend on FreeClip 2. 34 tests pass.
+- Service live check: no head tracking at all while the earbuds report pc as playing. Details and ruled-out causes in
+  HANDOFF "Blockers".
+
+## 2026-11-11 18:05 UTC
+- Tracking outage (~2 h, no 43/89): ruled out PipeWire 1.6.11 (old generation also failed), codec, reboot, case reset,
+  firmware, headup code. Tracking returned right after a 43/90/43/44/43/180 query probe; cause unknown (FINDINGS
+  "Tracking outage").
+- `FreeClip2::connect` now sends the 43/90 query before 43/88. 34 tests pass, clippy and fmt clean; live: reply
+  logged, 552 samples in 20 s.
+- Started a read-only search for the firmware OTA endpoint in the decompiled app.
+- OTA endpoint found in the app (subagent, spot-checked). With the user's approval, sent the version check with the
+  SN: the newest firmware is 7.0.0.526 (earbuds run .516). Downloaded and unpacked it into research/firmware/526/:
+  HiSilicon BS25 `[inferred]`, readable bootloader, the rest encrypted or compressed. FINDINGS "Firmware image".

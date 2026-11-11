@@ -25,6 +25,7 @@ const CMD_STREAM_SWITCH: u8 = 88;
 const CMD_STREAM_DATA: u8 = 89;
 const CMD_WEAR_STATE: u8 = 37;
 const CMD_DEVICE_STATE: u8 = 54;
+const CMD_SPATIAL_CAPABILITY: u8 = 90;
 
 /// Wear state from a 43/37 frame: TLV 1 = left, TLV 2 = right, 1 = worn. Head tracking stops as
 /// soon as either earbud comes off (tools/freeclip2/single_bud_test.py), so "worn" means both.
@@ -83,6 +84,10 @@ impl FreeClip2 {
             streaming: None,
         };
         dev.send(Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])]))
+            .await?;
+        // Possibly needed to arm the stream: tracking came back right after this query once
+        // (FINDINGS "Tracking outage") [unverified]. Its reply is ignored.
+        dev.send(Frame::new(SVC, CMD_SPATIAL_CAPABILITY, &[(1, &[])]))
             .await?;
         dev.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
             .await?;

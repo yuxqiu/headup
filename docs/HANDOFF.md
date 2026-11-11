@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 13:40 UTC
+Last updated: 2026-11-11 18:05 UTC
 
 ## Current state
 - The protocol works.
@@ -49,4 +49,14 @@ Confirmed live so far:
 - Glide suppression; auto-detect of the FreeClip 2; clean non-TTY output.
 
 ## Blockers
-- None.
+- 2026-11-11: tracking stopped completely for ~2 h (no 43/89 while the earbuds listed pc as playing, both worn,
+  43/88 acked, spatial mode follow). Ruled out: PipeWire 1.6.11 (old generation 636 also failed), codec, reboot,
+  case reset, firmware change, headup code (the Python tool failed too). It started working at 12:53 local right after
+  a probe sent only queries: 43/90 (spatial capability), 43/44, 43/180. After a later case reset it kept working
+  without any 43/90. Cause unknown. Open hypothesis: 43/90 arms tracking and the arming survives a case reset but
+  not a long power-off (first night: 43/90 was also sent just before the first working 43/88). Next time it
+  fails: send only `43/90:1=` and see whether tracking returns.
+  - Since then `FreeClip2::connect` sends 43/90 before 43/88 (DECISIONS). The installed service still runs the
+    old build until the user rebuilds Home Manager. If an outage recurs with it in place, 43/90 is ruled out.
+  - Firmware .526 downloaded via the OTA check (user approved sending the SN). The main sections are encrypted or
+    compressed; only the bootloader is readable (FINDINGS "Firmware image"). The firmware does not explain 43/88 yet.

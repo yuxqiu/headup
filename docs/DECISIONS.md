@@ -134,3 +134,9 @@
 - One clock in the session (seconds since start); `CALIBRATION_RETRY_S`.
 - FreeClip 2 backend: one `impl` block; the module comment covers 43/88, 43/89, 43/37, 43/54.
 - `main`: one `retry_later` helper instead of three copies.
+
+## 2026-11-11: Send the 43/90 capability query before enabling the stream (user)
+- `FreeClip2::connect` now sends `43/90:1=` before `43/88:1=01`; the reply is ignored.
+- Reason: during the tracking outage (FINDINGS "Tracking outage"), tracking returned right after a probe that sent
+  43/90. Whether 43/90 arms the stream is unverified. It is a read-only query, so it costs nothing. If an outage
+  recurs with it in place, 43/90 is ruled out.

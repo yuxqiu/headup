@@ -239,3 +239,44 @@ Evidence: `data/reclaim_test.log` (controlled) and session 4's raw log (`--raw-l
   The glide suppression and the "silence = still" rule stay.
 - Consequence: silence cannot signal "audio stopped". The backend reports 43/54 for this computer's address as
   `Event::Available`, and headup ends monitoring only after 30 s of *unavailability*.
+
+## Tracking outage (2026-11-11, cause unknown)
+
+- For ~2 h, 43/88 was acked (`2=00`) but no 43/89 arrived, even with the head moving and music playing. At the same
+  time: both earbuds worn (43/37), spatial mode follow (43/180 `2=01`), 43/49 listed pc with state 09 (playing).
+- No effect: restarting the stream during playback, pausing music, forcing an A2DP suspend/resume (43/54 03→09), SBC
+  instead of AAC, a case reset, a reboot, and an older NixOS generation (PipeWire 1.6.9). Firmware unchanged
+  (7.0.0.516). tools/freeclip2/headpose.py failed too, so headup's code was not the cause.
+- Tracking returned right after a probe that sent only queries: `43/90:1=`, `43/44:1=`, `43/180:1=18,2=,3=`. It
+  then survived a case reset with no 43/90 sent.
+- Hypothesis `[unverified]`: the 43/90 capability query arms the stream, and the arming survives a case reset but not
+  a longer power-off. On the first night, 43/90 (probe_02) was also sent right before the first working 43/88
+  (probe_03). The vendor app never sends 43/88, so no app code confirms this.
+
+## Firmware image (2026-11-11)
+
+How the app gets firmware (decompiled app, `research/jadx_out/sources`):
+- Version check: `POST https://update-dre.platform.hicloud.com/smartAccessory/v2/Check.action?latest=true&defenceHijack=true`
+  (`in/j.java:468`, `in/j.java:862-875`). The host comes from GRS service `com.huawei.cloud.hota`; the US is in group DR3
+  (`update-dre`), China is `update-drcn`. Both returned the same answer.
+- Body: `{"rules":{"deviceName":"HuaweiBTFT0027","packageName":"com.huawei.BTFT0027","deviceId":<SN, MBB 1/7 TLV 9>,
+  "packageType":"full","packageVersionCode":<1/7 TLV 7>,"firmware":<1/7 TLV 7>,"os":"audioapp"}}`. No auth or
+  signing. The optional `extra_info` (phone IDs) was left out.
+- Download: unauthenticated GET of `{components[0].url}full/filelist.xml`, then the zip it lists (md5, sha256, size).
+- The app unzips, takes the first `.bin`, and sends it unchanged over MBB service 9 (`in/j.java:965-990`,
+  `nn/m.java:392-427`). Any decryption or signature check happens on the earbuds.
+
+What we got (files in `research/firmware/526/`, gitignored):
+- Newest version: **HarmonyOS 7.0.0.526(F003H003C00)**, created 2026-10-21. The test earbuds run .516.
+- `update_accessory_fw.zip` (7,484,023 bytes, sha256 matches filelist.xml) is signed with SignApk
+  (`META-INF/CERT.*`, `hotakey_v2`). It holds `updatepkg.bin` (7,709,002 bytes) plus metadata
+  (`version.txt`: type=BTFT0027, subtype=generic).
+- `updatepkg.bin` header names the image "robin" (the app's internal name for productId ZAAS is also "Robin"),
+  version `f1.0.0.526`, build 2026-10-15, chip string **`FHISI_BS25`** (HiSilicon BS25 `[inferred]`), and a table of
+  5 entries. Our first guess at the table layout gave overlapping ranges and no matching sha256, so the layout is
+  still unknown.
+- Only the start is readable: a second-stage bootloader (`SSB|...` log strings, EPMU power management). Almost
+  everything else has 8.00 bits/byte entropy, so it is encrypted or compressed. No readable strings about the IMU,
+  spatial audio, head tracking or MBB 43/88–90 (only `MBBSUBCOMPONENT`).
+- Conclusion: the firmware does not explain the 43/88 behaviour without decrypting or decompressing the main
+  sections. That is a separate, open-ended project.
