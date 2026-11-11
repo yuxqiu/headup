@@ -1,6 +1,6 @@
 """Guided wear test: does taking FreeClip 2 off disconnect Bluetooth, and what does MBB report?
 
-usage (inside `nix develop`): python3 -I tools/wear_test.py MAC OUT.log
+usage (inside `nix develop`): python3 -I tools/freeclip2/wear_test.py MAC OUT.log
 Speaks prompts, logs every MBB frame with the active phase, and records connection loss.
 """
 import os, shutil, socket, subprocess, sys, threading, time

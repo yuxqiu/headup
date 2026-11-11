@@ -1,6 +1,6 @@
 """Guided head-motion recording for FreeClip 2 with spoken prompts (espeak-ng).
 
-usage (inside `nix develop`): python3 -I tools/guided.py MAC OUT.csv [--still SECONDS] [--hold]
+usage (inside `nix develop`): python3 -I tools/freeclip2/guided.py MAC OUT.csv [--still SECONDS] [--hold]
 --hold: long-hold schedule (look down 30 s, center 15 s, twice) to study device re-centring.
 Every sample is labelled with the phase that was active when it arrived.
 """

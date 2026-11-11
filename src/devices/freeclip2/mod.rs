@@ -1,6 +1,6 @@
 //! HUAWEI FreeClip 2 backend: MBB over RFCOMM channel 1. 43/88 switches the spatial-audio pose
 //! stream on/off; 43/89 carries relative quaternions that re-centre themselves; 43/37 reports
-//! per-earbud wear state, pushed on change and answered when queried (docs/FINDINGS.md).
+//! per-earbud wear state, pushed on change and answered when queried (docs/devices/freeclip2/FINDINGS.md).
 
 mod mbb;
 mod rebuild;
@@ -135,7 +135,7 @@ impl HeadTracker for FreeClip2 {
 mod tests {
     use super::*;
 
-    // Frames as pushed by a real FreeClip 2 during tools/wear_test.py.
+    // Frames as pushed by a real FreeClip 2 during tools/freeclip2/wear_test.py.
     #[test]
     fn wear_state_any_earbud_counts() {
         let f = |l: u8, r: u8| Frame::new(43, 37, &[(1, &[l]), (2, &[r]), (3, &[0]), (4, &[0])]);

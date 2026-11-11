@@ -4,27 +4,27 @@
 - Cloned Gadgetbridge and OpenFreebuds. Both support FreeClip 2 over SPP port 1, with no sensor features.
 - Downloaded the official Audio Connect APK from the AppGallery CDN and decompiled it with jadx.
 - Found the MBB command catalogue (`Mbb.java`) and the motion-related commands. Confirmed the app never
-  sends them (`tools/used_cmds.py`). Wrote `docs/FINDINGS.md`.
+  sends them (`tools/freeclip2/used_cmds.py`). Wrote `docs/devices/freeclip2/FINDINGS.md`.
 
 ## 2026-11-10 23:40 UTC
 - Hardware test via BlueZ RFCOMM ch1. 43/90 reports spatial support. 43/88=1 starts a 43/89 quaternion
   stream at about 52 Hz (uint32 seq + 4×f32 LE wxyz). 43/88=0 stops it. Neck-health and sensor commands
-  return 100003. Added `tools/probe.py` and `tools/headpose.py`.
+  return 100003. Added `tools/freeclip2/probe.py` and `tools/freeclip2/headpose.py`.
 
 ## 2026-11-11 00:20 UTC
 - Guided test (follow mode): the stream re-centers to the held pose and pauses while still. Axis mapping
-  derived via `tools/rebuild.py`. Found the spatial mode command 43/180 (0 off, 1 follow, 2 fixed) and set
+  derived via the Python rebuild prototype (now `src/devices/freeclip2/rebuild.rs`). Found the spatial mode command 43/180 (0 off, 1 follow, 2 fixed) and set
   it to fixed. Scripts now tolerate stream pauses.
 
 ## 2026-11-11 00:45 UTC
-- Fixed-mode guided run: the stream behaves the same as in follow mode. Rebuild with `tools/rebuild.py`
+- Fixed-mode guided run: the stream behaves the same as in follow mode. Rebuild with the Python prototype
   gives ±7° centers. Spatial mode restored to follow.
 
 ## 2026-11-11 01:20 UTC
 - Restructured the repo:
   - tools/, data/, docs/ are committed; research/ is gitignored.
   - Deleted the extracted assets and the Gadgetbridge clone.
-  - Merged chain.py into tools/rebuild.py.
+  - Merged chain.py into the Python rebuild prototype (since replaced by `src/devices/freeclip2/rebuild.rs`).
 - Ran git init and cargo init (`headup`); the crate builds. No commit yet.
 - Researched posture-app UX: Posture Pal plus slouchless, HeadOrbit, dorso, posture-fix and cristdulcey/posture.
   Wrote docs/UX_RESEARCH.md.
@@ -38,7 +38,7 @@
 
 ## 2026-11-11 03:30 UTC
 - Modular refactor: `src/core/` plus `src/devices/freeclip2/`, and the `HeadTracker` trait. Added `--raw-log`.
-- Long-hold recording (tests/fixtures/hold_test.csv) showed that the earbuds glide to identity after ~4–5 s still. This
+- Long-hold recording (tests/fixtures/freeclip2/hold_test.csv) showed that the earbuds glide to identity after ~4–5 s still. This
   caused session 1's false recoveries and offsets. Added glide suppression to the rebuild.
 - 15 tests pass. The end-to-end replay test fails if the fix is disabled.
 
@@ -51,7 +51,7 @@
 - Added the Nix flake (dev shell and package; `nix build` runs the 15 tests). Fixed a clippy warning by
   implementing `Mul` for `Quat`.
 - Repository is staged for the user's first commit. The user makes all commits.
-- Added `tools/wear_test.py` to check wear detection and disconnect behaviour.
+- Added `tools/freeclip2/wear_test.py` to check wear detection and disconnect behaviour.
 
 ## 2026-11-11 05:20 UTC
 - Wear test: removal does not disconnect; 43/37 reports per-earbud wear state. Implemented the wear pause and
@@ -72,3 +72,7 @@
   check` passes, and the fmt check was shown to fail on misformatted code.
 - Added `.github/workflows/ci.yml` and `release.yml`, mirroring ../quillway; actionlint is clean.
 - README install section: Nix + Home Manager from github:yuxqiu/headup, plus release tarballs.
+
+## 2026-11-11 07:50 UTC
+- Repo cleanup: removed the obsolete tools/rebuild.py. Moved FreeClip 2–specific docs, tools and test fixtures
+  under `freeclip2/` directories and updated all references. `nix flake check` passes.

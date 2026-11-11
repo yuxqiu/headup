@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 07:20 UTC
+Last updated: 2026-11-11 07:50 UTC
 
 ## Current state
 - The protocol works.
@@ -12,13 +12,14 @@ Last updated: 2026-11-11 07:20 UTC
   - Modular layout:
     - `src/core/`: quat, the `HeadTracker` trait, detector, session (calibration + monitor), cues.
     - `src/devices/freeclip2/`: mbb framing, rebuild, and the backend with `--raw-log`.
-  - 15 tests pass, including replays of the recordings and an end-to-end cue test on tests/fixtures/hold_test.csv.
+  - 15 tests pass, including replays of the recordings and an end-to-end cue test on tests/fixtures/freeclip2/hold_test.csv.
   - The design was approved by the user (docs/UX_RESEARCH.md); the parameters are in docs/DECISIONS.md.
 - Git: no commits yet. Everything is staged for the user's first commit; the user makes all commits.
   `data/` and `research/` are gitignored; test recordings are in `tests/fixtures/`.
 - Nix flake: `nix develop`, `nix build` (runs the tests), `nix run . -- <MAC>`. The binary is `headup`.
 - Voice: Piper alba clips embedded (assets/voice). espeak-ng is in the dev shell only.
 - Runs as a daemon with BlueZ auto-detect; Home Manager module in nix/hm-module.nix.
+- Layout: model-specific files under `freeclip2/` in src/devices, docs/devices, tools, tests/fixtures.
 - MIT license. CI: `nix flake check` (build+tests, clippy, fmt; passes locally). Release workflow builds tarballs
   when a `vX.Y.Z` release is published. Neither has run on GitHub yet (repo not pushed).
 

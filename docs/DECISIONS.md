@@ -8,7 +8,7 @@
 
 ## 2026-11-11: Head-pose source
 - Use MBB 43/88 (enable) → 43/89 (quaternion stream). Rebuild absolute orientation across the
-  device's re-centring by setting the reference to the last stationary pose (`tools/rebuild.py`).
+  device's re-centring by setting the reference to the last stationary pose (`src/devices/freeclip2/rebuild.rs`).
 - The spatial-audio mode (43/180) has no effect on the stream. Leave the user's setting untouched.
 
 ## 2026-11-11: Detector behaviour (user approved design in docs/UX_RESEARCH.md)
@@ -46,7 +46,7 @@
   (`buildRustPackage`, which runs the tests and wraps the binary with pw-play, espeak-ng and notify-send on PATH).
   nixpkgs is nixos-unstable, pinned by flake.lock.
 - Recordings and logs are not committed (`data/` is gitignored). The three recordings the tests replay live in
-  `tests/fixtures/`. The command catalogue moved to `docs/mbb_commands.txt`.
+  `tests/fixtures/`. The command catalogue moved to `docs/devices/freeclip2/mbb_commands.txt`.
 
 ## 2026-11-11: Wear pause, auto-detect, daemon, Home Manager (user approved)
 - `HeadTracker::next_event` yields `Event::Pose` or `Event::Worn`. "Worn" means at least one earbud is worn.
@@ -64,3 +64,10 @@
 - CI and releases mirror the user's quillway project. CI is a single `nix flake check` (flake `checks`: build with
   tests, clippy with warnings denied, rustfmt; written with buildRustPackage overrides rather than crane).
   Releases are triggered by publishing a `vX.Y.Z` GitHub release and produce glibc 2.35 tarballs with sha256.
+
+## 2026-11-11: Model-specific layout
+- Everything that only applies to one earbud model lives under a `freeclip2/` (model) directory:
+  `src/devices/freeclip2/`, `docs/devices/freeclip2/` (protocol findings and command catalogue),
+  `tools/freeclip2/` (MBB research scripts) and `tests/fixtures/freeclip2/` (recordings).
+  Generic code, docs and tools stay at the top level.
+- The Python rebuild prototype was removed; `src/devices/freeclip2/rebuild.rs` is the only implementation.

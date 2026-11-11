@@ -3,7 +3,7 @@
 //! The earbuds report a quaternion relative to a reference that they silently move to any pose held
 //! still for a few seconds; the move is announced by an exact identity sample once the head moves
 //! again. `Rebuilder` turns that into one continuous orientation relative to the stream start by
-//! taking "last stationary pose" as the new reference on each identity sample (docs/FINDINGS.md).
+//! taking "last stationary pose" as the new reference on each identity sample (docs/devices/freeclip2/FINDINGS.md).
 
 use crate::core::quat::Quat;
 use std::collections::VecDeque;
@@ -200,13 +200,13 @@ mod tests {
         }
     }
 
-    // Matches tools/rebuild.py on the two real guided recordings; run 1 accumulates more error.
+    // The two real guided recordings; run 1 accumulates more error.
     #[test]
     fn rebuilds_guided_run_fixed_mode() {
         check(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/headpose_axes_fixed.csv"
+                "/tests/fixtures/freeclip2/headpose_axes_fixed.csv"
             ),
             8.0,
         );
@@ -217,7 +217,7 @@ mod tests {
         check(
             concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/headpose_axes.csv"
+                "/tests/fixtures/freeclip2/headpose_axes.csv"
             ),
             15.0,
         );
@@ -270,7 +270,7 @@ mod tests {
     fn hides_recentre_glide_during_long_holds() {
         let rows = read_csv(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/hold_test.csv"
+            "/tests/fixtures/freeclip2/hold_test.csv"
         ));
         let mut rb = Rebuilder::default();
         let mut phase_start = 0.0;
@@ -337,7 +337,7 @@ mod tests {
         use crate::core::detector::{Config, Cue, Detector};
         let rows = read_csv(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/hold_test.csv"
+            "/tests/fixtures/freeclip2/hold_test.csv"
         ));
         let mut rb = Rebuilder::default();
         let mut det = Detector::new(Config::default());

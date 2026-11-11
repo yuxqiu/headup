@@ -24,7 +24,7 @@ and BT model `T0027`.
 
 `com/huawei/audiodevicekit/datarouter/base/collector/mbb/Mbb.java` lists 164
 (service, command) pairs, each with a Chinese description. The raw list is in
-`docs/mbb_commands.txt`. Motion-relevant entries:
+`docs/devices/freeclip2/mbb_commands.txt`. Motion-relevant entries:
 
 | svc | cmd | description (translated) |
 |---|---|---|
@@ -49,7 +49,7 @@ Both beans are named "Glass". The cervical-health feature ships on Huawei smart 
 
 ## What the Android app actually uses
 
-`tools/used_cmds.py` resolves every `{43, X, ...}` byte array in the decompiled source.
+`tools/freeclip2/used_cmds.py` resolves every `{43, X, ...}` byte array in the decompiled source.
 The app sends service-43 command IDs
 0-2,4,5,7-11,14-17,22-25,30-35,37,38,42-47,49-51,53,55-57,65,66,69-74,81,83,87,93-97,100,106,
 108,111,112,127,128,135,136,143,144,146,147,148,149,153,154,160,162,163,168-170,172-174,177,179-182.
@@ -81,7 +81,7 @@ because the catalogue contains iOS-only entries 43/67–68 ("device authenticati
 
 ## Hardware test (2026-11-10, FreeClip 2 fw "HarmonyOS 7.0.0.516(F003H003C00)", Linux BlueZ, RFCOMM ch 1)
 
-Scripts: `tools/probe.py` (generic MBB send/log), `tools/headpose.py` (stream + decode).
+Scripts: `tools/freeclip2/probe.py` (generic MBB send/log), `tools/freeclip2/headpose.py` (stream + decode).
 Logs: `data/probe_0*.log`, `data/headpose_run1.csv`.
 
 | query | reply |
@@ -106,7 +106,7 @@ Not yet established:
 
 ## Guided axis test, run 1 (spatial mode = follow)
 
-Data: `tests/fixtures/headpose_axes.csv`. Analysis: `tools/rebuild.py`.
+Data: `tests/fixtures/freeclip2/headpose_axes.csv`. Analysis: `src/devices/freeclip2/rebuild.rs`.
 
 - **The stream is relative and re-centers itself.** While the head is held still for a few seconds,
   the earbuds silently adopt the held pose as the new reference. On the next movement they emit an
@@ -130,11 +130,11 @@ re-centering stops. To restore follow, send `43/180:1=18,2=01`.
 
 ## Guided axis test, run 2 (spatial mode = fixed)
 
-Data: `tests/fixtures/headpose_axes_fixed.csv`.
+Data: `tests/fixtures/freeclip2/headpose_axes_fixed.csv`.
 
 - **The spatial mode does not change the 43/89 stream.** The same identity resets occurred at the same
   phase boundaries, and the stream again stopped during the final still phase.
-- Rebuilding with `tools/rebuild.py` (reference = last stationary pose, stationary = <3° over 0.5 s):
+- Rebuilding with `src/devices/freeclip2/rebuild.rs` (reference = last stationary pose, stationary = <3° over 0.5 s):
   - Every "center" lands within about ±7° on all axes. The final center is −1.8° pitch.
   - Run 1 under the same rebuild had a +9° to +14° pitch offset after the "up" step.
   - Expected error is roughly 5–10°. That is adequate for head-down alerts at 20–30°+, but not for fine posture angles.
@@ -144,7 +144,7 @@ The mode was restored to follow (`2=01`, verified by readback).
 
 ## Re-centre glide (long-hold test, 2026-11-11)
 
-Data: `tests/fixtures/hold_test.csv`, recorded with `tools/guided.py --hold`: look down 30 s, center 15 s, twice.
+Data: `tests/fixtures/freeclip2/hold_test.csv`, recorded with `tools/freeclip2/guided.py --hold`: look down 30 s, center 15 s, twice.
 
 - A pose held still is reported steadily for about 4–5 s. Then the earbuds **glide** the reported quaternion to
   identity:
@@ -163,7 +163,7 @@ Data: `tests/fixtures/hold_test.csv`, recorded with `tools/guided.py --hold`: lo
   - Tests replay this recording (no glide reaches the output; tones fire in "down" and recoveries in "center").
     They fail if glide detection is disabled.
 
-## Wear detection (tools/wear_test.py, 2026-11-11)
+## Wear detection (tools/freeclip2/wear_test.py, 2026-11-11)
 
 - Taking the earbuds off does **not** disconnect Bluetooth (RFCOMM stayed up with both off for 15 s+).
 - The earbuds push **43/37** on every wear change: TLV1 = left, TLV2 = right (1 = worn, 0 = off),

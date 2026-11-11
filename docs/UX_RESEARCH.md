@@ -50,7 +50,7 @@ Press coverage: [9to5Mac](https://9to5mac.com/2022/03/17/posture-pal-iphone-app-
 1. **We own the baseline.**
    - Guided calibration with spoken prompts (we already have this): "sit upright", then 3 s capture with a
      wobble check (p90 < 8°, retry otherwise). Persist it to `~/.config/...`.
-   - The device's identity resets are frame changes. They are handled by `tools/rebuild.py` logic and never treated
+   - The device's identity resets are frame changes. They are handled by `src/devices/freeclip2/rebuild.rs` logic and never treated
      as "upright". This matches HeadOrbit's stance.
 2. **Silence means "unchanged", not "stale".** The FreeClip 2 stops sending while the head is still. Hold the last
    state and keep the dwell timer running. Only an RFCOMM disconnect or earbud removal (in-ear state is
