@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 22:45 UTC
+Last updated: 2026-11-11 23:30 UTC
 
 ## Current state
 - The protocol works.
@@ -28,17 +28,15 @@ Last updated: 2026-11-11 22:45 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
-- Buffered glide handling and no sound lead-in: 41 tests pass; live-verified (data/session8*.jsonl): 3/3 slouches
-  cued ~12 s in, one re-anchor (`upright` -8.53), 9 re-centres absorbed; calibration prompt complete without the
-  lead-in (user). User is committing; then release v0.1.1 (bump Cargo.toml, signed tag, `gh release create`).
-- Uncommitted (staged fixtures): re-anchor upright after each recovery, enabled via `TrackerTraits::pose_drifts_up`
-  (DECISIONS "Re-anchor upright"); detector state enum; `traits()`. 42 tests pass. Live-verified
-  (data/session7*.jsonl): 6/6 slouches cued, corrected slouches 38–63°, upright −1…+5°, 5 re-anchors matching the
-  offline replay, none on a plain ceiling look. Waiting-message hint: user to confirm. Next: commit, rebuild the
-  service, release v0.1.1 (glide fix + re-anchor + traits).
-- Uncommitted: glide threshold 2.5 s -> 1.0 s plus test fixture `short_hold_glide.csv` (staged). Live-verified with
-  `target/release`: Tone 10 s and Speak 30 s into a still slouch, Recovered on looking up. The installed service
-  needs a rebuild after the commit; v0.1.0 has the bug, so consider releasing v0.1.1.
+- v0.1.1 is released (https://github.com/yuxqiu/headup/releases/tag/v0.1.1, signed tag on 6de8e88): buffered glide
+  handling, re-anchoring upright after recoveries (`TrackerTraits::pose_drifts_up`), `HeadTracker::traits()`, no sound
+  lead-in. Live-verified in data/session7 and data/session8. 41 tests pass; CI green on x86_64 and aarch64.
+1. Update the installed service: `nix flake update headup` in the user's config, then switch.
+2. Watch a normal day's use with `services.headup.logFile` set: count `Reanchored` events and any missed slouch.
+3. Not built: a manual snooze/pause control (no UI chosen). The 43/90-before-43/88 query is still unverified as the
+   cure for the 2026-11-11 tracking outage (see Blockers).
+
+Older open items:
 0. FreeClip 2 tracking needs this computer to stream audio, and goes silent ~5 s into any still hold, even
    during playback (FINDINGS). Implemented `Event::Available` from 43/54; TrackingLost only after 30 s
    unavailable; lookup robustness. 28 tests pass. Live: calibration while audio played, unsupported-address
@@ -46,19 +44,16 @@ Last updated: 2026-11-11 22:45 UTC
 1. Live checks still owed by the user:
    - Wear pause: take one or both earbuds off, then put both back on. Expect "Paused", then recalibration.
      With only one earbud on, headup stays paused: FreeClip 2 tracking needs both (FINDINGS "Single earbud").
-   - Disconnect/reconnect: earbuds into the case and back out. Expect waiting, reconnecting, recalibrating.
    - The 60 s desktop notification (not yet seen live).
-   - The Home Manager service in the user's own config (`systemctl --user status headup`).
-2. Long session (30+ min, `--log --raw-log`) to measure drift of the rebuilt pitch and how often stream restarts
-   happen. Then decide on on-demand recalibration or guarded auto re-baselining.
 3. Tune thresholds and timings from real use (20°/15°, 10/30/60 s, 120 s re-nudge).
-4. Not built: a manual snooze/pause control (no UI chosen; removal-pause covers the main case). Volume ducking
-   and the daily score were dropped by the user.
+   Volume ducking and the daily score were dropped by the user.
 
 Confirmed live so far:
 - Calibration with the alba voice; the full first prompt is heard (the 1 s lead-in was later removed: cues only play while audio is already streaming).
 - Tone, speech and recovery cues, including warnings after a first recovery (stream-restart fix).
 - Glide suppression; auto-detect of the FreeClip 2; clean non-TTY output.
+- 2026-11-11: case reset → disconnect, reconnect, recalibration; the Home Manager service runs; 30 min session
+  (session6) measured the drift that led to re-anchoring.
 
 ## Blockers
 - 2026-11-11: tracking stopped completely for ~2 h (no 43/89 while the earbuds listed pc as playing, both worn,

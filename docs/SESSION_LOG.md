@@ -199,3 +199,11 @@
 - Removed the 1 s sound lead-in (user: cues only play while audio already streams).
 - Live (data/session8*.jsonl): 3/3 slouches cued ~12 s in, 1 re-anchor, 9 re-centres absorbed; user confirmed the
   calibration prompt is complete without the lead-in. User will commit; v0.1.1 release next.
+
+## 2026-11-11 23:05 UTC
+- Bumped to 0.1.1 (6de8e88, signed); flake version now derived from Cargo.toml. Local `nix flake check` passes.
+- GitHub Actions major outage: CI runs queued with no jobs. Release waits for green CI on 6de8e88.
+
+## 2026-11-11 23:30 UTC
+- GitHub Actions recovered; CI green on 6de8e88 (x86_64, aarch64). Released v0.1.1: signed tag, notes, release
+  workflow uploaded both tarballs and checksums; x86_64 tarball verified (sha256, `--version` 0.1.1).
