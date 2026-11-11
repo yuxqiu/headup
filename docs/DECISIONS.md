@@ -71,3 +71,13 @@
   `tools/freeclip2/` (MBB research scripts) and `tests/fixtures/freeclip2/` (recordings).
   Generic code, docs and tools stay at the top level.
 - The Python rebuild prototype was removed; `src/devices/freeclip2/rebuild.rs` is the only implementation.
+
+## 2026-11-11: Refactor (user approved)
+- `Quat::euler()` returns `Euler { roll, pitch, yaw }` instead of a positional tuple.
+- `devices::AnyTracker` (an enum over backends implementing `HeadTracker`) keeps `main` model-agnostic. Adding a
+  model touches only `devices/` and its backend.
+- `core::record::Recorder` owns all output: console messages and events, the JSON-lines log, and the `\r` live
+  status line. The status line is shown only on a TTY, so systemd's journal gets clean lines.
+- A failed calibration (head kept moving) is a normal outcome. headup logs `CalibrationFailed`, waits 60 s (or until
+  the earbuds are removed) and asks again, without dropping the Bluetooth connection.
+- Every retry wait in `main` responds to Ctrl-C.

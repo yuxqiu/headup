@@ -5,6 +5,7 @@
 mod mbb;
 mod rebuild;
 
+use crate::core::quat::Quat;
 use crate::core::tracker::{Event, HeadTracker};
 use anyhow::{Context, Result, bail, ensure};
 use bluer::rfcomm::{SocketAddr, Stream};
@@ -68,60 +69,77 @@ impl FreeClip2 {
     }
 }
 
+impl FreeClip2 {
+    /// Handle one frame from the earbuds; `None` if it produces no event.
+    async fn handle(&mut self, f: Frame) -> Result<Option<Event>> {
+        match (f.svc, f.cmd) {
+            (SVC, CMD_WEAR_STATE) => self.on_wear_state(&f).await,
+            (SVC, CMD_STREAM_DATA) => self.on_pose_sample(&f),
+            _ => Ok(None), // acks and status pushes we don't use
+        }
+    }
+
+    async fn on_wear_state(&mut self, f: &Frame) -> Result<Option<Event>> {
+        let Some(worn) = worn_from(f) else {
+            bail!("malformed 43/37: {f:?}")
+        };
+        let was = self.worn.replace(worn);
+        if was == Some(worn) {
+            return Ok(None);
+        }
+        if worn && was == Some(false) {
+            // Back on the ear: start a fresh orientation frame.
+            self.rebuild = Rebuilder::default();
+            self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
+                .await?;
+        }
+        Ok(Some(Event::Worn(worn)))
+    }
+
+    fn on_pose_sample(&mut self, f: &Frame) -> Result<Option<Event>> {
+        let (Some(s), Some(q)) = (f.tlv(1), f.tlv(2)) else {
+            bail!("malformed 43/89: {f:?}")
+        };
+        let (seq, raw) = decode_sample(s, q).with_context(|| format!("malformed 43/89: {f:?}"))?;
+        let t = self.start.elapsed().as_secs_f64();
+        let out = self.rebuild.push(t, raw);
+        if let Some(log) = self.raw_log.as_mut() {
+            writeln!(log, "{}", raw_log_line(t, seq, raw, out))?;
+        }
+        // `None` while a sample is held back as a possible re-centre glide.
+        Ok(out.map(|(abs, _)| Event::Pose(abs)))
+    }
+}
+
+/// One JSON line for `--raw-log`: the sample as sent, the rebuilt orientation (null while held
+/// back) and whether it was a device re-centre.
+fn raw_log_line(t: f64, seq: u32, raw: Quat, out: Option<(Quat, bool)>) -> String {
+    let q = |q: Quat| format!("[{:.6},{:.6},{:.6},{:.6}]", q.w, q.x, q.y, q.z);
+    let abs = out.map_or("null".to_string(), |(a, _)| q(a));
+    let reset = out.is_some_and(|(_, r)| r);
+    format!(
+        r#"{{"t":{t:.4},"seq":{seq},"raw":{},"abs":{abs},"reset":{reset}}}"#,
+        q(raw)
+    )
+}
+
 impl HeadTracker for FreeClip2 {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             while let Some(f) = self.decoder.next_frame()? {
-                if (f.svc, f.cmd) == (SVC, CMD_WEAR_STATE) {
-                    let Some(worn) = worn_from(&f) else {
-                        bail!("malformed 43/37: {f:?}")
-                    };
-                    if self.worn == Some(worn) {
-                        continue;
-                    }
-                    let was = self.worn.replace(worn);
-                    if worn && was == Some(false) {
-                        // Back on the ear: start a fresh orientation frame.
-                        self.rebuild = Rebuilder::default();
-                        self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
-                            .await?;
-                    }
-                    return Ok(Some(Event::Worn(worn)));
+                if let Some(event) = self.handle(f).await? {
+                    return Ok(Some(event));
                 }
-                if (f.svc, f.cmd) != (SVC, CMD_STREAM_DATA) {
-                    continue;
-                }
-                let (Some(s), Some(q)) = (f.tlv(1), f.tlv(2)) else {
-                    bail!("malformed 43/89: {f:?}")
-                };
-                let (seq, raw) =
-                    decode_sample(s, q).with_context(|| format!("malformed 43/89: {f:?}"))?;
-                let t = self.start.elapsed().as_secs_f64();
-                let out = self.rebuild.push(t, raw);
-                if let Some(log) = self.raw_log.as_mut() {
-                    let abs = out.map_or("null".to_string(), |(a, _)| {
-                        format!("[{:.6},{:.6},{:.6},{:.6}]", a.w, a.x, a.y, a.z)
-                    });
-                    let reset = out.is_some_and(|(_, r)| r);
-                    writeln!(
-                        log,
-                        r#"{{"t":{t:.4},"seq":{seq},"raw":[{:.6},{:.6},{:.6},{:.6}],"abs":{abs},"reset":{reset}}}"#,
-                        raw.w, raw.x, raw.y, raw.z
-                    )?;
-                }
-                let Some((abs, _)) = out else { continue }; // held back: possible re-centre glide
-                return Ok(Some(Event::Pose(abs)));
             }
             let mut buf = [0u8; 1024];
-            match tokio::time::timeout_at(deadline, self.stream.read(&mut buf)).await {
-                Err(_) => return Ok(None),
-                Ok(r) => {
-                    let n = r.context("RFCOMM read")?;
-                    ensure!(n > 0, "earbuds closed the connection");
-                    self.decoder.push(&buf[..n]);
-                }
-            }
+            let Ok(read) = tokio::time::timeout_at(deadline, self.stream.read(&mut buf)).await
+            else {
+                return Ok(None);
+            };
+            let n = read.context("RFCOMM read")?;
+            ensure!(n > 0, "earbuds closed the connection");
+            self.decoder.push(&buf[..n]);
         }
     }
 
@@ -144,5 +162,20 @@ mod tests {
         assert_eq!(worn_from(&f(1, 0)), Some(true)); // right off
         assert_eq!(worn_from(&f(0, 0)), Some(false)); // both off
         assert_eq!(worn_from(&Frame::new(43, 37, &[(3, &[0])])), None);
+    }
+
+    #[test]
+    fn raw_log_line_format() {
+        let q = Quat {
+            w: 1.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        assert_eq!(
+            raw_log_line(1.5, 7, q, Some((q, true))),
+            r#"{"t":1.5000,"seq":7,"raw":[1.000000,0.000000,0.000000,0.000000],"abs":[1.000000,0.000000,0.000000,0.000000],"reset":true}"#
+        );
+        assert!(raw_log_line(1.5, 8, q, None).contains(r#""abs":null,"reset":false"#));
     }
 }

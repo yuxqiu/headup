@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 07:50 UTC
+Last updated: 2026-11-11 08:40 UTC
 
 ## Current state
 - The protocol works.
@@ -28,7 +28,8 @@ Last updated: 2026-11-11 07:50 UTC
    notification is not yet seen live.
 2. Long session (30+ min, `--log`) to measure drift of the rebuilt pitch. Decide whether to add on-demand
    recalibration (signal/keypress) or guarded auto re-baselining.
-0. Needs a live test by the user:
+0. Refactor done (see DECISIONS 'Refactor'); 20 tests pass and `nix flake check` passes. Non-TTY output verified
+   live while the earbuds were disconnected. Needs a live test by the user:
    - Wear pause: take both earbuds off, put them back on, expect recalibration.
    - Disconnect/reconnect: put the earbuds in the case, then take them out.
    - The Home Manager service on their own config.

@@ -128,7 +128,7 @@ impl Rebuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::quat::Quat;
+    use crate::core::quat::{Euler, Quat};
 
     /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples of
     /// each phase, in order.
@@ -175,8 +175,8 @@ mod tests {
             .map(|(name, qs)| {
                 let tail = &qs[qs.len().saturating_sub(60)..];
                 let e: Vec<_> = tail.iter().map(|q| q.euler()).collect();
-                let m = |k: fn(&(f64, f64, f64)) -> f64| median(e.iter().map(k).collect());
-                (name, m(|e| e.1), m(|e| e.2), m(|e| e.0))
+                let m = |k: fn(&Euler) -> f64| median(e.iter().map(k).collect());
+                (name, m(|e| e.pitch), m(|e| e.yaw), m(|e| e.roll))
             })
             .collect()
     }
@@ -284,7 +284,7 @@ mod tests {
                 held_back += 1;
                 continue;
             };
-            let pitch = abs.euler().1;
+            let pitch = abs.euler().pitch;
             if t - phase_start > 2.0 {
                 match phase.as_str() {
                     "down" => assert!(pitch > 45.0, "t={t:.2} down hold emitted pitch {pitch:.1}"),
@@ -323,7 +323,7 @@ mod tests {
             last = rb.push(t, pitch_quat(p)).or(last);
             t += 0.02;
         }
-        let pitch = last.unwrap().0.euler().1;
+        let pitch = last.unwrap().0.euler().pitch;
         assert!(
             (pitch - p).abs() < 0.5,
             "lift to {p:.1} reported as {pitch:.1}"
@@ -353,7 +353,7 @@ mod tests {
             if let Some((abs, _)) = rb.push(t, raw) {
                 // baseline = stream start (upright)
                 cues.extend(
-                    det.update(t, abs.euler().1)
+                    det.update(t, abs.euler().pitch)
                         .into_iter()
                         .map(|c| (c, phase.clone())),
                 );

@@ -3,5 +3,6 @@
 pub mod cues;
 pub mod detector;
 pub mod quat;
+pub mod record;
 pub mod session;
 pub mod tracker;

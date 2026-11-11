@@ -76,3 +76,12 @@
 ## 2026-11-11 07:50 UTC
 - Repo cleanup: removed the obsolete tools/rebuild.py. Moved FreeClip 2–specific docs, tools and test fixtures
   under `freeclip2/` directories and updated all references. `nix flake check` passes.
+
+## 2026-11-11 08:40 UTC
+- Refactor:
+  - `Euler` struct; FreeClip2 frame handlers split.
+  - `AnyTracker` dispatch enum; `Recorder` (TTY-only status line).
+  - Calibration failure retries in-session; Ctrl-C-aware retry waits.
+- Tests 17 → 20 (raw-log format, sign-flipped calibration mean, JSON log format); clippy clean; flake check passes.
+- Live: the non-TTY run printed clean lines with no `\r`. The earbuds were disconnected, so only the waiting path
+  was exercised.

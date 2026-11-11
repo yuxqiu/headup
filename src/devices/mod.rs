@@ -1,9 +1,13 @@
-//! Earbud backends implementing [`crate::core::tracker::HeadTracker`], and how to recognise them.
+//! Earbud backends implementing [`HeadTracker`], how to recognise them, and [`AnyTracker`] so the
+//! rest of the program never names a model. Adding a model: a backend module, a [`Model`] variant
+//! with its name rule, and an [`AnyTracker`] variant with its arms below.
 
 pub mod freeclip2;
 
+use crate::core::tracker::{Event, HeadTracker};
 use anyhow::Result;
 use bluer::Address;
+use std::time::Duration;
 
 /// Earbud models that have a backend.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -56,6 +60,36 @@ pub async fn connected_supported(session: &bluer::Session) -> Result<Vec<Found>>
         }
     }
     Ok(found)
+}
+
+/// A connected backend of any supported model.
+pub enum AnyTracker {
+    FreeClip2(freeclip2::FreeClip2),
+}
+
+impl AnyTracker {
+    /// Connect to `found` and start head tracking. `raw_log` receives backend-specific raw samples.
+    pub async fn connect(found: &Found, raw_log: Option<std::fs::File>) -> Result<Self> {
+        Ok(match found.model {
+            Model::FreeClip2 => {
+                AnyTracker::FreeClip2(freeclip2::FreeClip2::connect(found.address, raw_log).await?)
+            }
+        })
+    }
+}
+
+impl HeadTracker for AnyTracker {
+    async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
+        match self {
+            AnyTracker::FreeClip2(t) => t.next_event(timeout).await,
+        }
+    }
+
+    async fn stop(&mut self) -> Result<()> {
+        match self {
+            AnyTracker::FreeClip2(t) => t.stop().await,
+        }
+    }
 }
 
 #[cfg(test)]

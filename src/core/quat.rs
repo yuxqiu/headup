@@ -2,6 +2,15 @@
 
 use std::ops::Mul;
 
+/// Head orientation as angles in degrees, in the framework convention: pitch > 0 = looking down,
+/// yaw > 0 = turned left, roll > 0 = tilted right.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Euler {
+    pub roll: f64,
+    pub pitch: f64,
+    pub yaw: f64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Quat {
     pub w: f64,
@@ -35,14 +44,17 @@ impl Quat {
         (2.0 * d.acos()).to_degrees()
     }
 
-    /// (roll about x, pitch about y, yaw about z) in degrees, in the framework convention:
-    /// pitch > 0 = looking down, yaw > 0 = turned left, roll > 0 = tilted right.
-    pub fn euler(self) -> (f64, f64, f64) {
+    /// Euler angles (x-y-z: roll, pitch, yaw) in degrees.
+    pub fn euler(self) -> Euler {
         let Quat { w, x, y, z } = self;
         let roll = (2.0 * (w * x + y * z)).atan2(1.0 - 2.0 * (x * x + y * y));
         let pitch = (2.0 * (w * y - z * x)).clamp(-1.0, 1.0).asin();
         let yaw = (2.0 * (w * z + x * y)).atan2(1.0 - 2.0 * (y * y + z * z));
-        (roll.to_degrees(), pitch.to_degrees(), yaw.to_degrees())
+        Euler {
+            roll: roll.to_degrees(),
+            pitch: pitch.to_degrees(),
+            yaw: yaw.to_degrees(),
+        }
     }
 }
 

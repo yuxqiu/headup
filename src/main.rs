@@ -1,8 +1,9 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser;
-use headup::core::{cues::Cues, session, tracker::HeadTracker};
-use headup::devices::{self, Found, Model, freeclip2::FreeClip2};
+use headup::core::{cues::Cues, record::Recorder, session, tracker::HeadTracker};
+use headup::devices::{self, AnyTracker, Found, Model};
 use std::path::{Path, PathBuf};
+use std::pin::Pin;
 use std::time::Duration;
 
 /// Head-posture reminders from earbud head tracking.
@@ -24,6 +25,8 @@ struct Args {
 }
 
 const RETRY: Duration = Duration::from_secs(5);
+
+type CtrlC = Pin<Box<dyn Future<Output = std::io::Result<()>>>>;
 
 fn open_append(p: &Path) -> Result<std::fs::File> {
     if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -51,16 +54,23 @@ async fn find(bt: &bluer::Session, want: Option<bluer::Address>) -> Result<Optio
     Ok(found.into_iter().find(|f| f.address == addr))
 }
 
+/// Sleep for `d`; `true` if Ctrl-C arrived instead.
+async fn sleep_or_ctrl_c(d: Duration, ctrl_c: &mut CtrlC) -> Result<bool> {
+    tokio::select! {
+        _ = tokio::time::sleep(d) => Ok(false),
+        r = ctrl_c => { r?; Ok(true) }
+    }
+}
+
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<()> {
     let args = Args::parse();
     let cues = Cues::new()?;
-    let mut log = args.log.as_deref().map(open_append).transpose()?;
+    let mut rec = Recorder::new(args.log.as_deref().map(open_append).transpose()?);
     let bt = bluer::Session::new()
         .await
         .context("connect to BlueZ over D-Bus")?;
-    let ctrl_c = tokio::signal::ctrl_c();
-    tokio::pin!(ctrl_c);
+    let mut ctrl_c: CtrlC = Box::pin(tokio::signal::ctrl_c());
 
     let mut waiting_noted = false;
     loop {
@@ -70,47 +80,52 @@ async fn main() -> Result<()> {
         };
         let Some(found) = found else {
             if !waiting_noted {
-                println!("waiting for supported earbuds to connect…");
+                rec.note("waiting for supported earbuds to connect…");
                 waiting_noted = true;
             }
-            tokio::select! {
-                _ = tokio::time::sleep(RETRY) => continue,
-                r = &mut ctrl_c => { r?; return Ok(()); }
+            if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+                return Ok(());
             }
+            continue;
         };
         waiting_noted = false;
-        println!("using {} ({})", found.name, found.address);
+        rec.note(&format!("using {} ({})", found.name, found.address));
+
         let raw_log = args.raw_log.as_deref().map(open_append).transpose()?;
-        let connected = match found.model {
-            Model::FreeClip2 => FreeClip2::connect(found.address, raw_log).await,
-        };
-        let mut tracker = match connected {
+        let mut tracker = match AnyTracker::connect(&found, raw_log).await {
             Ok(t) => t,
             Err(e) => {
-                eprintln!("connecting failed: {e:#}; retrying in {}s", RETRY.as_secs());
-                tokio::time::sleep(RETRY).await;
+                rec.warn(&format!(
+                    "connecting failed: {e:#}; retrying in {}s",
+                    RETRY.as_secs()
+                ));
+                if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+                    return Ok(());
+                }
                 continue;
             }
         };
-        let result = tokio::select! {
-            r = session::run(&mut tracker, &cues, &mut log) => r,
+        let ended = tokio::select! {
+            r = session::run(&mut tracker, &cues, &mut rec) => r,
             r = &mut ctrl_c => {
                 r?;
-                println!("\nstopping");
+                rec.note("stopping");
                 return tracker.stop().await;
             }
         };
-        if let Err(e) = result {
-            eprintln!(
-                "\nsession ended: {e:#}; reconnecting in {}s",
+        if let Err(e) = ended {
+            rec.warn(&format!(
+                "session ended: {e:#}; reconnecting in {}s",
                 RETRY.as_secs()
-            );
+            ));
         }
         // Usually fails because the link is gone; it matters only if the link is still up.
         if let Err(e) = tracker.stop().await {
-            eprintln!("could not stop the stream: {e:#}");
+            rec.warn(&format!("could not stop the stream: {e:#}"));
         }
         drop(tracker);
-        tokio::time::sleep(RETRY).await;
+        if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+            return Ok(());
+        }
     }
 }
