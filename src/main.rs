@@ -59,6 +59,12 @@ async fn check_supported(bt: &bluer::Session, addr: bluer::Address) -> Result<()
     Ok(())
 }
 
+/// Warn, then wait RETRY before the next attempt; `true` if Ctrl-C arrived instead.
+async fn retry_later(rec: &mut Recorder, what: &str, ctrl_c: &mut CtrlC) -> Result<bool> {
+    rec.warn(&format!("{what}; retrying in {}s", RETRY.as_secs()));
+    sleep_or_ctrl_c(RETRY, ctrl_c).await
+}
+
 /// Sleep for `d`; `true` if Ctrl-C arrived instead.
 async fn sleep_or_ctrl_c(d: Duration, ctrl_c: &mut CtrlC) -> Result<bool> {
     tokio::select! {
@@ -89,11 +95,8 @@ async fn main() -> Result<()> {
         let found = match found {
             Ok(found) => found,
             Err(e) => {
-                rec.warn(&format!(
-                    "looking for earbuds failed: {e:#}; retrying in {}s",
-                    RETRY.as_secs()
-                ));
-                if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+                let what = format!("looking for earbuds failed: {e:#}");
+                if retry_later(&mut rec, &what, &mut ctrl_c).await? {
                     return Ok(());
                 }
                 continue;
@@ -116,11 +119,7 @@ async fn main() -> Result<()> {
         let mut tracker = match AnyTracker::connect(&found, raw_log).await {
             Ok(t) => t,
             Err(e) => {
-                rec.warn(&format!(
-                    "connecting failed: {e:#}; retrying in {}s",
-                    RETRY.as_secs()
-                ));
-                if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+                if retry_later(&mut rec, &format!("connecting failed: {e:#}"), &mut ctrl_c).await? {
                     return Ok(());
                 }
                 continue;
@@ -134,18 +133,16 @@ async fn main() -> Result<()> {
                 return tracker.stop().await;
             }
         };
-        if let Err(e) = ended {
-            rec.warn(&format!(
-                "session ended: {e:#}; reconnecting in {}s",
-                RETRY.as_secs()
-            ));
-        }
         // Usually fails because the link is gone; it matters only if the link is still up.
         if let Err(e) = tracker.stop().await {
             rec.warn(&format!("could not stop the stream: {e:#}"));
         }
         drop(tracker);
-        if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+        let what = match ended {
+            Err(e) => format!("session ended: {e:#}"),
+            Ok(()) => "session ended".to_string(),
+        };
+        if retry_later(&mut rec, &what, &mut ctrl_c).await? {
             return Ok(());
         }
     }

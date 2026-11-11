@@ -3,10 +3,47 @@
 //! The live status line (`\r`-updated) is shown only when stdout is a terminal; under systemd the
 //! journal gets one clean line per message instead.
 
+use super::detector::Cue;
 use super::quat::Euler;
 use anyhow::Result;
 use std::fs::File;
 use std::io::{IsTerminal, Write};
+
+/// Everything that appears as `{"t":…,"event":"<name>"}` in the log.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LogEvent {
+    /// Earbuds taken off (FreeClip 2: either one): monitoring paused.
+    Paused,
+    /// Earbuds worn again: monitoring resumes after recalibration.
+    Resumed,
+    /// The head kept moving on every calibration attempt; headup asks again later.
+    CalibrationFailed,
+    /// The device can deliver head tracking (FreeClip 2: this computer started streaming audio).
+    TrackingAvailable,
+    /// The device stopped being able to deliver head tracking.
+    TrackingUnavailable,
+    /// Unavailable for long enough that the posture reference is dropped; recalibrates on resume.
+    TrackingLost,
+    /// A reminder cue was played.
+    Cue(Cue),
+}
+
+impl LogEvent {
+    pub fn name(self) -> &'static str {
+        match self {
+            LogEvent::Paused => "Paused",
+            LogEvent::Resumed => "Resumed",
+            LogEvent::CalibrationFailed => "CalibrationFailed",
+            LogEvent::TrackingAvailable => "TrackingAvailable",
+            LogEvent::TrackingUnavailable => "TrackingUnavailable",
+            LogEvent::TrackingLost => "TrackingLost",
+            LogEvent::Cue(Cue::Tone) => "Tone",
+            LogEvent::Cue(Cue::Speak) => "Speak",
+            LogEvent::Cue(Cue::Notify) => "Notify",
+            LogEvent::Cue(Cue::Recovered) => "Recovered",
+        }
+    }
+}
 
 pub struct Recorder {
     log: Option<File>,
@@ -44,8 +81,9 @@ impl Recorder {
         eprintln!("{msg}");
     }
 
-    /// A session event (cue, pause, ...) at time `t`: shown and logged.
-    pub fn event(&mut self, t: f64, name: &str) -> Result<()> {
+    /// A session event at time `t`: shown and logged.
+    pub fn event(&mut self, t: f64, event: LogEvent) -> Result<()> {
+        let name = event.name();
         self.note(&format!("{t:8.1}s  {name}"));
         if let Some(f) = self.log.as_mut() {
             writeln!(f, r#"{{"t":{t:.3},"event":"{name}"}}"#)?;
@@ -97,7 +135,7 @@ mod tests {
             },
         )
         .unwrap();
-        rec.event(2.0, "Tone").unwrap();
+        rec.event(2.0, LogEvent::Cue(Cue::Tone)).unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert_eq!(

@@ -127,3 +127,10 @@
   rule with `Event::Available` (43/54 streaming bit for this adapter's address).
 - Fixed a crash on BLE devices vanishing during lookup (skip, retry); the unsupported-address check is now
   startup-only. 28 tests pass.
+
+## 2026-11-11 13:40 UTC
+- Second refactor (DECISIONS "Second refactor"):
+  - Fixed the TrackingLost loop bug.
+  - CueSink trait; scripted session tests on a paused tokio clock (6 scenarios).
+  - LogEvent enum; one session clock; FreeClip2 impl merge; `retry_later`.
+- 34 tests pass, clippy clean, `nix flake check` passes. Live: the waiting message shows correctly.

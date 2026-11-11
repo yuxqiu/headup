@@ -54,6 +54,15 @@ impl Phrase {
 /// spoken prompts was cut off without this.
 const LEAD_IN_S: f64 = 1.0;
 
+/// Where the session sends reminders and prompts. [`Cues`] plays them; tests record them.
+#[allow(async_fn_in_trait)] // used through generics only
+pub trait CueSink {
+    /// Start a reminder cue without waiting for it to finish.
+    fn play(&self, cue: Cue);
+    /// Speak a prompt and wait until it has been played.
+    async fn say(&self, p: Phrase) -> Result<()>;
+}
+
 pub struct Cues {
     dir: PathBuf,
     tone: PathBuf,
@@ -85,7 +94,13 @@ impl Cues {
         Ok(Cues { dir, tone, tink })
     }
 
-    pub fn play(&self, cue: Cue) {
+    fn phrase_path(&self, p: Phrase) -> PathBuf {
+        self.dir.join(p.file_name())
+    }
+}
+
+impl CueSink for Cues {
+    fn play(&self, cue: Cue) {
         match cue {
             Cue::Tone => spawn("pw-play", &[path_str(&self.tone)]),
             Cue::Recovered => spawn("pw-play", &[path_str(&self.tink)]),
@@ -102,12 +117,7 @@ impl Cues {
         }
     }
 
-    fn phrase_path(&self, p: Phrase) -> PathBuf {
-        self.dir.join(p.file_name())
-    }
-
-    /// Speak a prompt and wait until it has been played.
-    pub async fn say(&self, p: Phrase) -> Result<()> {
+    async fn say(&self, p: Phrase) -> Result<()> {
         let st = Command::new("pw-play")
             .arg(self.phrase_path(p))
             .status()

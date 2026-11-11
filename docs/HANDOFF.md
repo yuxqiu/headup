@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 12:50 UTC
+Last updated: 2026-11-11 13:40 UTC
 
 ## Current state
 - The protocol works.
@@ -14,8 +14,8 @@ Last updated: 2026-11-11 12:50 UTC
     - `src/devices/freeclip2/`: mbb framing, rebuild, and the backend with `--raw-log`.
   - `src/core/` also has `record.rs` (console/log output) and `wav.rs` (WAV + 1 s lead-in); `src/devices/mod.rs` has
     the model registry and the `AnyTracker` dispatch.
-  - 27 tests pass, including replays of real recordings (guided axes, long holds, stream restart) and end-to-end
-    cue tests.
+  - 34 tests pass, including replays of real recordings (guided axes, long holds, stream restart), end-to-end
+    cue tests, and scripted session tests on a paused clock (core/session.rs).
   - The design was approved by the user (docs/UX_RESEARCH.md); the parameters are in docs/DECISIONS.md.
 - Git: the user makes all commits; changes since their last commit are staged. `data/` and `research/` are
   gitignored; test recordings are in `tests/fixtures/freeclip2/`.

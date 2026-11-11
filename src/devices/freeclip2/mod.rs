@@ -1,6 +1,10 @@
-//! HUAWEI FreeClip 2 backend: MBB over RFCOMM channel 1. 43/88 switches the spatial-audio pose
-//! stream on/off; 43/89 carries relative quaternions that re-centre themselves; 43/37 reports
-//! per-earbud wear state, pushed on change and answered when queried (docs/devices/freeclip2/FINDINGS.md).
+//! HUAWEI FreeClip 2 backend: MBB over RFCOMM channel 1 (docs/devices/freeclip2/FINDINGS.md).
+//!
+//! - 43/88 switches the spatial-audio pose stream on/off; 43/89 carries relative quaternions that
+//!   re-centre themselves and restart with each new stream ([`rebuild`] makes them continuous).
+//! - 43/37 reports per-earbud wear state, pushed on change and answered when queried.
+//! - 43/54 reports each connected source device's audio state; head tracking only flows while
+//!   this computer is streaming audio, which becomes [`Event::Available`].
 
 mod mbb;
 mod rebuild;
@@ -91,9 +95,7 @@ impl FreeClip2 {
             .await
             .context("RFCOMM write")
     }
-}
 
-impl FreeClip2 {
     /// Handle one frame from the earbuds; `None` if it produces no event.
     async fn handle(&mut self, f: Frame) -> Result<Option<Event>> {
         if (f.svc, f.cmd) != (SVC, CMD_STREAM_DATA)

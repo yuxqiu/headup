@@ -120,3 +120,17 @@
 - `connected_supported` skips devices that vanish while being queried (BlueZ drops nearby BLE devices at any
   time; this caused "target object was either not present or removed" and a crash). `main` logs and retries a
   failed lookup. An explicitly given but unsupported address is rejected once at startup.
+
+## 2026-11-11: Second refactor (user approved)
+- Fixed: a pose now clears "unavailable" (`Session::next`). Before, tracking that resumed without an
+  `Available(true)` push would trigger `TrackingLost` again on the first quiet second, looping forever. The test
+  `poses_end_unavailability_without_announcement` fails without the fix.
+- `core::cues::CueSink` trait (`play`, `say`), implemented by `Cues`. The session is generic over it so tests can
+  record cues instead of playing them.
+- The session uses `tokio::time::Instant`, so scripted session tests run on tokio's paused clock (dev-dependency
+  `tokio/test-util`). They cover: cues while the head is still; wear pause and recalibration; short vs long
+  unavailability; resume without an announcement; failed calibration and retry.
+- `core::record::LogEvent` defines all `"event"` names in the JSON log (strings unchanged).
+- One clock in the session (seconds since start); `CALIBRATION_RETRY_S`.
+- FreeClip 2 backend: one `impl` block; the module comment covers 43/88, 43/89, 43/37, 43/54.
+- `main`: one `retry_later` helper instead of three copies.
