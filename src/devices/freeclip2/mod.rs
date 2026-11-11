@@ -6,7 +6,7 @@
 //!   stops when either earbud is off, so [`Event::Worn`] means both are worn.
 //! - 43/54 reports each connected source device's audio state; head tracking only flows while
 //!   this computer is streaming audio, which becomes [`Event::Available`].
-//! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts`]).
+//! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts_up`]).
 
 mod mbb;
 mod rebuild;
@@ -17,6 +17,7 @@ use anyhow::{Context, Result, bail, ensure};
 use bluer::rfcomm::{SocketAddr, Stream};
 use mbb::{Decoder, Frame};
 use rebuild::{Rebuilder, decode_sample};
+use std::collections::VecDeque;
 use std::io::Write;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -62,11 +63,23 @@ pub struct FreeClip2 {
     /// This computer's adapter address, to pick its entry out of 43/54 pushes.
     adapter: bluer::Address,
     streaming: Option<bool>,
+    /// Orientations released by `rebuild`, not yet returned as events.
+    poses: VecDeque<Quat>,
 }
 
 impl FreeClip2 {
+    pub const TRAITS: TrackerTraits = TrackerTraits {
+        // Head tracking is only sent while this computer streams audio to the earbuds (FINDINGS).
+        tracking_hint: Some(
+            "play audio on this computer; FreeClip 2 only tracks your head while it is playing",
+        ),
+        // Each re-centre lands ~10° off, always towards "looking up", so the rebuilt pose drifts
+        // over a session (FINDINGS "Ground truth").
+        pose_drifts_up: true,
+    };
+
     /// Connect, query wear state and start the pose stream. `raw_log` receives every raw sample as
-    /// a JSON line (seq, quaternion as sent, rebuilt quaternion, whether it was a device re-centre).
+    /// a JSON line (time, seq, quaternion as sent) and every other frame.
     pub async fn connect(
         addr: bluer::Address,
         adapter: bluer::Address,
@@ -84,6 +97,7 @@ impl FreeClip2 {
             worn: None,
             adapter,
             streaming: None,
+            poses: VecDeque::new(),
         };
         dev.send(Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])]))
             .await?;
@@ -130,6 +144,7 @@ impl FreeClip2 {
         if worn && was == Some(false) {
             // Back on the ear: start a fresh orientation frame.
             self.rebuild = Rebuilder::default();
+            self.poses.clear();
             self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
                 .await?;
         }
@@ -144,30 +159,31 @@ impl FreeClip2 {
         Some(Event::Available(streaming))
     }
 
+    /// Queue the orientations a raw sample releases (none while samples wait out the delay).
     fn on_pose_sample(&mut self, f: &Frame) -> Result<Option<Event>> {
         let (Some(s), Some(q)) = (f.tlv(1), f.tlv(2)) else {
             bail!("malformed 43/89: {f:?}")
         };
         let (seq, raw) = decode_sample(s, q).with_context(|| format!("malformed 43/89: {f:?}"))?;
-        let t = self.start.elapsed().as_secs_f64();
-        let out = self.rebuild.push(t, seq, raw);
+        let t = self.elapsed();
         if let Some(log) = self.raw_log.as_mut() {
-            writeln!(log, "{}", raw_log_line(t, seq, raw, out))?;
+            writeln!(log, "{}", raw_log_line(t, seq, raw))?;
         }
-        // `None` while a sample is held back as a possible re-centre glide.
-        Ok(out.map(|(abs, _)| Event::Pose(abs)))
+        let released = self.rebuild.push(t, seq, raw);
+        self.poses.extend(released.into_iter().map(|(_, abs)| abs));
+        Ok(None)
+    }
+
+    fn elapsed(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
     }
 }
 
-/// One JSON line for `--raw-log`: the sample as sent, the rebuilt orientation (null while held
-/// back) and whether it was a device re-centre.
-fn raw_log_line(t: f64, seq: u32, raw: Quat, out: Option<(Quat, bool)>) -> String {
-    let q = |q: Quat| format!("[{:.6},{:.6},{:.6},{:.6}]", q.w, q.x, q.y, q.z);
-    let abs = out.map_or("null".to_string(), |(a, _)| q(a));
-    let reset = out.is_some_and(|(_, r)| r);
+/// One JSON line for `--raw-log`: the sample as sent.
+fn raw_log_line(t: f64, seq: u32, raw: Quat) -> String {
     format!(
-        r#"{{"t":{t:.4},"seq":{seq},"raw":{},"abs":{abs},"reset":{reset}}}"#,
-        q(raw)
+        r#"{{"t":{t:.4},"seq":{seq},"raw":[{:.6},{:.6},{:.6},{:.6}]}}"#,
+        raw.w, raw.x, raw.y, raw.z
     )
 }
 
@@ -196,19 +212,37 @@ impl HeadTracker for FreeClip2 {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
-            while let Some(f) = self.decoder.next_frame()? {
+            if let Some(q) = self.poses.pop_front() {
+                return Ok(Some(Event::Pose(q)));
+            }
+            if let Some(f) = self.decoder.next_frame()? {
                 if let Some(event) = self.handle(f).await? {
                     return Ok(Some(event));
                 }
+                continue;
             }
+            // Wake for whichever comes first: the caller's deadline or the next held sample.
+            let release = self
+                .rebuild
+                .next_release()
+                .map(|t| tokio::time::Instant::from_std(self.start) + Duration::from_secs_f64(t));
+            let wake = release.map_or(deadline, |r| r.min(deadline));
             let mut buf = [0u8; 1024];
-            let Ok(read) = tokio::time::timeout_at(deadline, self.stream.read(&mut buf)).await
-            else {
-                return Ok(None);
-            };
-            let n = read.context("RFCOMM read")?;
-            ensure!(n > 0, "earbuds closed the connection");
-            self.decoder.push(&buf[..n]);
+            match tokio::time::timeout_at(wake, self.stream.read(&mut buf)).await {
+                Ok(read) => {
+                    let n = read.context("RFCOMM read")?;
+                    ensure!(n > 0, "earbuds closed the connection");
+                    self.decoder.push(&buf[..n]);
+                }
+                Err(_) => {
+                    let now = self.elapsed();
+                    let released = self.rebuild.release(now);
+                    self.poses.extend(released.into_iter().map(|(_, abs)| abs));
+                    if self.poses.is_empty() && tokio::time::Instant::now() >= deadline {
+                        return Ok(None);
+                    }
+                }
+            }
         }
     }
 
@@ -218,15 +252,7 @@ impl HeadTracker for FreeClip2 {
     }
 
     fn traits(&self) -> TrackerTraits {
-        TrackerTraits {
-            // Head tracking is only sent while this computer streams audio to the earbuds (FINDINGS).
-            tracking_hint: Some(
-                "play audio on this computer; FreeClip 2 only tracks your head while it is playing",
-            ),
-            // Each re-centre lands ~10° off, always towards "looking up", so the rebuilt pose drifts
-            // over a session (FINDINGS "Ground truth").
-            pose_drifts: true,
-        }
+        Self::TRAITS
     }
 }
 
@@ -255,10 +281,9 @@ mod tests {
             z: 0.0,
         };
         assert_eq!(
-            raw_log_line(1.5, 7, q, Some((q, true))),
-            r#"{"t":1.5000,"seq":7,"raw":[1.000000,0.000000,0.000000,0.000000],"abs":[1.000000,0.000000,0.000000,0.000000],"reset":true}"#
+            raw_log_line(1.5, 7, q),
+            r#"{"t":1.5000,"seq":7,"raw":[1.000000,0.000000,0.000000,0.000000]}"#
         );
-        assert!(raw_log_line(1.5, 8, q, None).contains(r#""abs":null,"reset":false"#));
     }
 
     #[test]

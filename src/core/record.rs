@@ -24,8 +24,9 @@ pub enum LogEvent {
     TrackingUnavailable,
     /// Unavailable for long enough that the posture reference is dropped; recalibrates on resume.
     TrackingLost,
-    /// Upright was re-anchored after a recovery (the head settled above the old upright).
-    Rebaselined,
+    /// Upright was re-anchored after a recovery to this pitch (relative to calibration), because the
+    /// head settled above the old upright.
+    Reanchored { upright: f64 },
     /// A reminder cue was played.
     Cue(Cue),
 }
@@ -39,7 +40,7 @@ impl LogEvent {
             LogEvent::TrackingAvailable => "TrackingAvailable",
             LogEvent::TrackingUnavailable => "TrackingUnavailable",
             LogEvent::TrackingLost => "TrackingLost",
-            LogEvent::Rebaselined => "Rebaselined",
+            LogEvent::Reanchored { .. } => "Reanchored",
             LogEvent::Cue(Cue::Tone) => "Tone",
             LogEvent::Cue(Cue::Speak) => "Speak",
             LogEvent::Cue(Cue::Notify) => "Notify",
@@ -87,9 +88,16 @@ impl Recorder {
     /// A session event at time `t`: shown and logged.
     pub fn event(&mut self, t: f64, event: LogEvent) -> Result<()> {
         let name = event.name();
-        self.note(&format!("{t:8.1}s  {name}"));
+        let (shown, logged) = match event {
+            LogEvent::Reanchored { upright } => (
+                format!(" (upright {upright:.1}°)"),
+                format!(r#","upright":{upright:.2}"#),
+            ),
+            _ => (String::new(), String::new()),
+        };
+        self.note(&format!("{t:8.1}s  {name}{shown}"));
         if let Some(f) = self.log.as_mut() {
-            writeln!(f, r#"{{"t":{t:.3},"event":"{name}"}}"#)?;
+            writeln!(f, r#"{{"t":{t:.3},"event":"{name}"{logged}}}"#)?;
         }
         Ok(())
     }

@@ -1,6 +1,5 @@
-//! Audio and desktop cues. Sounds are played with `pw-play`, each after a silent lead-in (see
-//! `LEAD_IN_S`): generated tones, and spoken prompts pre-recorded with Piper's "alba" voice and
-//! embedded in the binary (assets/voice/, regenerate with tools/gen_voice.sh). Notifications use
+//! Audio and desktop cues. Sounds are played with `pw-play`: generated tones, and spoken prompts
+//! pre-recorded with Piper's "alba" voice and embedded in the binary (assets/voice/, regenerate with tools/gen_voice.sh). Notifications use
 //! `notify-send`.
 
 use super::detector::Cue;
@@ -49,11 +48,6 @@ impl Phrase {
     }
 }
 
-/// Silence before every sound. PipeWire suspends an idle Bluetooth output and waking it takes
-/// roughly a second, during which audio is lost: short tones vanished entirely and the start of
-/// spoken prompts was cut off without this.
-const LEAD_IN_S: f64 = 1.0;
-
 /// Where the session sends reminders and prompts. [`Cues`] plays them; tests record them.
 #[allow(async_fn_in_trait)] // used through generics only
 pub trait CueSink {
@@ -83,7 +77,7 @@ impl Cues {
         std::fs::create_dir_all(&dir)?;
         let write = |name: &str, pcm: Pcm| -> Result<PathBuf> {
             let path = dir.join(name);
-            std::fs::write(&path, pcm.with_lead_in(LEAD_IN_S).encode())?;
+            std::fs::write(&path, pcm.encode())?;
             Ok(path)
         };
         let tone = write("tone.wav", Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)]))?;

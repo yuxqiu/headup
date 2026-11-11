@@ -11,8 +11,8 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
 - The flake only sees git-tracked files, so `git add` new files before `nix build`.
 
 - Probe an MBB command: `python3 -I tools/freeclip2/probe.py C0:DA:5E:F1:A0:A6 '43/90:1='`
-- Troubleshoot a device backend: `headup --raw-log FILE` appends every raw sample (seq, raw and rebuilt quaternion,
-  whether it was re-centred or held back as a glide) as JSON lines.
+- Troubleshoot a device backend: `headup --raw-log FILE` appends every raw sample (time, seq, quaternion as sent)
+  and every other frame as JSON lines. Rebuilt orientations are in `--log` (pitch/yaw/roll).
 - Stream head pose: `python3 -I tools/freeclip2/headpose.py C0:DA:5E:F1:A0:A6 SECONDS [data/out.csv]`
 - Guided axis/drift test (spoken prompts through the buds, ~4 min; run in `nix develop`):
   `python3 -I tools/freeclip2/guided.py C0:DA:5E:F1:A0:A6 tests/fixtures/freeclip2/headpose_axes.csv`

@@ -1,4 +1,4 @@
-//! Minimal mono 16-bit PCM WAV: parse, encode, generate tones, and prepend silence.
+//! Minimal mono 16-bit PCM WAV: parse, encode, and generate tones.
 
 use anyhow::{Result, bail, ensure};
 
@@ -27,13 +27,6 @@ impl Pcm {
             rate: RATE,
             samples,
         }
-    }
-
-    /// The same sound preceded by `secs` of silence.
-    pub fn with_lead_in(mut self, secs: f64) -> Pcm {
-        let n = (secs * self.rate as f64) as usize;
-        self.samples.splice(0..0, std::iter::repeat_n(0, n));
-        self
     }
 
     /// Parse a RIFF/WAVE file; only mono 16-bit PCM is accepted.
@@ -105,16 +98,6 @@ mod tests {
     fn encode_parse_round_trip() {
         let pcm = Pcm::tones(&[(440.0, 0.05)]);
         assert_eq!(Pcm::parse(&pcm.encode()).unwrap(), pcm);
-    }
-
-    #[test]
-    fn lead_in_prepends_silence() {
-        let pcm = Pcm {
-            rate: 1000,
-            samples: vec![5, 6],
-        }
-        .with_lead_in(0.003);
-        assert_eq!(pcm.samples, [0, 0, 0, 5, 6]);
     }
 
     #[test]

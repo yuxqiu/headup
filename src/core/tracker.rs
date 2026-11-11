@@ -45,7 +45,8 @@ pub struct TrackerTraits {
     /// What the user can do when no head tracking arrives, e.g. a device precondition. Shown in
     /// "waiting for head tracking" messages.
     pub tracking_hint: Option<&'static str>,
-    /// The reported orientation accumulates error over a session, so returning to the same pose
-    /// can read differently later. The session then re-anchors upright after each recovery.
-    pub pose_drifts: bool,
+    /// The reported orientation accumulates error towards "looking up" over a session, so the same
+    /// pose reads higher later. The session then re-anchors upright after each recovery. (Drift
+    /// the other way is not corrected; it would need a different rule.)
+    pub pose_drifts_up: bool,
 }

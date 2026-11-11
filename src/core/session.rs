@@ -237,10 +237,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
 
     /// Monitor until the earbuds are taken off or head tracking is lost.
     async fn monitor(&mut self, baseline: Quat) -> Result<MonitorEnd> {
-        let mut det = Detector::new(Config {
-            reanchor_after_recovery: self.tracker.traits().pose_drifts,
-            ..Config::default()
-        });
+        let mut det = Detector::new(Config::for_traits(self.tracker.traits()));
         let mut last_status = f64::NEG_INFINITY;
         loop {
             let step = self.next(POLL).await?;
@@ -252,12 +249,11 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 Step::Pose(q) => {
                     let angles = (baseline.conj() * q).euler();
                     self.rec.pose(t, angles)?;
-                    let upright = det.upright();
-                    let cues = det.update(t, angles.pitch);
-                    if det.upright() != upright {
-                        self.rec.event(t, LogEvent::Rebaselined)?;
+                    let update = det.update(t, angles.pitch);
+                    if let Some(upright) = update.reanchored {
+                        self.rec.event(t, LogEvent::Reanchored { upright })?;
                     }
-                    cues
+                    update.cues
                 }
             };
             for cue in cues {
@@ -406,7 +402,7 @@ mod tests {
 
         fn traits(&self) -> TrackerTraits {
             TrackerTraits {
-                pose_drifts: self.drifts,
+                pose_drifts_up: self.drifts,
                 ..TrackerTraits::default()
             }
         }
@@ -453,7 +449,7 @@ mod tests {
         let events = log
             .lines()
             .filter_map(|l| l.split(r#""event":""#).nth(1))
-            .map(|rest| rest.trim_end_matches(&['"', '}'][..]).to_string())
+            .map(|rest| rest.split('"').next().unwrap_or_default().to_string())
             .collect();
         (cues.0.into_inner(), events)
     }
@@ -465,7 +461,7 @@ mod tests {
     async fn reanchors_only_for_drifting_trackers() {
         let script = || vec![Poses(0.0, 4.0), Poses(40.0, 15.0), Poses(-10.0, 3.0)];
         let (_, events) = run_script_with("drift", script(), true).await;
-        assert_eq!(events, ["Tone", "Recovered", "Rebaselined"]);
+        assert_eq!(events, ["Tone", "Recovered", "Reanchored"]);
         let (_, events) = run_script_with("nodrift", script(), false).await;
         assert_eq!(events, ["Tone", "Recovered"]);
     }

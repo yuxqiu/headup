@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 21:30 UTC
+Last updated: 2026-11-11 22:45 UTC
 
 ## Current state
 - The protocol works.
@@ -12,7 +12,7 @@ Last updated: 2026-11-11 21:30 UTC
   - Modular layout:
     - `src/core/`: quat, the `HeadTracker` trait, detector, session (calibration + monitor), cues.
     - `src/devices/freeclip2/`: mbb framing, rebuild, and the backend with `--raw-log`.
-  - `src/core/` also has `record.rs` (console/log output) and `wav.rs` (WAV + 1 s lead-in); `src/devices/mod.rs` has
+  - `src/core/` also has `record.rs` (console/log output) and `wav.rs` (WAV parse, encode, tones); `src/devices/mod.rs` has
     the model registry and the `AnyTracker` dispatch.
   - 34 tests pass, including replays of real recordings (guided axes, long holds, stream restart), end-to-end
     cue tests, and scripted session tests on a paused clock (core/session.rs).
@@ -28,7 +28,10 @@ Last updated: 2026-11-11 21:30 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
-- Uncommitted (staged fixtures): re-anchor upright after each recovery, enabled via `TrackerTraits::pose_drifts`
+- Buffered glide handling and no sound lead-in: 41 tests pass; live-verified (data/session8*.jsonl): 3/3 slouches
+  cued ~12 s in, one re-anchor (`upright` -8.53), 9 re-centres absorbed; calibration prompt complete without the
+  lead-in (user). User is committing; then release v0.1.1 (bump Cargo.toml, signed tag, `gh release create`).
+- Uncommitted (staged fixtures): re-anchor upright after each recovery, enabled via `TrackerTraits::pose_drifts_up`
   (DECISIONS "Re-anchor upright"); detector state enum; `traits()`. 42 tests pass. Live-verified
   (data/session7*.jsonl): 6/6 slouches cued, corrected slouches 38–63°, upright −1…+5°, 5 re-anchors matching the
   offline replay, none on a plain ceiling look. Waiting-message hint: user to confirm. Next: commit, rebuild the
@@ -53,7 +56,7 @@ Last updated: 2026-11-11 21:30 UTC
    and the daily score were dropped by the user.
 
 Confirmed live so far:
-- Calibration with the alba voice; the full first prompt is heard after the 1 s lead-in.
+- Calibration with the alba voice; the full first prompt is heard (the 1 s lead-in was later removed: cues only play while audio is already streaming).
 - Tone, speech and recovery cues, including warnings after a first recovery (stream-restart fix).
 - Glide suppression; auto-detect of the FreeClip 2; clean non-TTY output.
 

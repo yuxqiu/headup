@@ -4,10 +4,13 @@
 //! Trackers may stop sending while the head is still, so silence means "unchanged": the caller
 //! must also call `tick` periodically and timers keep running on the last smoothed value.
 //!
-//! With `reanchor_after_recovery` (for trackers whose pose drifts), upright is re-anchored after
-//! each recovery: the first time the head holds still after sitting back up, a pitch above upright
-//! (< 0) becomes the new upright. People sit back up to their upright, not beyond it, so a reading
-//! above it after a recovery is accumulated tracker error.
+//! With `reanchor_after_recovery` (for trackers whose pose drifts towards "looking up"), upright is
+//! re-anchored after each recovery: the first time the head holds still after sitting back up, a
+//! pitch above upright (< 0) becomes the new upright. People sit back up to their upright, not
+//! beyond it, so a reading above it after a recovery is accumulated tracker error. Drift the other
+//! way is not corrected.
+
+use super::tracker::TrackerTraits;
 
 use std::collections::VecDeque;
 
@@ -34,6 +37,24 @@ pub struct Config {
     pub renudge_s: f64,
     /// Re-anchor upright after each recovery (see the module docs).
     pub reanchor_after_recovery: bool,
+}
+
+impl Config {
+    /// The defaults, adjusted for what the tracker declares about itself.
+    pub fn for_traits(traits: TrackerTraits) -> Self {
+        Config {
+            reanchor_after_recovery: traits.pose_drifts_up,
+            ..Config::default()
+        }
+    }
+}
+
+/// What one pose sample produced.
+#[derive(Debug, Default, PartialEq)]
+pub struct Update {
+    pub cues: Vec<Cue>,
+    /// Upright was re-anchored to this pitch (relative to calibration).
+    pub reanchored: Option<f64>,
 }
 
 impl Default for Config {
@@ -130,27 +151,33 @@ impl Detector {
     }
 
     /// After a recovery, wait for the head to settle; if it settles above upright, move upright
-    /// there (once). Returns `pitch` relative to the (possibly new) upright.
-    fn reanchor(&mut self, t: f64, pitch: f64) -> f64 {
+    /// there (once) and return the new upright.
+    fn reanchor(&mut self, t: f64, pitch: f64) -> Option<f64> {
         let p = pitch - self.upright;
         let Posture::Upright(Some(settling)) = &mut self.posture else {
-            return p;
+            return None;
         };
         if !settling.settled(t, p) {
-            return p;
+            return None;
         }
         self.posture = Posture::Upright(None);
         if p >= 0.0 {
-            return p;
+            return None;
         }
         self.upright += p;
         self.smoothed = self.smoothed.map(|s| s - p);
-        0.0
+        Some(self.upright)
     }
 
     /// New pitch sample at time `t` (seconds), relative to the calibrated upright pose.
-    pub fn update(&mut self, t: f64, pitch: f64) -> Vec<Cue> {
-        let pitch = self.reanchor(t, pitch);
+    pub fn update(&mut self, t: f64, pitch: f64) -> Update {
+        let reanchored = self.reanchor(t, pitch);
+        let cues = self.classify(t, pitch - self.upright);
+        Update { cues, reanchored }
+    }
+
+    /// Smooth `pitch` (relative to upright) and step the posture state machine.
+    fn classify(&mut self, t: f64, pitch: f64) -> Vec<Cue> {
         let a = self.cfg.ema_alpha;
         let s = self.smoothed.map_or(pitch, |s| s + a * (pitch - s));
         self.smoothed = Some(s);
@@ -190,16 +217,13 @@ impl Detector {
             ep.toned = true;
             out.push(Cue::Tone);
         }
-        match ep.last_speak {
-            None if held >= c.speak_after_s => {
-                ep.last_speak = Some(t);
-                out.push(Cue::Speak);
-            }
-            Some(last) if t - last >= c.renudge_s => {
-                ep.last_speak = Some(t);
-                out.push(Cue::Speak);
-            }
-            _ => {}
+        let speak_due = match ep.last_speak {
+            None => held >= c.speak_after_s,
+            Some(last) => t - last >= c.renudge_s,
+        };
+        if speak_due {
+            ep.last_speak = Some(t);
+            out.push(Cue::Speak);
         }
         if held >= c.notify_after_s && !ep.notified {
             ep.notified = true;
@@ -224,7 +248,7 @@ mod tests {
     fn run(d: &mut Detector, t0: f64, secs: f64, pitch: f64, out: &mut Vec<(f64, Cue)>) -> f64 {
         let mut t = t0;
         while t < t0 + secs {
-            out.extend(d.update(t, pitch).into_iter().map(|c| (t, c)));
+            out.extend(d.update(t, pitch).cues.into_iter().map(|c| (t, c)));
             t += 0.02;
         }
         t

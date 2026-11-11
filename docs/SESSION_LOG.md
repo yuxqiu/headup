@@ -187,3 +187,15 @@
 - Live test (data/session7*.jsonl, 200 s): 6/6 slouches got a tone; 5 `Rebaselined` events matching the offline rule
   exactly; corrected slouches 38–63°, upright −1…+5°; a ceiling look did not re-anchor. The earbuds' error had moved
   real upright to −31° (relative to calibration) by the end.
+
+## 2026-11-11 21:50 UTC
+- Refactor pass (DECISIONS "Refactor pass after review"): `Update` return value, `Reanchored { upright }` log event,
+  `pose_drifts_up`, `Config::for_traits`, `FreeClip2::TRAITS`, merged speak branches. 42 tests pass, clippy and fmt
+  clean. v0.1.1 release is waiting on CI (stuck in GitHub's queue).
+
+## 2026-11-11 22:30 UTC
+- Buffered glide handling: 2 s delay, drop the 70 samples before each identity sample. Fixed a test-helper infinite
+  loop (release vs next_release used different float expressions). 41 tests pass.
+- Removed the 1 s sound lead-in (user: cues only play while audio already streams).
+- Live (data/session8*.jsonl): 3/3 slouches cued ~12 s in, 1 re-anchor, 9 re-centres absorbed; user confirmed the
+  calibration prompt is complete without the lead-in. User will commit; v0.1.1 release next.
