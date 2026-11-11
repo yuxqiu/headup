@@ -218,3 +218,7 @@
 - Correction: a 43/88 sent while idle can work (data/reclaim_test.log), and the morning outage had 43/88 sent during
   playback, so the re-send does not explain it. Recorded the open hypothesis (after a long power-off: 43/90 plus a
   43/88 sent while streaming) in FINDINGS; the user chose not to test further.
+
+## 2026-11-11 22:55 UTC
+- Fix committed by the user (c7e0bda). Bumped to 0.1.2 (Cargo.toml, Cargo.lock); `nix flake check` passes and the
+  built binary reports 0.1.2. Drafted v0.1.2 release notes.

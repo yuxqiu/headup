@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 22:30 UTC
+Last updated: 2026-11-11 22:55 UTC
 
 ## Current state
 - The protocol works.
@@ -31,10 +31,9 @@ Last updated: 2026-11-11 22:30 UTC
 - v0.1.1 is released (https://github.com/yuxqiu/headup/releases/tag/v0.1.1, signed tag on 6de8e88): buffered glide
   handling, re-anchoring upright after recoveries (`TrackerTraits::pose_drifts_up`), `HeadTracker::traits()`, no sound
   lead-in. Live-verified in data/session7 and data/session8. 41 tests pass; CI green on x86_64 and aarch64.
-0. Uncommitted fix (2026-11-11 evening): no calibration after connecting while the computer was idle. `FreeClip2` now
-   re-sends 43/88 when 43/54 reports this computer streaming. 41 tests pass; live run calibrated (data/repro_fix.jsonl).
-   Cause only partly understood (FINDINGS "Stream switch sent while idle"); the user chose not to test further.
-   Next: the user commits; release v0.1.2; update the installed service.
+0. Re-send fix committed (c7e0bda). Version bumped to 0.1.2 (uncommitted; `nix flake check` passes, binary reports
+   0.1.2). Release notes drafted (no device quirks). Next: the user commits the bump; push, wait for green CI, signed
+   tag v0.1.2, publish the release; then update the installed service.
 1. Update the installed service: `nix flake update headup` in the user's config, then switch.
 2. Watch a normal day's use with `services.headup.logFile` set: count `Reanchored` events and any missed slouch.
 3. Not built: a manual snooze/pause control (no UI chosen). The 43/90-before-43/88 query is still unverified as the

@@ -1,6 +1,6 @@
 [package]
 name = "headup"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2024"
 description = "Gentle reminders to lift your head, using the motion sensors in your earbuds"
 license = "MIT"
