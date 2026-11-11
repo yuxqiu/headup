@@ -16,48 +16,55 @@ and no cloud; everything runs locally.
 
 - Linux with BlueZ (the standard Bluetooth stack) and PipeWire audio.
 - Earbuds that are paired and connected to the computer.
-- `pw-play` (PipeWire) and `notify-send` (libnotify). The Nix package includes both.
 
-## Install and run
+## Install (Nix + Home Manager)
 
-With Nix (flakes enabled), from a checkout of this repository:
+```nix
+# flake.nix
+inputs.headup.url = "github:yuxqiu/headup";
+inputs.headup.inputs.nixpkgs.follows = "nixpkgs";
 
-```sh
-nix run .
+# home-manager configuration
+imports = [ inputs.headup.homeManagerModules.default ];
+services.headup = {
+  enable = true;
+  # device = "C0:DA:5E:F1:A0:A6";   # optional; default: the first connected supported earbuds
+  # logFile = "${config.xdg.stateHome}/headup/log.jsonl";   # optional record of angles and reminders
+};
 ```
 
-headup finds connected supported earbuds by itself. It keeps running: if no supported earbuds are
+This runs headup as a systemd user service (`headup.service`) with your graphical session. Check on
+it with `systemctl --user status headup` and `journalctl --user -u headup`.
+
+Without Home Manager: `nix profile install github:yuxqiu/headup`, then run `headup`. To try it
+once: `nix run github:yuxqiu/headup`.
+
+### Without Nix
+
+Download `headup-v<version>-<arch>-linux.tar.gz` from
+[Releases](https://github.com/yuxqiu/headup/releases) (x86_64 and aarch64; glibc 2.35 or newer),
+check it against its `.sha256`, and put `headup` on your `PATH`. It needs `pw-play` (PipeWire),
+`notify-send` (libnotify) and the D-Bus library, which most desktop distributions already include.
+
+## Run
+
+```sh
+headup
+```
+
+headup finds connected supported earbuds by itself and keeps running. If no supported earbuds are
 connected yet, or the connection drops (for example when you put them back in the case), it waits and
 reconnects. Stop it with Ctrl-C.
-
-To keep a record of your head angle and reminders, add `--log FILE` (JSON lines).
 
 If several supported earbuds are connected, pass the address of the ones to use:
 
 ```sh
 bluetoothctl devices Connected
 # Device C0:DA:5E:F1:A0:A6 HUAWEI FreeClip 2
-nix run . -- C0:DA:5E:F1:A0:A6
+headup C0:DA:5E:F1:A0:A6
 ```
 
-### Run in the background (Home Manager)
-
-The flake provides a Home Manager module that runs headup as a systemd user service in your
-graphical session:
-
-```nix
-# flake inputs: headup.url = "path:/path/to/headup";  (or wherever you keep it)
-{
-  imports = [ inputs.headup.homeManagerModules.default ];
-  services.headup = {
-    enable = true;
-    # device = "C0:DA:5E:F1:A0:A6";   # optional; default: first connected supported earbuds
-    # logFile = "${config.xdg.stateHome}/headup/log.jsonl";   # optional
-  };
-}
-```
-
-Check on it with `systemctl --user status headup` and `journalctl --user -u headup`.
+To keep a record of your head angle and reminders, add `--log FILE` (JSON lines).
 
 ## What to expect
 
@@ -76,6 +83,10 @@ Check on it with `systemctl --user status headup` and `journalctl --user -u head
 
 4. **Taking the earbuds off** pauses monitoring. When you put them back on, headup calibrates again,
    because the earbuds sit slightly differently each time.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
 
 ## Credits
 

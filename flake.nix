@@ -33,9 +33,46 @@
             wrapProgram $out/bin/headup \
               --prefix PATH : ${pkgs.lib.makeBinPath (runtimeDeps pkgs)}
           '';
-          meta.mainProgram = "headup";
+          meta = {
+            mainProgram = "headup";
+            license = pkgs.lib.licenses.mit;
+            platforms = pkgs.lib.platforms.linux;
+          };
         };
       });
+
+      # `nix flake check`: the package build (which runs the tests), Clippy with warnings denied,
+      # and rustfmt. This is what CI runs.
+      checks = forAllSystems (
+        pkgs:
+        let
+          pkg = self.packages.${pkgs.stdenv.hostPlatform.system}.default;
+        in
+        {
+          build = pkg;
+          clippy = pkg.overrideAttrs (old: {
+            pname = "headup-clippy";
+            nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
+            buildPhase = "cargo clippy --offline --locked --all-targets -- --deny warnings";
+            doCheck = false;
+            installPhase = "touch $out";
+            postInstall = "";
+          });
+          fmt =
+            pkgs.runCommand "headup-fmt"
+              {
+                nativeBuildInputs = [
+                  pkgs.cargo
+                  pkgs.rustfmt
+                ];
+              }
+              ''
+                cd ${self}
+                cargo fmt --check
+                touch $out
+              '';
+        }
+      );
 
       devShells = forAllSystems (pkgs: {
         default = pkgs.mkShell {

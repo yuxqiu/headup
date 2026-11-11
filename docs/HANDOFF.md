@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 06:30 UTC
+Last updated: 2026-11-11 07:20 UTC
 
 ## Current state
 - The protocol works.
@@ -19,6 +19,8 @@ Last updated: 2026-11-11 06:30 UTC
 - Nix flake: `nix develop`, `nix build` (runs the tests), `nix run . -- <MAC>`. The binary is `headup`.
 - Voice: Piper alba clips embedded (assets/voice). espeak-ng is in the dev shell only.
 - Runs as a daemon with BlueZ auto-detect; Home Manager module in nix/hm-module.nix.
+- MIT license. CI: `nix flake check` (build+tests, clippy, fmt; passes locally). Release workflow builds tarballs
+  when a `vX.Y.Z` release is published. Neither has run on GitHub yet (repo not pushed).
 
 ## Next actions
 1. Tune thresholds and timings with real use. The tone, speech and recovery cues are confirmed live; the 60 s

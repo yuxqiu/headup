@@ -58,3 +58,9 @@
   reconnects. Ctrl-C works in every state.
 - `homeManagerModules.default` defines a systemd user service on graphical-session.target, after
   pipewire.service, with Restart=on-failure. Options: enable, package, device, logFile.
+
+## 2026-11-11: License, CI and releases (user)
+- License: MIT, in `LICENSE`. The GitHub repo is github.com/yuxqiu/headup.
+- CI and releases mirror the user's quillway project. CI is a single `nix flake check` (flake `checks`: build with
+  tests, clippy with warnings denied, rustfmt; written with buildRustPackage overrides rather than crane).
+  Releases are triggered by publishing a `vX.Y.Z` GitHub release and produce glibc 2.35 tarballs with sha256.

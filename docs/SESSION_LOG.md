@@ -66,3 +66,9 @@
 - Home Manager module `services.headup` (nix/hm-module.nix). Evaluated in a real home-manager config; the unit
   was checked. The log file's parent dir is created automatically.
 - README covers auto-detect, the HM service and credits. 17 tests pass and clippy is clean.
+
+## 2026-11-11 07:20 UTC
+- Added the MIT LICENSE and Cargo metadata. Added flake `checks` (build/test, clippy deny-warnings, fmt); `nix flake
+  check` passes, and the fmt check was shown to fail on misformatted code.
+- Added `.github/workflows/ci.yml` and `release.yml`, mirroring ../quillway; actionlint is clean.
+- README install section: Nix + Home Manager from github:yuxqiu/headup, plus release tarballs.

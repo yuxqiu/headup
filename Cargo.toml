@@ -2,6 +2,9 @@
 name = "headup"
 version = "0.1.0"
 edition = "2024"
+description = "Gentle reminders to lift your head, using the motion sensors in your earbuds"
+license = "MIT"
+repository = "https://github.com/yuxqiu/headup"
 
 [dependencies]
 anyhow = "1.0.104"

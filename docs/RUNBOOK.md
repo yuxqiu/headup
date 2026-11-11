@@ -37,3 +37,12 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
 - Command catalogue: `python3 -I tools/used_cmds.py research/jadx_out/sources` (service-43 IDs the app sends)
 - References: `git clone --depth 1 https://github.com/melianmiko/OpenFreebuds research/openfreebuds`; posture apps in
   `research/ios-refs/` (slouchless, HeadOrbit, dorso, posture-fix, cristdulcey/posture).
+
+## CI and releases
+- CI (`.github/workflows/ci.yml`) runs `nix flake check` on x86_64 and aarch64 Linux: the package build plus tests,
+  Clippy with `--deny warnings`, and `cargo fmt --check`. Run the same locally with `nix flake check`.
+- Release: bump `version` in Cargo.toml, then publish a GitHub release with tag `v<version>`. The `Release` workflow
+  checks that the tag matches Cargo.toml, builds and tests on Ubuntu 22.04 (glibc 2.35) for x86_64 and aarch64, and
+  uploads `headup-v<version>-<arch>-linux.tar.gz` with its `.sha256`. To rebuild an existing tag, run the workflow
+  manually with `tag`.
+- Lint the workflows: `nix shell nixpkgs#actionlint -c actionlint .github/workflows/*.yml`.
