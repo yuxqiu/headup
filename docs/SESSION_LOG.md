@@ -208,7 +208,7 @@
 - GitHub Actions recovered; CI green on 6de8e88 (x86_64, aarch64). Released v0.1.1: signed tag, notes, release
   workflow uploaded both tarballs and checksums; x86_64 tarball verified (sha256, `--version` 0.1.1).
 
-## 2026-11-11 22:30 UTC
+## 2026-11-11 22:10 UTC
 - No calibration again: the v0.1.1 service connected at 17:15 local while the computer was idle and sent 43/90 + 43/88.
   Audio started at 17:17:58 (TrackingAvailable), but no 43/89 arrived. Restarting during playback tracked at once
   (data/outage2_raw.jsonl). Fix: re-send 43/88 whenever this computer starts streaming. Builds; 41 tests pass;
@@ -219,6 +219,11 @@
   playback, so the re-send does not explain it. Recorded the open hypothesis (after a long power-off: 43/90 plus a
   43/88 sent while streaming) in FINDINGS; the user chose not to test further.
 
-## 2026-11-11 22:55 UTC
+## 2026-11-11 22:28 UTC
 - Fix committed by the user (c7e0bda). Bumped to 0.1.2 (Cargo.toml, Cargo.lock); `nix flake check` passes and the
   built binary reports 0.1.2. Drafted v0.1.2 release notes.
+
+## 2026-11-11 22:38 UTC
+- Released v0.1.2: CI green on b01263b; the user created the signed tag and the release (the auto-mode classifier
+  blocked it for the agent); the release workflow uploaded both tarballs; x86_64 tarball verified (sha256, `--version`
+  0.1.2, run with nixpkgs dbus on LD_LIBRARY_PATH).
