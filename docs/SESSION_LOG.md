@@ -207,3 +207,14 @@
 ## 2026-11-11 23:30 UTC
 - GitHub Actions recovered; CI green on 6de8e88 (x86_64, aarch64). Released v0.1.1: signed tag, notes, release
   workflow uploaded both tarballs and checksums; x86_64 tarball verified (sha256, `--version` 0.1.1).
+
+## 2026-11-11 22:30 UTC
+- No calibration again: the v0.1.1 service connected at 17:15 local while the computer was idle and sent 43/90 + 43/88.
+  Audio started at 17:17:58 (TrackingAvailable), but no 43/89 arrived. Restarting during playback tracked at once
+  (data/outage2_raw.jsonl). Fix: re-send 43/88 whenever this computer starts streaming. Builds; 41 tests pass;
+  live repro not yet done.
+- Live check of the fix (data/repro_fix.jsonl): started while idle; the 43/88 re-sent when audio began (18.1 s)
+  started tracking 30 ms later and calibration passed.
+- Correction: a 43/88 sent while idle can work (data/reclaim_test.log), and the morning outage had 43/88 sent during
+  playback, so the re-send does not explain it. Recorded the open hypothesis (after a long power-off: 43/90 plus a
+  43/88 sent while streaming) in FINDINGS; the user chose not to test further.

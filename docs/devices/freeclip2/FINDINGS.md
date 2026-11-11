@@ -257,6 +257,31 @@ Evidence: `data/reclaim_test.log` (controlled) and session 4's raw log (`--raw-l
   a longer power-off. On the first night, 43/90 (probe_02) was also sent right before the first working 43/88
   (probe_03). The vendor app never sends 43/88, so no app code confirms this.
 
+## Stream switch sent while idle (2026-11-11, evening)
+
+- 17:15:39 local: after the earbuds had been away for about an hour, headup connected and sent 43/90 then 43/88 (acked)
+  while this computer was idle. Audio started at 17:17:58 (43/54 → streaming), but no 43/89 arrived in the next hour.
+- 17:19: the same binary, restarted during playback, got 43/89 at 0.10 s and 280 samples in 25 s
+  (`data/outage2_raw.jsonl`).
+- A 43/88 sent while idle *can* work: in `data/reclaim_test.log` (first night) it was sent while the phone was active,
+  and tracking started once a clip played.
+- headup now sends 43/88 again whenever 43/54 reports this computer starting to stream. Live check
+  (`data/repro_fix.jsonl`): the 43/88 sent while idle at 0.19 s gave no samples; audio started at 18.05 s, and the
+  re-sent 43/88 was followed by 43/89 at 18.13 s. The earbuds had already been tracking at 17:19, so this run does not
+  show that the re-send was needed.
+- Hypothesis `[unverified]`, consistent with every case today and the first night: after a long power-off, the earbuds
+  need 43/90 *and* a 43/88 sent while this computer streams.
+
+  | Case (local time) | Long power-off before | 43/90 sent | 43/88 sent while streaming | Tracked |
+  |---|---|---|---|---|
+  | First night, reclaim test | no | earlier | no | yes |
+  | Morning outage, 11:13–12:51 | overnight | no | yes | no |
+  | 12:53, after the query probe | overnight | yes | yes | yes |
+  | 17:15 service | ~1 h | yes | no | no |
+  | 17:19 manual run | ~1 h | yes | yes | yes |
+
+- The user chose not to test this further: the backend now does both, so it covers the hypothesis either way.
+
 ## Firmware image (2026-11-11)
 
 How the app gets firmware (decompiled app, `research/jadx_out/sources`):

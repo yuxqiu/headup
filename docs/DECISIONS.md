@@ -214,3 +214,8 @@
   already streaming audio, so the Bluetooth output is awake. Supersedes "Silent lead-in for every sound".
 - Edge case accepted: during a short audio pause (< 30 s, slouch state kept) a reminder can start on a suspended output
   and lose its first moment.
+
+## 2026-11-11: Re-send the stream switch when this computer starts streaming
+- `FreeClip2` sends 43/88=1 again on every 43/54 transition of this computer to streaming. A 43/88 sent while idle
+  left tracking off for an hour after audio started (FINDINGS "Stream switch sent while idle"). The extra 43/88 is
+  harmless during playback: earlier restarts of the stream were acked and the rebuilder handles stream restarts.

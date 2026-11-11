@@ -127,7 +127,7 @@ impl FreeClip2 {
         }
         match (f.svc, f.cmd) {
             (SVC, CMD_WEAR_STATE) => self.on_wear_state(&f).await,
-            (SVC, CMD_DEVICE_STATE) => Ok(self.on_device_state(&f)),
+            (SVC, CMD_DEVICE_STATE) => self.on_device_state(&f).await,
             (SVC, CMD_STREAM_DATA) => self.on_pose_sample(&f),
             _ => Ok(None), // acks and status pushes we don't use
         }
@@ -151,12 +151,20 @@ impl FreeClip2 {
         Ok(Some(Event::Worn(worn)))
     }
 
-    fn on_device_state(&mut self, f: &Frame) -> Option<Event> {
-        let (addr, streaming) = device_streaming(f)?;
+    async fn on_device_state(&mut self, f: &Frame) -> Result<Option<Event>> {
+        let Some((addr, streaming)) = device_streaming(f) else {
+            return Ok(None);
+        };
         if addr != self.adapter || self.streaming.replace(streaming) == Some(streaming) {
-            return None;
+            return Ok(None);
         }
-        Some(Event::Available(streaming))
+        if streaming {
+            // A 43/88 sent while this computer was idle once left tracking off after audio began
+            // (FINDINGS "Stream switch sent while idle"), so switch the stream on again now.
+            self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
+                .await?;
+        }
+        Ok(Some(Event::Available(streaming)))
     }
 
     /// Queue the orientations a raw sample releases (none while samples wait out the delay).
