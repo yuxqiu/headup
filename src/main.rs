@@ -42,16 +42,21 @@ fn open_append(p: &Path) -> Result<std::fs::File> {
 /// The requested (or first) supported earbuds currently connected, if any.
 async fn find(bt: &bluer::Session, want: Option<bluer::Address>) -> Result<Option<Found>> {
     let found = devices::connected_supported(bt).await?;
-    let Some(addr) = want else {
-        return Ok(found.into_iter().next());
-    };
+    Ok(match want {
+        Some(addr) => found.into_iter().find(|f| f.address == addr),
+        None => found.into_iter().next(),
+    })
+}
+
+/// Fail fast if the user named a known device that has no backend.
+async fn check_supported(bt: &bluer::Session, addr: bluer::Address) -> Result<()> {
     let device = bt.default_adapter().await?.device(addr)?;
-    if let Some(name) = device.name().await?
+    if let Ok(Some(name)) = device.name().await
         && Model::from_bluetooth_name(&name).is_none()
     {
         bail!("{addr} ({name}) is not a supported device (see README)");
     }
-    Ok(found.into_iter().find(|f| f.address == addr))
+    Ok(())
 }
 
 /// Sleep for `d`; `true` if Ctrl-C arrived instead.
@@ -70,13 +75,29 @@ async fn main() -> Result<()> {
     let bt = bluer::Session::new()
         .await
         .context("connect to BlueZ over D-Bus")?;
+    if let Some(addr) = args.device {
+        check_supported(&bt, addr).await?;
+    }
     let mut ctrl_c: CtrlC = Box::pin(tokio::signal::ctrl_c());
 
     let mut waiting_noted = false;
     loop {
         let found = tokio::select! {
-            r = find(&bt, args.device) => r?,
+            r = find(&bt, args.device) => r,
             r = &mut ctrl_c => { r?; return Ok(()); }
+        };
+        let found = match found {
+            Ok(found) => found,
+            Err(e) => {
+                rec.warn(&format!(
+                    "looking for earbuds failed: {e:#}; retrying in {}s",
+                    RETRY.as_secs()
+                ));
+                if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+                    return Ok(());
+                }
+                continue;
+            }
         };
         let Some(found) = found else {
             if !waiting_noted {

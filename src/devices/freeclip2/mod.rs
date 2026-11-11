@@ -20,6 +20,7 @@ const SVC: u8 = 43;
 const CMD_STREAM_SWITCH: u8 = 88;
 const CMD_STREAM_DATA: u8 = 89;
 const CMD_WEAR_STATE: u8 = 37;
+const CMD_DEVICE_STATE: u8 = 54;
 
 /// Wear state from a 43/37 frame: TLV 1 = left, TLV 2 = right, 1 = worn. Head tracking stops as
 /// soon as either earbud comes off (tools/freeclip2/single_bud_test.py), so "worn" means both.
@@ -31,6 +32,19 @@ fn worn_from(f: &Frame) -> Option<bool> {
     }
 }
 
+/// Audio state of one connected source device from a 43/54 push: TLV 5 = the device's Bluetooth
+/// address (little-endian) and a state byte. Observed: 0x09 when it starts streaming audio, 0x03 when
+/// it goes idle, 0x01 on connection; bit 0x08 is read as "streaming" [inferred from those values].
+/// Head tracking only flows to the streaming device (docs/devices/freeclip2/FINDINGS.md).
+fn device_streaming(f: &Frame) -> Option<(bluer::Address, bool)> {
+    let v = f.tlv(5)?;
+    let (addr, state) = (v.get(..6)?, *v.get(6)?);
+    let mut be = [0u8; 6];
+    be.copy_from_slice(addr);
+    be.reverse();
+    Some((bluer::Address::new(be), state & 0x08 != 0))
+}
+
 pub struct FreeClip2 {
     stream: Stream,
     decoder: Decoder,
@@ -38,12 +52,19 @@ pub struct FreeClip2 {
     start: Instant,
     raw_log: Option<std::fs::File>,
     worn: Option<bool>,
+    /// This computer's adapter address, to pick its entry out of 43/54 pushes.
+    adapter: bluer::Address,
+    streaming: Option<bool>,
 }
 
 impl FreeClip2 {
     /// Connect, query wear state and start the pose stream. `raw_log` receives every raw sample as
     /// a JSON line (seq, quaternion as sent, rebuilt quaternion, whether it was a device re-centre).
-    pub async fn connect(addr: bluer::Address, raw_log: Option<std::fs::File>) -> Result<Self> {
+    pub async fn connect(
+        addr: bluer::Address,
+        adapter: bluer::Address,
+        raw_log: Option<std::fs::File>,
+    ) -> Result<Self> {
         let stream = Stream::connect(SocketAddr::new(addr, RFCOMM_CHANNEL))
             .await
             .with_context(|| format!("RFCOMM connect to {addr} channel {RFCOMM_CHANNEL} (is the FreeClip 2 connected?)"))?;
@@ -54,6 +75,8 @@ impl FreeClip2 {
             start: Instant::now(),
             raw_log,
             worn: None,
+            adapter,
+            streaming: None,
         };
         dev.send(Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])]))
             .await?;
@@ -81,6 +104,7 @@ impl FreeClip2 {
         }
         match (f.svc, f.cmd) {
             (SVC, CMD_WEAR_STATE) => self.on_wear_state(&f).await,
+            (SVC, CMD_DEVICE_STATE) => Ok(self.on_device_state(&f)),
             (SVC, CMD_STREAM_DATA) => self.on_pose_sample(&f),
             _ => Ok(None), // acks and status pushes we don't use
         }
@@ -101,6 +125,14 @@ impl FreeClip2 {
                 .await?;
         }
         Ok(Some(Event::Worn(worn)))
+    }
+
+    fn on_device_state(&mut self, f: &Frame) -> Option<Event> {
+        let (addr, streaming) = device_streaming(f)?;
+        if addr != self.adapter || self.streaming.replace(streaming) == Some(streaming) {
+            return None;
+        }
+        Some(Event::Available(streaming))
     }
 
     fn on_pose_sample(&mut self, f: &Frame) -> Result<Option<Event>> {
@@ -175,6 +207,11 @@ impl HeadTracker for FreeClip2 {
         self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[0])]))
             .await
     }
+
+    fn tracking_hint(&self) -> &'static str {
+        // Head tracking is only sent while this computer streams audio to the earbuds (FINDINGS).
+        "play audio on this computer; FreeClip 2 only tracks your head while it is playing"
+    }
 }
 
 #[cfg(test)]
@@ -215,5 +252,25 @@ mod tests {
             raw_frame_line(1.5, &f),
             r#"{"t":1.5000,"svc":43,"cmd":37,"tlvs":{"1":"01","2":"00"}}"#
         );
+    }
+
+    // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/single_bud_test.py, data/reclaim_test.log):
+    // this computer is D4:94:A9:22:86:6F, sent little-endian.
+    #[test]
+    fn device_streaming_state() {
+        let f = |hex: &str| {
+            let v: Vec<u8> = (0..hex.len())
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())
+                .collect();
+            Frame::new(43, 54, &[(5, &v)])
+        };
+        let pc: bluer::Address = "D4:94:A9:22:86:6F".parse().unwrap();
+        assert_eq!(device_streaming(&f("6f8622a994d409")), Some((pc, true)));
+        assert_eq!(device_streaming(&f("6f8622a994d403")), Some((pc, false)));
+        assert_eq!(device_streaming(&f("6f8622a994d401")), Some((pc, false)));
+        let phone: bluer::Address = "EC:81:50:6E:86:B5".parse().unwrap();
+        assert_eq!(device_streaming(&f("b5866e5081ec01")), Some((phone, false)));
+        assert_eq!(device_streaming(&Frame::new(43, 54, &[(5, &[1, 2])])), None);
     }
 }

@@ -96,3 +96,27 @@
   so with one earbud headup pauses ("paused until both earbuds are worn") and recalibrates once both are back.
 - The session waits for the first pose before calibrating, with no deadline, noting "waiting for head tracking"
   after 5 s. A missing pose is no longer an error that drops the connection.
+
+## 2026-11-11: Monitor only while the laptop plays audio (user)
+- FreeClip 2 head tracking is only available while this computer streams audio to the earbuds (FINDINGS "Tracking
+  runs only while this computer streams audio"). The user chose to monitor only while listening on the laptop.
+  No silent keep-alive stream: it would cost battery and break switching audio to the phone.
+- When tracking resumes after a pause: short gaps (under ~30 s, e.g. skipping tracks) carry the last posture over;
+  after a longer gap headup recalibrates (spoken prompt over the music), because a new stream measures from the
+  head pose at its start.
+- Implemented:
+  - `Event::Available(bool)` in the HeadTracker interface. FreeClip 2 derives it from 43/54 pushes for this
+    computer's adapter address (`Found.adapter`, little-endian in the frame); bit 0x08 = streaming.
+  - Silence while available = head still (posture carried over indefinitely). Unavailable for
+    `TRACKING_LOST_S` = 30 s ends monitoring (`TrackingLost`; slouch state dropped, so no stale reminders), and
+    calibration repeats when tracking resumes. Availability changes are logged as
+    `TrackingAvailable`/`TrackingUnavailable`.
+  - `HeadTracker::tracking_hint()` (FreeClip 2: play audio on this computer) appears in the waiting message.
+    Calibration waits for the first pose before prompting.
+  - The first version used "no pose for 30 s" as tracking lost. It was replaced because the music hold test
+    showed silence also means a still head during playback.
+
+## 2026-11-11: Robust device lookup
+- `connected_supported` skips devices that vanish while being queried (BlueZ drops nearby BLE devices at any
+  time; this caused "target object was either not present or removed" and a crash). `main` logs and retries a
+  failed lookup. An explicitly given but unsupported address is rejected once at startup.

@@ -6,11 +6,14 @@ headup reads head tracking from supported earbuds on Linux. When you look down f
 example at a phone or a low laptop screen, it reminds you through your earbuds. It needs no camera
 and no cloud; everything runs locally.
 
+The earbuds only share head tracking while your computer is playing audio to them, so headup watches
+your posture while you listen to something on the computer.
+
 ## Supported earbuds
 
 | Earbuds | Status | Head tracking | Pauses when taken off | Tested firmware |
 |---|---|---|---|---|
-| HUAWEI FreeClip 2 | Supported | Yes (both earbuds worn) | Yes | HarmonyOS 7.0.0.516 |
+| HUAWEI FreeClip 2 | Supported | While the computer plays audio, both earbuds worn | Yes | HarmonyOS 7.0.0.516 |
 
 ## Requirements
 
@@ -68,7 +71,7 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
 
 ## What to expect
 
-1. **Calibration.** A voice asks you to sit upright and look straight ahead. Hold still for about
+1. **Calibration.** Once audio is playing, a voice asks you to sit upright and look straight ahead. Hold still for about
    3 seconds. If you move, it asks again.
 2. **Monitoring.** Looking down counts. Looking up, or turning your head to another screen, does not.
    Short glances down are fine.
@@ -83,6 +86,9 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
 
 4. **Taking an earbud off** pauses monitoring, because head tracking needs both earbuds. When both are
    back on, headup calibrates again, because the earbuds sit slightly differently each time.
+5. **Pausing your audio** for more than about 30 seconds pauses monitoring too. When you play
+   something again, headup asks you to sit upright once more. Shorter pauses, like skipping a track,
+   don't interrupt.
 
 ## License
 

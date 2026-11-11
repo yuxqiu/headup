@@ -5,7 +5,7 @@
 pub mod freeclip2;
 
 use crate::core::tracker::{Event, HeadTracker};
-use anyhow::Result;
+use anyhow::{Context, Result};
 use bluer::Address;
 use std::time::Duration;
 
@@ -37,18 +37,23 @@ pub struct Found {
     pub address: Address,
     pub name: String,
     pub model: Model,
+    /// This computer's Bluetooth adapter, as the earbuds know it.
+    pub adapter: Address,
 }
 
 /// Connected devices on the default BlueZ adapter that have a backend.
 pub async fn connected_supported(session: &bluer::Session) -> Result<Vec<Found>> {
-    let adapter = session.default_adapter().await?;
+    let adapter = session.default_adapter().await.context("default adapter")?;
+    let adapter_address = adapter.address().await.context("adapter address")?;
     let mut found = Vec::new();
-    for address in adapter.device_addresses().await? {
-        let device = adapter.device(address)?;
-        if !device.is_connected().await? {
+    for address in adapter.device_addresses().await.context("device list")? {
+        let device = adapter.device(address).context("device")?;
+        // BlueZ forgets nearby BLE devices at any time, so a device can vanish between listing and
+        // querying it ("target object was either not present or removed"); skip it.
+        let (Ok(connected), Ok(name)) = (device.is_connected().await, device.name().await) else {
             continue;
-        }
-        let Some(name) = device.name().await? else {
+        };
+        let Some(name) = name.filter(|_| connected) else {
             continue;
         };
         if let Some(model) = Model::from_bluetooth_name(&name) {
@@ -56,6 +61,7 @@ pub async fn connected_supported(session: &bluer::Session) -> Result<Vec<Found>>
                 address,
                 name,
                 model,
+                adapter: adapter_address,
             });
         }
     }
@@ -71,9 +77,9 @@ impl AnyTracker {
     /// Connect to `found` and start head tracking. `raw_log` receives backend-specific raw samples.
     pub async fn connect(found: &Found, raw_log: Option<std::fs::File>) -> Result<Self> {
         Ok(match found.model {
-            Model::FreeClip2 => {
-                AnyTracker::FreeClip2(freeclip2::FreeClip2::connect(found.address, raw_log).await?)
-            }
+            Model::FreeClip2 => AnyTracker::FreeClip2(
+                freeclip2::FreeClip2::connect(found.address, found.adapter, raw_log).await?,
+            ),
         })
     }
 }
@@ -88,6 +94,12 @@ impl HeadTracker for AnyTracker {
     async fn stop(&mut self) -> Result<()> {
         match self {
             AnyTracker::FreeClip2(t) => t.stop().await,
+        }
+    }
+
+    fn tracking_hint(&self) -> &'static str {
+        match self {
+            AnyTracker::FreeClip2(t) => t.tracking_hint(),
         }
     }
 }

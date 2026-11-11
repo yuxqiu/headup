@@ -201,3 +201,41 @@ Data: `tests/fixtures/freeclip2/stream_restart.csv` (from `--raw-log`).
   before prompting calibration (previously it failed with "no head pose … during calibration" and reconnected).
 - Other frames seen around wear changes: 43/54, 43/49 (paired-device list: "pc", "iPhone"), 43/94, 43/180,
   1/39 (battery). None of them is needed for tracking.
+
+## Tracking runs only while this computer streams audio (2026-11-11) — supersedes parts of the above
+
+Evidence: `data/reclaim_test.log` (controlled) and session 4's raw log (`--raw-log` now includes 43/54 pushes).
+
+- The earbuds connect to two devices at once (43/49 lists `pc` and `iPhone`, both connected). **43/89 head tracking
+  is sent only while this computer is actively streaming audio to the earbuds.**
+  - **Controlled test:** with the phone active, there were 0 samples/s. The laptop played a 3.5 s clip; 43/54
+    reported the PC's state `…09` at +0.44 s, tracking started about 2.5 s after the clip began at 52/s, then
+    43/54 `…03` and tracking stopped about 5 s after the clip ended. The ~5 s tail matches PipeWire suspending
+    the idle Bluetooth output `[inference]`.
+  - **Session 4:** every tracking window lies inside a PC `…09` → `…03` window, and each window opened at a
+    headup sound (calibration prompts, Tone, Speak).
+  - **43/54** TLV5 = 6-byte address + state. Observed states: `09` = streaming audio from this device,
+    `03` = connected and idle, `01` = connected (seen at connection) `[meanings inferred]`.
+- **Each new stream measures from the head pose at the moment it starts.** At stream restarts (seq reset) during
+  a ~53–58° slouch, the first raw samples were ≈ 0°. A resumed stream after a gap can start from a different pose
+  than before the gap. Carrying the last pose over is only right if the head did not move.
+- **Earlier conclusions that need re-checking under continuous playback:**
+  - "Stream pauses while the head is still" was probably mostly the audio stopping. The guided tests had prompts
+    every few seconds.
+  - The "re-centre glide" about 5 s into a hold coincided with audio ending, so it may be the spatial engine
+    winding down rather than a follow-mode re-centre.
+  - "Stream restart" (seq backwards) is plausibly a new audio session.
+  - "Single earbud stops tracking" was observed while the iPhone had just connected (35.65 s), so it may be
+    partly confounded `[re-test needed]`.
+
+## Hold test under continuous music (data/hold_music.csv, 2026-11-11)
+
+- With music playing on the laptop throughout, holds behaved exactly as in tests/fixtures/freeclip2/hold_test.csv:
+  ~5–6 s of samples after each move, then the glide to identity (resets at 14.7, 44.7, 58.8, 88.6 s), then
+  silence until the head moved again (silences of 24 s and 23 s). The sequence never went backwards.
+- So **both** effects are real and independent:
+  1. Tracking only flows while this computer streams audio (43/54 state bit 0x08).
+  2. During playback, a still head produces the glide and then silence.
+  The glide suppression and the "silence = still" rule stay.
+- Consequence: silence cannot signal "audio stopped". The backend reports 43/54 for this computer's address as
+  `Event::Available`, and headup ends monitoring only after 30 s of *unavailability*.

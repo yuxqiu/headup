@@ -13,6 +13,10 @@ pub enum Event {
     /// Whether the earbuds are worn well enough for head tracking (for FreeClip 2: both of them).
     /// Sent on change; a backend should report the initial state soon after connecting.
     Worn(bool),
+    /// Whether the device can deliver head tracking right now, beyond being worn (for FreeClip 2:
+    /// this computer is streaming audio to the earbuds). Sent on change; assume available until
+    /// told otherwise. While available, silence means the head is still.
+    Available(bool),
 }
 
 /// A source of head orientation. Device quirks such as re-centring are the backend's job.
@@ -25,4 +29,10 @@ pub trait HeadTracker {
 
     /// Stop streaming and leave the device in its normal state.
     async fn stop(&mut self) -> Result<()>;
+
+    /// What the user can do when no head tracking arrives, e.g. a device precondition. Shown in
+    /// "waiting for head tracking" messages.
+    fn tracking_hint(&self) -> &'static str {
+        ""
+    }
 }

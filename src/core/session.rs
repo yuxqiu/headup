@@ -15,6 +15,12 @@ const CALIBRATION_TRIES: usize = 4;
 const CALIBRATION_RETRY: Duration = Duration::from_secs(60);
 /// Say that headup is waiting if head tracking has not started after this long.
 const TRACKING_WAIT_NOTE_S: f64 = 5.0;
+/// Tracker unavailable this long counts as tracking lost (for FreeClip 2: no audio playing on this
+/// computer). Shorter gaps, like skipping a track, carry the posture over; after a longer gap the
+/// head may have moved unseen and a resumed stream measures from a new pose, so headup drops its
+/// slouch state (no reminders from stale data) and recalibrates when tracking resumes. Silence
+/// while available just means the head is still and never ends monitoring.
+const TRACKING_LOST_S: f64 = 30.0;
 
 /// What the tracker produced, from the session's point of view.
 enum Step {
@@ -23,6 +29,14 @@ enum Step {
     Silence,
     /// The earbuds were taken off.
     Removed,
+}
+
+/// Why monitoring stopped.
+enum MonitorEnd {
+    /// The earbuds were taken off.
+    Removed,
+    /// No head pose for TRACKING_LOST_S: the posture reference can no longer be trusted.
+    TrackingLost,
 }
 
 enum Calibration {
@@ -40,6 +54,8 @@ struct Session<'a, T: HeadTracker> {
     rec: &'a mut Recorder,
     start: Instant,
     worn: bool,
+    /// When the tracker last became unavailable (`None` while available).
+    unavailable_since: Option<f64>,
 }
 
 /// Calibrate, then monitor; pause while the earbuds are off and recalibrate when they are put back
@@ -52,11 +68,21 @@ pub async fn run<T: HeadTracker>(tracker: &mut T, cues: &Cues, rec: &mut Recorde
         rec,
         start: Instant::now(),
         worn: true,
+        unavailable_since: None,
     };
     loop {
         s.wait_until_worn().await?;
         match s.calibrate().await? {
-            Calibration::Done(baseline) => s.monitor(baseline).await?,
+            Calibration::Done(baseline) => match s.monitor(baseline).await? {
+                MonitorEnd::Removed => {}
+                MonitorEnd::TrackingLost => {
+                    s.event("TrackingLost")?;
+                    let hint = s.tracking_hint_suffix();
+                    s.rec.note(&format!(
+                        "head tracking stopped; will recalibrate when it resumes{hint}"
+                    ));
+                }
+            },
             Calibration::Removed => {}
             Calibration::Failed => {
                 s.event("CalibrationFailed")?;
@@ -71,6 +97,14 @@ impl<T: HeadTracker> Session<'_, T> {
         self.start.elapsed().as_secs_f64()
     }
 
+    /// The tracker's hint as a message suffix (" (hint)"), or "" if it has none.
+    fn tracking_hint_suffix(&self) -> String {
+        match self.tracker.tracking_hint() {
+            "" => String::new(),
+            hint => format!(" ({hint})"),
+        }
+    }
+
     fn event(&mut self, name: &str) -> Result<()> {
         let t = self.now();
         self.rec.event(t, name)
@@ -82,6 +116,16 @@ impl<T: HeadTracker> Session<'_, T> {
             Some(Event::Worn(w)) => {
                 self.worn = w;
                 if w { Step::Silence } else { Step::Removed }
+            }
+            Some(Event::Available(a)) => {
+                let now = self.now();
+                self.unavailable_since = if a { None } else { Some(now) };
+                self.event(if a {
+                    "TrackingAvailable"
+                } else {
+                    "TrackingUnavailable"
+                })?;
+                Step::Silence
             }
             None => Step::Silence,
         })
@@ -120,7 +164,10 @@ impl<T: HeadTracker> Session<'_, T> {
                 Step::Pose(q) => return Ok(Some(q)),
                 Step::Removed => return Ok(None),
                 Step::Silence if !noted && self.now() - start >= TRACKING_WAIT_NOTE_S => {
-                    self.rec.note("waiting for head tracking from the earbuds…");
+                    let hint = self.tracking_hint_suffix();
+                    self.rec.note(&format!(
+                        "waiting for head tracking from the earbuds{hint}…"
+                    ));
                     noted = true;
                 }
                 Step::Silence => {}
@@ -166,19 +213,26 @@ impl<T: HeadTracker> Session<'_, T> {
         Ok(Calibration::Failed)
     }
 
-    /// Monitor until the earbuds are taken off.
-    async fn monitor(&mut self, baseline: Quat) -> Result<()> {
+    /// Monitor until the earbuds are taken off or head tracking is lost.
+    async fn monitor(&mut self, baseline: Quat) -> Result<MonitorEnd> {
         let mut det = Detector::new(Config::default());
         let mut last_status = f64::NEG_INFINITY;
         loop {
             let step = self.next(Duration::from_secs(1)).await?;
             let t = self.now();
             let cues = match step {
-                Step::Removed => return Ok(()),
+                Step::Removed => return Ok(MonitorEnd::Removed),
                 Step::Pose(q) => {
                     let angles = (baseline.conj() * q).euler();
                     self.rec.pose(t, angles)?;
                     det.update(t, angles.pitch)
+                }
+                Step::Silence
+                    if self
+                        .unavailable_since
+                        .is_some_and(|since| t - since >= TRACKING_LOST_S) =>
+                {
+                    return Ok(MonitorEnd::TrackingLost);
                 }
                 Step::Silence => det.tick(t),
             };

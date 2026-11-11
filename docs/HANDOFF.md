@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 10:40 UTC
+Last updated: 2026-11-11 12:50 UTC
 
 ## Current state
 - The protocol works.
@@ -27,6 +27,10 @@ Last updated: 2026-11-11 10:40 UTC
   when a `vX.Y.Z` release is published. Neither has run on GitHub yet (repo not pushed).
 
 ## Next actions
+0. FreeClip 2 tracking needs this computer to stream audio, and goes silent ~5 s into any still hold, even
+   during playback (FINDINGS). Implemented `Event::Available` from 43/54; TrackingLost only after 30 s
+   unavailable; lookup robustness. 28 tests pass. Live: calibration while audio played, unsupported-address
+   check. Still live-untested: audio stop > 30 s, then resume (expect TrackingLost and recalibration).
 1. Live checks still owed by the user:
    - Wear pause: take one or both earbuds off, then put both back on. Expect "Paused", then recalibration.
      With only one earbud on, headup stays paused: FreeClip 2 tracking needs both (FINDINGS "Single earbud").

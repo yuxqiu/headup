@@ -107,3 +107,23 @@
   tools/freeclip2/single_bud_test.py showed the pose stream stops whenever either earbud is off.
 - "Worn" now means both earbuds. The session waits for the first pose before calibrating (no error or reconnect).
   README and FINDINGS updated. 27 tests pass.
+
+## 2026-11-11 11:30 UTC
+- headup was stuck at "waiting for head tracking". Cause: the iPhone was connected/active (multipoint). The
+  controlled reclaim test plus session 4 show tracking only while this computer streams audio. New streams are
+  relative to the head pose at their start.
+- The user chose to monitor only during laptop playback and to recalibrate after gaps over 30 s. Next: a hold test
+  under continuous music.
+
+## 2026-11-11 12:00 UTC
+- Implemented the audio-dependent tracking behaviour:
+  - `HeadTracker::tracking_hint()`; the waiting message says to play audio on this computer.
+  - `TrackingLost` after 30 s without poses (no stale reminders); recalibration when tracking resumes.
+  - README explains that monitoring runs while the computer plays audio.
+- Live: the waiting message is shown with no audio playing. 27 tests pass.
+
+## 2026-11-11 12:50 UTC
+- The music hold test showed the stillness glide/silence also happens during playback. Replaced the "no pose 30 s"
+  rule with `Event::Available` (43/54 streaming bit for this adapter's address).
+- Fixed a crash on BLE devices vanishing during lookup (skip, retry); the unsupported-address check is now
+  startup-only. 28 tests pass.
