@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 08:40 UTC
+Last updated: 2026-11-11 10:00 UTC
 
 ## Current state
 - The protocol works.
@@ -12,10 +12,13 @@ Last updated: 2026-11-11 08:40 UTC
   - Modular layout:
     - `src/core/`: quat, the `HeadTracker` trait, detector, session (calibration + monitor), cues.
     - `src/devices/freeclip2/`: mbb framing, rebuild, and the backend with `--raw-log`.
-  - 15 tests pass, including replays of the recordings and an end-to-end cue test on tests/fixtures/freeclip2/hold_test.csv.
+  - `src/core/` also has `record.rs` (console/log output) and `wav.rs` (WAV + 1 s lead-in); `src/devices/mod.rs` has
+    the model registry and the `AnyTracker` dispatch.
+  - 27 tests pass, including replays of real recordings (guided axes, long holds, stream restart) and end-to-end
+    cue tests.
   - The design was approved by the user (docs/UX_RESEARCH.md); the parameters are in docs/DECISIONS.md.
-- Git: no commits yet. Everything is staged for the user's first commit; the user makes all commits.
-  `data/` and `research/` are gitignored; test recordings are in `tests/fixtures/`.
+- Git: the user makes all commits; changes since their last commit are staged. `data/` and `research/` are
+  gitignored; test recordings are in `tests/fixtures/freeclip2/`.
 - Nix flake: `nix develop`, `nix build` (runs the tests), `nix run . -- <MAC>`. The binary is `headup`.
 - Voice: Piper alba clips embedded (assets/voice). espeak-ng is in the dev shell only.
 - Runs as a daemon with BlueZ auto-detect; Home Manager module in nix/hm-module.nix.
@@ -24,38 +27,21 @@ Last updated: 2026-11-11 08:40 UTC
   when a `vX.Y.Z` release is published. Neither has run on GitHub yet (repo not pushed).
 
 ## Next actions
-1. Tune thresholds and timings with real use. The tone, speech and recovery cues are confirmed live; the 60 s
-   notification is not yet seen live.
-2. Long session (30+ min, `--log`) to measure drift of the rebuilt pitch. Decide whether to add on-demand
-   recalibration (signal/keypress) or guarded auto re-baselining.
-0. Refactor done (see DECISIONS 'Refactor'); 20 tests pass and `nix flake check` passes. Non-TTY output verified
-   live while the earbuds were disconnected. Needs a live test by the user:
-   - Wear pause: take both earbuds off, put them back on, expect recalibration.
-   - Disconnect/reconnect: put the earbuds in the case, then take them out.
-   - The Home Manager service on their own config.
-   Done and verified so far:
-   - Alba voice (heard in the smoke test).
-   - Auto-detect (live smoke test found the FreeClip 2).
-   - The HM module (evaluated in a real home-manager config; the generated unit was checked).
-1. Tune thresholds and timings with real use. The tone, speech and recovery cues are confirmed live; the 60 s
-   notification is not yet seen live.
-2. Long session (30+ min, `--log`) to measure drift of the rebuilt pitch. Decide whether to add on-demand
-   recalibration (signal/keypress) or guarded auto re-baselining.
-0. In progress:
-   (a) Piper voice: DONE. The user picked alba. Clips are in assets/voice/ (tools/gen_voice.sh, CREDITS.md),
-       embedded and played with pw-play. espeak-ng was removed from runtime (dev shell only, for tools).
-       Not yet heard live in headup.
-   (b) Wear pause: implemented (`Event::Worn`, FreeClip 43/37 query/push, recalibrate on re-wear). 16 tests pass;
-       not yet tested live.
-   (c) README rewritten for users, with a supported-devices table.
-   (d) APPROVED, in progress: device registry plus BlueZ auto-detect (bluer D-Bus), a daemon loop that
-       waits/reconnects, and a home-manager module (`homeManagerModules.default`, `services.headup`).
-4. Not built yet: a manual snooze/pause control (the user did not pick a UI; removal-pause covers the main case).
-   Ducking and the daily score were dropped by the user.
-5. Session 1 issue: FIXED and confirmed live in session 2 (data/session2*.jsonl).
-   - Cues: Tone at 25.0 s, Speak at 45.1 s, Recovered at 48.3 s.
-   - 134 glide samples were held back, with no false recovery.
-6. Modular backend architecture: done (see DECISIONS).
+1. Live checks still owed by the user:
+   - Wear pause: take both earbuds off, then put them back on. Expect "Paused", then recalibration.
+   - Disconnect/reconnect: earbuds into the case and back out. Expect waiting, reconnecting, recalibrating.
+   - The 60 s desktop notification (not yet seen live).
+   - The Home Manager service in the user's own config (`systemctl --user status headup`).
+2. Long session (30+ min, `--log --raw-log`) to measure drift of the rebuilt pitch and how often stream restarts
+   happen. Then decide on on-demand recalibration or guarded auto re-baselining.
+3. Tune thresholds and timings from real use (20°/15°, 10/30/60 s, 120 s re-nudge).
+4. Not built: a manual snooze/pause control (no UI chosen; removal-pause covers the main case). Volume ducking
+   and the daily score were dropped by the user.
+
+Confirmed live so far:
+- Calibration with the alba voice; the full first prompt is heard after the 1 s lead-in.
+- Tone, speech and recovery cues, including warnings after a first recovery (stream-restart fix).
+- Glide suppression; auto-detect of the FreeClip 2; clean non-TTY output.
 
 ## Blockers
 - None.

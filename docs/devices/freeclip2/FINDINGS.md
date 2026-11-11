@@ -170,3 +170,20 @@ Data: `tests/fixtures/freeclip2/hold_test.csv`, recorded with `tools/freeclip2/g
   TLV3/4 = 0. Each change was reported about 3–4 s after the prompt.
 - Querying 43/37 with empty TLV1/TLV2 returns the current state, e.g. `1=01 2=01 3=00 4=00`.
 - OpenFreebuds uses 43/3 TLV 8/9 for in-ear state on other models. FreeClip 2 sent no 43/3 during the test.
+
+## Stream restart (session 3, 2026-11-11)
+
+Data: `tests/fixtures/freeclip2/stream_restart.csv` (from `--raw-log`).
+
+- After about 10 s of silence while the user held a look-down pose (~51°), the 43/89 stream resumed with its
+  **sequence number lower than before** (721 → 235). The values were near identity and followed the same pattern
+  as a stream start (slow creep to 0, then the identity re-centre at seq 279).
+- A restarted stream's orientation is relative to the head pose at the moment it started. Treating it as a
+  continuation caused a false "recovered" while still looking down, and then a −55° offset once upright. So
+  after the first recovery, later slouches never reached the threshold.
+- Why the earbuds restart the stream is unknown. A primary/secondary earbud handover (each bud has its own
+  IMU) is a guess `[unverified]`. `--raw-log` now also records non-pose frames, so the next occurrence shows
+  what came before it.
+- **Fix:** `Rebuilder` treats `seq < previous seq` as a new stream and takes the last known absolute orientation
+  as its reference. On this recording that reads ~51° until the user moves, then −3° to −7° when upright. Two
+  tests (rebuild-only and end-to-end with the detector) fail without the fix.

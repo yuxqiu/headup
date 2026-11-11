@@ -85,3 +85,19 @@
 - Tests 17 → 20 (raw-log format, sign-flipped calibration mean, JSON log format); clippy clean; flake check passes.
 - Live: the non-TTY run printed clean lines with no `\r`. The earbuds were disconnected, so only the waiting path
   was exercised.
+
+## 2026-11-11 09:20 UTC
+- User report: no warnings after the first recovery. session3 logs showed the 43/89 stream restarting (seq 721 → 235),
+  measured from the still-looking-down pose. Rebuilder now treats a backwards seq as a new stream with
+  reference = last known orientation.
+- New fixture `stream_restart.csv` with 2 tests (both fail without the fix). `--raw-log` now records non-pose
+  frames. 23 tests pass; `nix flake check` passes.
+
+## 2026-11-11 09:50 UTC
+- The user confirmed the stream-restart fix works. They reported the 10 s tone was inaudible and the first prompt
+  truncated. The session4 log shows the tones fired, so the cause is the Bluetooth output waking up.
+- Added `core::wav` (parse/encode mono 16-bit PCM, tones, lead-in) and a 1 s silent lead-in on every sound. A
+  test checks that the embedded clips parse. 27 tests pass; `nix flake check` passes.
+
+## 2026-11-11 10:00 UTC
+- The user confirmed the 1 s lead-in works: the tone is audible and the first prompt is complete.

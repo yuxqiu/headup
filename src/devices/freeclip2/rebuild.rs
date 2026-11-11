@@ -3,7 +3,9 @@
 //! The earbuds report a quaternion relative to a reference that they silently move to any pose held
 //! still for a few seconds; the move is announced by an exact identity sample once the head moves
 //! again. `Rebuilder` turns that into one continuous orientation relative to the stream start by
-//! taking "last stationary pose" as the new reference on each identity sample (docs/devices/freeclip2/FINDINGS.md).
+//! taking "last stationary pose" as the new reference on each identity sample, and the last known
+//! orientation when the earbuds start a new stream (sequence number goes backwards)
+//! (docs/devices/freeclip2/FINDINGS.md).
 
 use crate::core::quat::Quat;
 use std::collections::VecDeque;
@@ -32,6 +34,7 @@ pub struct Rebuilder {
     still: Quat,
     still_since: Option<f64>,
     prev_raw: Option<Quat>,
+    prev_seq: Option<u32>,
     window: VecDeque<(f64, Quat)>,
     glide: Option<Glide>,
 }
@@ -60,6 +63,7 @@ impl Default for Rebuilder {
             still: Quat::IDENTITY,
             still_since: None,
             prev_raw: None,
+            prev_seq: None,
             window: VecDeque::new(),
             glide: None,
         }
@@ -67,10 +71,26 @@ impl Default for Rebuilder {
 }
 
 impl Rebuilder {
+    /// The earbuds started a new stream (its sequence number went backwards). A new stream measures
+    /// from the head pose at the moment it started; the head was last seen at `last_abs` and the
+    /// stream is silent only while the head is still, so that pose becomes the reference.
+    fn restart_stream(&mut self) {
+        self.reference = self.last_abs;
+        self.still = self.last_abs;
+        self.still_since = None;
+        self.prev_raw = None;
+        self.window.clear();
+        self.glide = None;
+    }
+
     /// Feed one raw sample (time in seconds). Returns the absolute orientation since stream start
     /// and whether this sample was a device re-centre, or `None` while the sample is held back as a
     /// possible re-centre glide (the head is then still, so "no new pose" is accurate).
-    pub fn push(&mut self, t: f64, raw: Quat) -> Option<(Quat, bool)> {
+    pub fn push(&mut self, t: f64, seq: u32, raw: Quat) -> Option<(Quat, bool)> {
+        if self.prev_seq.is_some_and(|p| seq < p) {
+            self.restart_stream();
+        }
+        self.prev_seq = Some(seq);
         let reset = raw == Quat::IDENTITY && self.prev_raw.is_some_and(|p| p != raw);
         let angle = raw.angle_to(Quat::IDENTITY);
         let prev_angle = self.prev_raw.map(|p| p.angle_to(Quat::IDENTITY));
@@ -130,40 +150,64 @@ mod tests {
     use super::*;
     use crate::core::quat::{Euler, Quat};
 
-    /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples of
-    /// each phase, in order.
-    fn phase_medians(path: &str) -> Vec<(String, f64, f64, f64)> {
-        let text = std::fs::read_to_string(path).unwrap();
+    /// One recorded 43/89 sample; `phase` is the guided-test step ("" if the recording has none).
+    struct Row {
+        phase: String,
+        t: f64,
+        seq: u32,
+        raw: Quat,
+    }
+
+    fn read_csv(name: &str) -> Vec<Row> {
+        let path = format!(
+            "{}/tests/fixtures/freeclip2/{name}",
+            env!("CARGO_MANIFEST_DIR")
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
         let mut lines = text.lines();
         let header: Vec<&str> = lines.next().unwrap().split(',').collect();
-        let col = |n: &str| header.iter().position(|h| *h == n).unwrap();
-        let (ct, cp, cw, cx, cy, cz) = (
-            col("t"),
+        let col = |n: &str| header.iter().position(|h| *h == n);
+        let c = |n: &str| col(n).unwrap_or_else(|| panic!("{path}: no column {n}"));
+        let (ct, cs, cw, cx, cy, cz, cp) = (
+            c("t"),
+            c("seq"),
+            c("w"),
+            c("x"),
+            c("y"),
+            c("z"),
             col("phase"),
-            col("w"),
-            col("x"),
-            col("y"),
-            col("z"),
         );
+        lines
+            .map(|line| {
+                let f: Vec<&str> = line.split(',').collect();
+                let p = |i: usize| f[i].parse::<f64>().unwrap();
+                Row {
+                    phase: cp.map_or(String::new(), |i| f[i].to_string()),
+                    t: p(ct),
+                    seq: f[cs].parse().unwrap(),
+                    raw: Quat {
+                        w: p(cw),
+                        x: p(cx),
+                        y: p(cy),
+                        z: p(cz),
+                    },
+                }
+            })
+            .collect()
+    }
+
+    /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples of
+    /// each phase, in order.
+    fn phase_medians(name: &str) -> Vec<(String, f64, f64, f64)> {
         let mut rb = Rebuilder::default();
         let mut phases: Vec<(String, Vec<Quat>)> = Vec::new();
-        for line in lines {
-            let f: Vec<&str> = line.split(',').collect();
-            let p = |i: usize| f[i].parse::<f64>().unwrap();
-            let Some((abs, _)) = rb.push(
-                p(ct),
-                Quat {
-                    w: p(cw),
-                    x: p(cx),
-                    y: p(cy),
-                    z: p(cz),
-                },
-            ) else {
+        for r in read_csv(name) {
+            let Some((abs, _)) = rb.push(r.t, r.seq, r.raw) else {
                 continue;
             };
             match phases.last_mut() {
-                Some((name, v)) if name == f[cp] => v.push(abs),
-                _ => phases.push((f[cp].to_string(), vec![abs])),
+                Some((name, v)) if *name == r.phase => v.push(abs),
+                _ => phases.push((r.phase, vec![abs])),
             }
         }
         let median = |mut v: Vec<f64>| {
@@ -203,55 +247,12 @@ mod tests {
     // The two real guided recordings; run 1 accumulates more error.
     #[test]
     fn rebuilds_guided_run_fixed_mode() {
-        check(
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/freeclip2/headpose_axes_fixed.csv"
-            ),
-            8.0,
-        );
+        check("headpose_axes_fixed.csv", 8.0);
     }
 
     #[test]
     fn rebuilds_guided_run_follow_mode() {
-        check(
-            concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/fixtures/freeclip2/headpose_axes.csv"
-            ),
-            15.0,
-        );
-    }
-
-    fn read_csv(path: &str) -> Vec<(String, f64, Quat)> {
-        let text = std::fs::read_to_string(path).unwrap();
-        let mut lines = text.lines();
-        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
-        let col = |n: &str| header.iter().position(|h| *h == n).unwrap();
-        let (ct, cp, cw, cx, cy, cz) = (
-            col("t"),
-            col("phase"),
-            col("w"),
-            col("x"),
-            col("y"),
-            col("z"),
-        );
-        lines
-            .map(|line| {
-                let f: Vec<&str> = line.split(',').collect();
-                let p = |i: usize| f[i].parse::<f64>().unwrap();
-                (
-                    f[cp].to_string(),
-                    p(ct),
-                    Quat {
-                        w: p(cw),
-                        x: p(cx),
-                        y: p(cy),
-                        z: p(cz),
-                    },
-                )
-            })
-            .collect()
+        check("headpose_axes.csv", 15.0);
     }
 
     fn pitch_quat(deg: f64) -> Quat {
@@ -268,19 +269,15 @@ mod tests {
     // reading to identity (~45°/s, even steps), then go silent. The glide must not reach the output.
     #[test]
     fn hides_recentre_glide_during_long_holds() {
-        let rows = read_csv(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/freeclip2/hold_test.csv"
-        ));
         let mut rb = Rebuilder::default();
         let mut phase_start = 0.0;
         let mut prev_phase = String::new();
         let mut held_back = 0;
-        for (phase, t, raw) in rows {
+        for Row { phase, t, seq, raw } in read_csv("hold_test.csv") {
             if phase != prev_phase {
                 (phase_start, prev_phase) = (t, phase.clone());
             }
-            let Some((abs, _)) = rb.push(t, raw) else {
+            let Some((abs, _)) = rb.push(t, seq, raw) else {
                 held_back += 1;
                 continue;
             };
@@ -307,21 +304,23 @@ mod tests {
     #[test]
     fn real_lift_after_hold_is_not_swallowed() {
         let mut rb = Rebuilder::default();
-        let mut t = 0.0;
+        let (mut t, mut seq) = (0.0, 0);
         let mut last = None;
+        let mut push = |rb: &mut Rebuilder, t: &mut f64, q: Quat| {
+            seq += 1;
+            *t += 0.02;
+            rb.push(*t, seq, q)
+        };
         for _ in 0..200 {
-            last = rb.push(t, pitch_quat(30.0)).or(last); // 4 s still at 30°
-            t += 0.02;
+            last = push(&mut rb, &mut t, pitch_quat(30.0)).or(last); // 4 s still at 30°
         }
         let mut p = 30.0;
         for step in [0.3, 0.8, 1.5, 2.5, 3.5, 4.0, 3.0, 2.0, 1.0, 0.5] {
             p -= step; // accelerating then decelerating lift, stops at 10.9°
-            last = rb.push(t, pitch_quat(p)).or(last);
-            t += 0.02;
+            last = push(&mut rb, &mut t, pitch_quat(p)).or(last);
         }
         for _ in 0..50 {
-            last = rb.push(t, pitch_quat(p)).or(last);
-            t += 0.02;
+            last = push(&mut rb, &mut t, pitch_quat(p)).or(last);
         }
         let pitch = last.unwrap().0.euler().pitch;
         assert!(
@@ -335,22 +334,18 @@ mod tests {
     #[test]
     fn long_holds_trigger_cues_end_to_end() {
         use crate::core::detector::{Config, Cue, Detector};
-        let rows = read_csv(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/freeclip2/hold_test.csv"
-        ));
         let mut rb = Rebuilder::default();
         let mut det = Detector::new(Config::default());
         let mut cues: Vec<(Cue, String)> = Vec::new();
         let mut tick = 0.0;
         let mut cur = String::new(); // phase of the last sample: silence belongs to the pose before it
-        for (phase, t, raw) in rows {
+        for Row { phase, t, seq, raw } in read_csv("hold_test.csv") {
             while tick < t {
                 cues.extend(det.tick(tick).into_iter().map(|c| (c, cur.clone()))); // 1 s ticks during silence
                 tick += 1.0;
             }
             cur = phase.clone();
-            if let Some((abs, _)) = rb.push(t, raw) {
+            if let Some((abs, _)) = rb.push(t, seq, raw) {
                 // baseline = stream start (upright)
                 cues.extend(
                     det.update(t, abs.euler().pitch)
@@ -372,6 +367,69 @@ mod tests {
             (Cue::Recovered, "center"),
         ];
         assert_eq!(key, want, "cues: {cues:?}");
+    }
+
+    // data/session3 (stream_restart.csv): looking down ~51°, head held still, then the earbuds
+    // started a new stream (seq 721 -> 235) whose orientation is relative to the pose at that
+    // moment; then the user sat up. Before handling restarts this read ~0° while still looking down
+    // (a false "recovered") and -55° once upright.
+    #[test]
+    fn continues_across_stream_restart() {
+        let mut rb = Rebuilder::default();
+        let mut pitches = Vec::new();
+        for r in read_csv("stream_restart.csv") {
+            if let Some((abs, _)) = rb.push(r.t, r.seq, r.raw) {
+                pitches.push((r.t, r.seq, abs.euler().pitch));
+            }
+        }
+        let restart = pitches
+            .windows(2)
+            .position(|w| w[1].1 < w[0].1)
+            .expect("recording has a restart")
+            + 1;
+        // Still looking down right after the restart, until the user starts to sit up (~25.6 s).
+        for &(t, _, p) in pitches[restart..].iter().take_while(|(t, _, _)| *t < 25.6) {
+            assert!(p > 40.0, "t={t:.2}: still looking down, but pitch {p:.1}");
+        }
+        let (t, _, end) = *pitches.last().unwrap();
+        assert!(
+            end.abs() < 10.0,
+            "t={t:.2}: upright again, but pitch {end:.1}"
+        );
+    }
+
+    // End to end on the stream-restart recording: one slouch, so exactly one tone and one recovery,
+    // and the recovery only once the user actually sat up (~25.6 s), not at the restart.
+    #[test]
+    fn stream_restart_end_to_end() {
+        use crate::core::detector::{Config, Cue, Detector};
+        let mut rb = Rebuilder::default();
+        let mut det = Detector::new(Config::default());
+        let (mut cues, mut tick) = (Vec::new(), 0.0);
+        for r in read_csv("stream_restart.csv") {
+            while tick < r.t {
+                cues.extend(det.tick(tick).into_iter().map(|c| (c, tick)));
+                tick += 1.0;
+            }
+            if let Some((abs, _)) = rb.push(r.t, r.seq, r.raw) {
+                cues.extend(
+                    det.update(r.t, abs.euler().pitch)
+                        .into_iter()
+                        .map(|c| (c, r.t)),
+                );
+            }
+        }
+        let kinds: Vec<Cue> = cues
+            .iter()
+            .map(|c| c.0)
+            .filter(|c| *c != Cue::Speak)
+            .collect();
+        assert_eq!(kinds, [Cue::Tone, Cue::Recovered], "cues: {cues:?}");
+        let recovered_at = cues.iter().find(|c| c.0 == Cue::Recovered).unwrap().1;
+        assert!(
+            recovered_at >= 25.6,
+            "recovered at {recovered_at:.2}, before sitting up"
+        );
     }
 
     #[test]

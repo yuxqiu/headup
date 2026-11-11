@@ -81,3 +81,12 @@
 - A failed calibration (head kept moving) is a normal outcome. headup logs `CalibrationFailed`, waits 60 s (or until
   the earbuds are removed) and asks again, without dropping the Bluetooth connection.
 - Every retry wait in `main` responds to Ctrl-C.
+
+## 2026-11-11: Silent lead-in for every sound
+- Every played sound starts with 1 s of silence (`LEAD_IN_S` in src/core/cues.rs, applied with `core::wav`).
+- Reason: PipeWire suspends idle Bluetooth outputs, and the start of playback was lost while the link woke. The
+  0.43 s tone was inaudible even though it was logged (session4: Tone at 19.8 s and 56.4 s), and "Sit upright…"
+  lost its start (the user heard "…top right"). The wake time of ~0.5–1.5 s is an estimate `[unverified]`; if
+  sounds are still clipped, raise `LEAD_IN_S`. 1 s was confirmed sufficient by the user on 2026-11-11.
+- Rejected: keeping the Bluetooth output awake by streaming silence. It costs battery and may interfere with the
+  earbuds switching to another device.

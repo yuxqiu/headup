@@ -72,6 +72,12 @@ impl FreeClip2 {
 impl FreeClip2 {
     /// Handle one frame from the earbuds; `None` if it produces no event.
     async fn handle(&mut self, f: Frame) -> Result<Option<Event>> {
+        if (f.svc, f.cmd) != (SVC, CMD_STREAM_DATA)
+            && let Some(log) = self.raw_log.as_mut()
+        {
+            let t = self.start.elapsed().as_secs_f64();
+            writeln!(log, "{}", raw_frame_line(t, &f))?;
+        }
         match (f.svc, f.cmd) {
             (SVC, CMD_WEAR_STATE) => self.on_wear_state(&f).await,
             (SVC, CMD_STREAM_DATA) => self.on_pose_sample(&f),
@@ -102,7 +108,7 @@ impl FreeClip2 {
         };
         let (seq, raw) = decode_sample(s, q).with_context(|| format!("malformed 43/89: {f:?}"))?;
         let t = self.start.elapsed().as_secs_f64();
-        let out = self.rebuild.push(t, raw);
+        let out = self.rebuild.push(t, seq, raw);
         if let Some(log) = self.raw_log.as_mut() {
             writeln!(log, "{}", raw_log_line(t, seq, raw, out))?;
         }
@@ -120,6 +126,27 @@ fn raw_log_line(t: f64, seq: u32, raw: Quat, out: Option<(Quat, bool)>) -> Strin
     format!(
         r#"{{"t":{t:.4},"seq":{seq},"raw":{},"abs":{abs},"reset":{reset}}}"#,
         q(raw)
+    )
+}
+
+/// One JSON line for `--raw-log` describing a non-pose frame, e.g. wear state or a device push:
+/// `{"t":1.5000,"svc":43,"cmd":37,"tlvs":{"1":"01","2":"01"}}`.
+fn raw_frame_line(t: f64, f: &Frame) -> String {
+    let tlvs: Vec<String> = f
+        .tlvs
+        .iter()
+        .map(|(k, v)| {
+            format!(
+                r#""{k}":"{}""#,
+                v.iter().map(|b| format!("{b:02x}")).collect::<String>()
+            )
+        })
+        .collect();
+    format!(
+        r#"{{"t":{t:.4},"svc":{},"cmd":{},"tlvs":{{{}}}}}"#,
+        f.svc,
+        f.cmd,
+        tlvs.join(",")
     )
 }
 
@@ -177,5 +204,14 @@ mod tests {
             r#"{"t":1.5000,"seq":7,"raw":[1.000000,0.000000,0.000000,0.000000],"abs":[1.000000,0.000000,0.000000,0.000000],"reset":true}"#
         );
         assert!(raw_log_line(1.5, 8, q, None).contains(r#""abs":null,"reset":false"#));
+    }
+
+    #[test]
+    fn raw_frame_line_format() {
+        let f = Frame::new(43, 37, &[(1, &[1]), (2, &[0])]);
+        assert_eq!(
+            raw_frame_line(1.5, &f),
+            r#"{"t":1.5000,"svc":43,"cmd":37,"tlvs":{"1":"01","2":"00"}}"#
+        );
     }
 }

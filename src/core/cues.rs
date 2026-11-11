@@ -1,8 +1,10 @@
-//! Audio and desktop cues, played with `pw-play`: generated tones, and spoken prompts that are
-//! pre-recorded with Piper's "alba" voice and embedded in the binary (assets/voice/, regenerate
-//! with tools/gen_voice.sh). Notifications use `notify-send`.
+//! Audio and desktop cues. Sounds are played with `pw-play`, each after a silent lead-in (see
+//! `LEAD_IN_S`): generated tones, and spoken prompts pre-recorded with Piper's "alba" voice and
+//! embedded in the binary (assets/voice/, regenerate with tools/gen_voice.sh). Notifications use
+//! `notify-send`.
 
 use super::detector::Cue;
+use super::wav::Pcm;
 use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
@@ -33,6 +35,10 @@ impl Phrase {
         }
     }
 
+    fn pcm(self) -> Result<Pcm> {
+        Pcm::parse(self.wav()).with_context(|| format!("embedded clip for {self:?}"))
+    }
+
     fn wav(self) -> &'static [u8] {
         match self {
             Phrase::SitUpright => include_bytes!("../../assets/voice/sit_upright.wav"),
@@ -42,6 +48,11 @@ impl Phrase {
         }
     }
 }
+
+/// Silence before every sound. PipeWire suspends an idle Bluetooth output and waking it takes
+/// roughly a second, during which audio is lost: short tones vanished entirely and the start of
+/// spoken prompts was cut off without this.
+const LEAD_IN_S: f64 = 1.0;
 
 pub struct Cues {
     dir: PathBuf,
@@ -61,12 +72,15 @@ impl Cues {
             PathBuf::from(std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR not set")?)
                 .join("headup");
         std::fs::create_dir_all(&dir)?;
-        let tone = dir.join("tone.wav");
-        let tink = dir.join("tink.wav");
-        std::fs::write(&tone, wav(&[(523.0, 0.18), (440.0, 0.25)]))?;
-        std::fs::write(&tink, wav(&[(880.0, 0.08), (1318.5, 0.14)]))?;
+        let write = |name: &str, pcm: Pcm| -> Result<PathBuf> {
+            let path = dir.join(name);
+            std::fs::write(&path, pcm.with_lead_in(LEAD_IN_S).encode())?;
+            Ok(path)
+        };
+        let tone = write("tone.wav", Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)]))?;
+        let tink = write("tink.wav", Pcm::tones(&[(880.0, 0.08), (1318.5, 0.14)]))?;
         for p in Phrase::ALL {
-            std::fs::write(dir.join(p.file_name()), p.wav())?;
+            write(p.file_name(), p.pcm()?)?;
         }
         Ok(Cues { dir, tone, tink })
     }
@@ -128,32 +142,18 @@ fn spawn(cmd: &str, args: &[&str]) {
     }
 }
 
-/// 16-bit mono 44.1 kHz WAV of consecutive sine notes (Hz, seconds) with short fades.
-fn wav(notes: &[(f64, f64)]) -> Vec<u8> {
-    const RATE: u32 = 44_100;
-    let mut pcm = Vec::new();
-    for &(hz, secs) in notes {
-        let n = (secs * RATE as f64) as usize;
-        let fade = (0.01 * RATE as f64) as usize;
-        for i in 0..n {
-            let env = (i.min(n - 1 - i) as f64 / fade as f64).min(1.0);
-            let v = (2.0 * std::f64::consts::PI * hz * i as f64 / RATE as f64).sin() * env * 0.3;
-            pcm.extend_from_slice(&((v * i16::MAX as f64) as i16).to_le_bytes());
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_clips_are_mono_16_bit_pcm() {
+        for p in Phrase::ALL {
+            let pcm = p.pcm().unwrap();
+            assert!(
+                pcm.samples.len() > pcm.rate as usize / 2,
+                "{p:?} is under 0.5 s"
+            );
         }
     }
-    let mut out = Vec::with_capacity(44 + pcm.len());
-    out.extend_from_slice(b"RIFF");
-    out.extend_from_slice(&(36 + pcm.len() as u32).to_le_bytes());
-    out.extend_from_slice(b"WAVEfmt ");
-    out.extend_from_slice(&16u32.to_le_bytes());
-    out.extend_from_slice(&1u16.to_le_bytes()); // PCM
-    out.extend_from_slice(&1u16.to_le_bytes()); // mono
-    out.extend_from_slice(&RATE.to_le_bytes());
-    out.extend_from_slice(&(RATE * 2).to_le_bytes());
-    out.extend_from_slice(&2u16.to_le_bytes());
-    out.extend_from_slice(&16u16.to_le_bytes());
-    out.extend_from_slice(b"data");
-    out.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
-    out.extend_from_slice(&pcm);
-    out
 }
