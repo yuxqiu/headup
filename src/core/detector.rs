@@ -1,7 +1,7 @@
 //! Slouch detection state machine (design: docs/UX_RESEARCH.md).
 //!
 //! Input is forward pitch relative to the calibrated upright pose (degrees, looking down > 0).
-//! The FreeClip 2 stops sending while the head is still, so silence means "unchanged": the caller
+//! Trackers may stop sending while the head is still, so silence means "unchanged": the caller
 //! must also call `tick` periodically and timers keep running on the last smoothed value.
 
 #[derive(Debug, Clone, Copy, PartialEq)]

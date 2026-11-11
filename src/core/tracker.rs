@@ -8,7 +8,8 @@ use std::time::Duration;
 pub enum Event {
     /// Head orientation. Absolute within one wear period (relative to an arbitrary but fixed frame
     /// chosen by the backend), in the convention of [`Quat::euler`]: pitch > 0 = looking down,
-    /// yaw > 0 = turned left, roll > 0 = tilted right. The frame may change after `Worn(true)`.
+    /// yaw > 0 = turned left, roll > 0 = tilted right. The frame may change after `Worn(true)`, or
+    /// when tracking resumes after a long `Available(false)`; the session recalibrates in both cases.
     Pose(Quat),
     /// Whether the earbuds are worn well enough for head tracking (for FreeClip 2: both of them).
     /// Sent on change; a backend should report the initial state soon after connecting.
