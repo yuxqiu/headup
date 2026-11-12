@@ -328,3 +328,6 @@
   recovery after the 1.33 s hold, sit-up at 8 s gave no reminder, re-anchor corrected 22.6° of re-centre drift.
   Found: a 43/54 without TLV 5 ended the session (v0.2.0 bug); fixed with a test from the real frame. Service stopped
   for the check and restarted.
+
+## 2026-11-12 02:54 UTC
+- Bumped to 0.2.1 (Cargo.toml, Cargo.lock); `nix flake check` passes; the built binary reports 0.2.1. Release next.
