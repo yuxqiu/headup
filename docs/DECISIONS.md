@@ -369,6 +369,11 @@
   (`GLIDE_LEN` = 68). It keeps glide hypotheses ("a glide started from this pose"), each alive while every later
   sample fits within `FIT_TOL_DEG` = 0.5° (largest clean misfit: 0.42°). Poses within 0.5° of identity get no
   hypothesis: a glide from there is indistinguishable from holding still.
+- Known limit of that rule: a glide from within 0.5° that a transport stall (> `QUIET`) cuts off before its identity
+  sample gets partly released, and the next reference is taken from the partly glided pose: an offset of at most
+  0.5° until recalibration, in either direction (re-anchoring corrects only offsets towards "looking up"). It needs
+  a rare stall to hit a tiny re-centre; none of the 8 stalls in the recordings did. Tracking hypotheses inside the
+  noise band instead brought back samples held forever and wrong drops.
 - While samples flow, every sample is still held `GLIDE_SAMPLES` = 70 samples: that covers glides during which the
   head moved (16%), which fit no hypothesis.
 - After `QUIET_S` = 0.2 s of silence, everything up to the earliest live hypothesis's start pose is released. What
