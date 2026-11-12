@@ -349,7 +349,7 @@
 - Detector: reminders are data (`Timer { cue, due, every }`), removing `pending`, `had_cue` and an `unreachable!`.
   `upright()` removed; tests check `Update::reanchored`.
 - FreeClip 2: `protocol.rs` parses each frame once into a typed `Message` (a malformed 43/54 is now an error like the
-  others; all 10 real 43/54 frames in data/ are well-formed); `link.rs` is the protocol without I/O, with one ordered
+  others; all 10 real 43/54 frames in data/ had TLV 5 — wrong as a rule: see "43/54 has more than one form"); `link.rs` is the protocol without I/O, with one ordered
   event queue (no hand-paired reset of rebuild and pose queue) and frames stamped when read; `mod.rs` is the socket.
   `Link` unit tests cover the startup frames, the re-wear restart, the v0.1.2 resend when this computer starts audio,
   malformed frames and pose stamps. Rebuilder: `Pending { BeforeGlide, All }` replaces a `0` sentinel.
@@ -404,3 +404,13 @@
   throughout; it had the same float round trip around `next_wake` and only passed by luck. Recording timestamps
   (float seconds in the CSVs) are converted once, when loaded (`Row.t`, `Out.t` and phase starts are `Duration`).
 - Floats remaining on purpose: the smoothing formula, wall-clock Unix seconds in the logs, and display.
+
+## 2026-11-12: 43/54 has more than one form (live check)
+- The live check (data/live3*.jsonl) got a 43/54 with only TLV 1 = `01 00`, 13.8 s after connecting. v0.2.0 treated
+  a 43/54 without TLV 5 as malformed, so the session ended and headup reconnected 5 s later (and recalibrated).
+  v0.2.0 has this bug.
+- The vendor app names 43/54 "connection management: paired-device-list change report"; the TLV 5 form (address +
+  audio state) is one variant. A 43/54 without TLV 5 is now `Message::Other` (still in `--raw-log`); a TLV 5 that is
+  too short stays an error. Test `other_device_list_reports_are_not_errors` uses the real frame (fails before).
+- Lesson: ten samples of a message do not define its format. "Fail loudly" applies to frames that break the format
+  headup relies on, not to variants of a command it only partly uses.

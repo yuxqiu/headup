@@ -430,3 +430,15 @@ identity sample as ground truth for each glide's end.
 - **A causal test can confirm a glide early:** checking each new sample against the model from recent start poses
   confirms most large glides within 2–4 samples. Real head movement occasionally matches the exact ramp speed for a
   few samples (e.g. session 4, 4 samples at 43°), so a match is only provisional until the identity sample.
+
+## 43/54 forms; live check of the model-based release (data/live3*.jsonl, 2026-11-12)
+
+- 43/54 is the paired-device-list change report ("连接管理—PDL列表变化上报"). Besides the TLV 5 form (device address
+  + audio state), it also comes as TLV 1 = `01 00` with nothing else (once, 13.8 s after connecting, around when
+  audio started). Meaning unknown `[unverified]`.
+- With the model-based release, a slouch held still cued 10.2 s after it started (the earbuds went silent for 9.6 s;
+  the held poses came out 0.2 s into the silence). Recovery came the 70-sample hold (1.32 s at 52.6 Hz) after
+  sitting up. Sitting up 8.0 s into a slouch gave no reminder.
+- Three large re-centres (glides from 61°, 58°, 48°) between calibration and the next still upright put the rebuilt
+  upright 22.6° towards "looking up", in line with ~10° per re-centre (section "Ground truth"); re-anchoring
+  corrected it.

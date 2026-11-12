@@ -38,8 +38,8 @@ pub enum Message {
     /// 43/37: whether both earbuds are worn. Head tracking stops as soon as either comes off
     /// (tools/freeclip2/single_bud_test.py), so one worn earbud counts as not worn.
     Wear { both_worn: bool },
-    /// 43/54: one connected source device's audio state. Head tracking only flows to the device
-    /// that is streaming audio.
+    /// 43/54 (TLV 5 form): one connected source device's audio state. Head tracking only flows
+    /// to the device that is streaming audio.
     DeviceAudio { address: Address, streaming: bool },
     /// 43/89: one pose sample, relative to the earbuds' current reference.
     Sample { seq: u32, raw: Quat },
@@ -71,11 +71,14 @@ fn wear(f: &Frame) -> Result<Message> {
     })
 }
 
-/// 43/54: TLV 5 = the device's Bluetooth address (little-endian), then a state byte. Observed:
-/// 0x09 when it starts streaming audio, 0x03 when it goes idle, 0x01 on connection; bit 0x08 is
-/// read as "streaming" `[inferred from those values]`.
+/// 43/54, the paired-device-list change report. Its TLV 5 form carries one device's audio state:
+/// the device's Bluetooth address (little-endian), then a state byte. Observed: 0x09 when it starts
+/// streaming audio, 0x03 when it goes idle, 0x01 on connection; bit 0x08 is read as "streaming"
+/// `[inferred from those values]`. Other forms (e.g. TLV 1 = `01 00`) are other list reports.
 fn device_audio(f: &Frame) -> Result<Message> {
-    let v = f.tlv(5).context("no TLV 5")?;
+    let Some(v) = f.tlv(5) else {
+        return Ok(Message::Other);
+    };
     let (Some(address), Some(&state)) = (v.get(..6), v.get(6)) else {
         bail!("TLV 5 too short");
     };
@@ -195,7 +198,15 @@ mod tests {
         let phone = "EC:81:50:6E:86:B5";
         assert_eq!(parse("b5866e5081ec01").unwrap(), audio(phone, false));
         assert!(parse("0102").is_err());
-        assert!(Message::parse(&Frame::new(43, 54, &[])).is_err());
+    }
+
+    // 43/54 is the paired-device-list change report ("连接管理—PDL列表变化上报" in the vendor
+    // app); only its TLV 5 form carries a device's audio state. This other form came from a real
+    // FreeClip 2 (data/live3_raw.jsonl) and must not end the session.
+    #[test]
+    fn other_device_list_reports_are_not_errors() {
+        let f = Frame::new(43, 54, &[(1, &[0x01, 0x00])]);
+        assert_eq!(Message::parse(&f).unwrap(), Message::Other);
     }
 
     #[test]

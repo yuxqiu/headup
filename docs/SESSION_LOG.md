@@ -322,3 +322,9 @@
 ## 2026-11-12 02:40 UTC
 - Exact time extended to the test harness and replay driver (user asked about the script's floats). The replay
   driver had the same float round trip as `Link`. 60 tests pass; clippy, fmt, rustdoc clean. Staged.
+
+## 2026-11-12 02:49 UTC
+- Live check of f83fc6d (data/live3*.jsonl): glances ignored, held-still slouch cued 0.2 s after due (quiet release),
+  recovery after the 1.33 s hold, sit-up at 8 s gave no reminder, re-anchor corrected 22.6° of re-centre drift.
+  Found: a 43/54 without TLV 5 ended the session (v0.2.0 bug); fixed with a test from the real frame. Service stopped
+  for the check and restarted.
