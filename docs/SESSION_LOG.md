@@ -307,3 +307,10 @@
 - Released v0.2.0: bump commit a2eb9fc (signed), CI green on both architectures, signed tag v0.2.0, GitHub release
   with notes (user-visible changes; log format as a breaking change). Release workflow uploaded both tarballs; x86_64
   tarball verified (sha256, `--version` 0.2.0, run with nixpkgs dbus on LD_LIBRARY_PATH).
+
+## 2026-11-12 02:31 UTC
+- Glide model studied on every recording (FINDINGS): 68 samples from the held pose, first sample ~2 steps along,
+  145/170 glides fit within 0.5°; every stream's first re-centre ends at seq 279–280; head movement during clean glides
+  ≤ 0.8° (not the drift source).
+- Built model-based glide release (DECISIONS "Model-based glide release"); removed `GLIDE_STALL_S`. Fixed a
+  nanosecond wake-time spin in `Link::on_timer`. 60 tests pass; clippy, fmt, rustdoc clean. Staged, not committed.

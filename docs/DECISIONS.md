@@ -308,7 +308,7 @@
   `tests/fixtures/freeclip2/live_35hz.csv` (the live check; the old hold also passes it, narrowly).
 - Rejected: a 2.0 s quiet fallback. It was needed only while poses carried arrival time; it reopened the stall gap.
 
-## 2026-11-12: Shape-aware release when the earbuds go quiet (user)
+## 2026-11-12: Shape-aware release when the earbuds go quiet (user) — superseded by "Model-based glide release"
 - A glide is a straight ramp to identity (FINDINGS "Re-centre model"), so when the earbuds go quiet only a trailing
   run of consecutive samples that steadily approach identity can still be an unfinished glide. After `QUIET_S` =
   0.2 s of silence, everything before that run is released; the run waits up to `GLIDE_STALL_S` = 5 s for its
@@ -362,3 +362,27 @@
   of five bool checks.
 - Smaller: `LogEvent::parts` (one match), `Quat::dot`, `STATUS_EVERY_S`, documented cue stderr and discovery soft
   fail. The notification text no longer says "for a minute" ("for a while"): the duration is the detector's setting.
+
+## 2026-11-12: Model-based glide release (user)
+- The rebuilder now uses the measured glide model (FINDINGS "Glide model checked against every recording"): from the
+  pose `P` held before a glide, sample `k` reads `slerp(P, I, (k+1)/69)` and sample 68 is the identity sample
+  (`GLIDE_LEN` = 68). It keeps glide hypotheses ("a glide started from this pose"), each alive while every later
+  sample fits within `FIT_TOL_DEG` = 0.5° (largest clean misfit: 0.42°). Poses within 0.5° of identity get no
+  hypothesis: a glide from there is indistinguishable from holding still.
+- While samples flow, every sample is still held `GLIDE_SAMPLES` = 70 samples: that covers glides during which the
+  head moved (16%), which fit no hypothesis.
+- After `QUIET_S` = 0.2 s of silence, everything up to the earliest live hypothesis's start pose is released. What
+  remains waits for its identity sample, with no time limit: the model says the head is still at `P`. `GLIDE_STALL_S`
+  and the "steadily approaching" shape rule are gone.
+- On an identity sample, the samples of the hypothesis that predicts it are dropped (67 per clean glide); if none
+  does, the 70 before it, as before. On a new stream, a live hypothesis's samples are dropped (the head was still).
+- Live recordings: stream_restart.csv's 47 look-down samples all come out 0.2 s after the earbuds go quiet (four used
+  to wait 5 s). New tests, each failing on the previous rebuilder: noisy still pose and sit-up both released at once,
+  a glide survives an 8 s stall, a stream restart mid-glide hides the glide. Drop counts in the recording tests now
+  follow the model (5 × 67 for hold_test, 4 × 67 + 1 for live_35hz).
+- Found on the way: `Link::on_timer` called at exactly `next_wake()` could release nothing (seconds → Instant →
+  seconds lands up to a nanosecond early), so a caller looping on `next_wake` spun forever; the replay helper did.
+  `on_timer` now releases with the due time once its Instant is reached. Test `timer_at_next_wake_makes_progress`
+  (fails before). Production was very unlikely to hit it (tokio timers round up to milliseconds).
+- Rejected: the reviewer-era "release everything after 5 s"; a minimum-travel threshold for the old shape rule
+  (another number, and the model makes it unnecessary).

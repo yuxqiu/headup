@@ -408,3 +408,25 @@ What we got (files in `research/firmware/526/`, gitignored):
   within ~40 ms. Reading: `00` = applied, `02` = not applied (no stream to this device) `[inferred from one session]`.
   This fits "Stream switch sent while idle" and explains why the re-send on streaming is needed.
 - The session ran at 35.1 Hz again (see "Sample rate varies between sessions"); glides at 68 samples.
+
+## Glide model checked against every recording (2026-11-12)
+
+Offline analysis of all raw logs and fixtures (scripts in the session scratchpad, not committed), with the exact
+identity sample as ground truth for each glide's end.
+
+- **Model:** from the pose `P` held before a glide, the `k`-th sample after it reads `slerp(P, I, (k+1)/69)` for
+  k = 1…68, and sample 68 is the exact identity sample. The reading's rotation angle falls linearly towards identity on
+  a fixed axis, but the first sample is already about two steps along: in all 60 clean glides from ≥ 10°, the jump
+  from `P` to the first glide sample is 1.78–2.07 steps (typically 1.95), and `P` itself was still. (A first version
+  of this entry fitted a 67-step ramp from the first glide sample and called that `q_s`; that start was one sample
+  late.) From `P`, 145 of 170 glides fit within 0.5° (median 0.23° for glides from ≥ 10°, 0.11° below).
+- **28 glides (16%) do not fit:** the head moved during the blend. With the head still, the two possible device
+  behaviours (moving the reference vs fading the reported rotation) give identical readings, so this data cannot
+  tell them apart.
+- **The head barely moves during clean glides:** inverting 37 of them (fading model) gives at most 0.8° of head
+  movement. So head movement during glides does not explain the ~10° per re-centre error (section "Ground truth").
+- **Every stream's first re-centre ends at seq 279–280** (all 16 recordings), about 5.3 s after the stream starts
+  at 52.5 Hz.
+- **A causal test can confirm a glide early:** checking each new sample against the model from recent start poses
+  confirms most large glides within 2–4 samples. Real head movement occasionally matches the exact ramp speed for a
+  few samples (e.g. session 4, 4 samples at 43°), so a match is only provisional until the identity sample.

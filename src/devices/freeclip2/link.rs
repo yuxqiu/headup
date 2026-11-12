@@ -59,14 +59,21 @@ impl Link {
 
     /// Nothing arrived until `now`: release the held poses the silence allows.
     pub fn on_timer(&mut self, now: Instant) {
-        let released = self.rebuild.release(self.seconds(now));
+        let mut t = self.seconds(now);
+        // `next_wake` rounds the rebuilder's due time (seconds) to an Instant, which can land a
+        // nanosecond early; once that Instant is reached, release with the due time itself.
+        if let Some(due) = self.rebuild.next_release()
+            && self.instant(due) <= now
+        {
+            t = t.max(due);
+        }
+        let released = self.rebuild.release(t);
         self.queue_poses(released);
     }
 
     /// When to call [`Link::on_timer`] if nothing arrives first.
     pub fn next_wake(&self) -> Option<Instant> {
-        let t = self.rebuild.next_release()?;
-        Some(self.epoch + Duration::from_secs_f64(t))
+        Some(self.instant(self.rebuild.next_release()?))
     }
 
     /// The next event for the session, in order.
@@ -129,13 +136,18 @@ impl Link {
 
     fn queue_poses(&mut self, released: Vec<(f64, Quat)>) {
         for (t, orientation) in released {
-            let at = self.epoch + Duration::from_secs_f64(t);
+            let at = self.instant(t);
             self.events.push_back(Event::Pose { at, orientation });
         }
     }
 
+    /// The rebuilder's clock (seconds since `epoch`) and Instants, converted in one place each way.
     fn seconds(&self, now: Instant) -> f64 {
         now.duration_since(self.epoch).as_secs_f64()
+    }
+
+    fn instant(&self, t: f64) -> Instant {
+        self.epoch + Duration::from_secs_f64(t)
     }
 }
 
@@ -215,6 +227,30 @@ mod tests {
         link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
         assert_eq!(events(&mut link), [Event::Available(false)]);
         assert_eq!(link.take_outbox(), []);
+    }
+
+    // The timer fired exactly when `next_wake` asked: it must release something. Converting the
+    // rebuilder's seconds to an Instant and back can land a nanosecond early; then nothing was
+    // released, `next_wake` stayed the same, and a caller looping on it spun forever.
+    #[test]
+    fn timer_at_next_wake_makes_progress() {
+        let start = Instant::now();
+        for k in 0..200u32 {
+            let mut link = link(start);
+            let base = f64::from(k) * 0.0137;
+            for seq in 1..=3u32 {
+                let at = start + Duration::from_secs_f64(base + f64::from(seq) / 35.0);
+                let raw = Quat::IDENTITY;
+                link.on_bytes(at, &sample_frame(seq, raw).encode()).unwrap();
+            }
+            let wake = link.next_wake().expect("samples are held");
+            link.on_timer(wake);
+            assert_ne!(
+                link.next_wake(),
+                Some(wake),
+                "timing {k}: no progress at the wake time"
+            );
+        }
     }
 
     #[test]
