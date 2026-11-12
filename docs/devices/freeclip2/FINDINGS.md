@@ -378,3 +378,33 @@ What we got (files in `research/firmware/526/`, gitignored):
   (proposed guard), the dominant still pose over a window as upright (fails for users who slouch most of the time),
   or judging only the latest movement since the last re-centre (no accumulation, but misses a slouch that creeps
   down in small held steps).
+
+## Sample rate varies between sessions; glides stay ~68 samples (data/live_check_raw.jsonl, 2026-11-12)
+
+- **The 43/89 rate is not fixed.** In the live check after the 2026-11-12 refactors, continuous stretches ran at
+  **34.9–35.0 Hz** (seq +1 per sample, so nothing was dropped). Every fixture and every earlier raw log (sessions 2–8)
+  ran at **52.2–53.0 Hz**. What sets the rate is unknown `[unverified]`; candidates are the audio codec or load from
+  the other connected source (the phone).
+- **Glides are a fixed sample count, not a fixed duration.** Both clear glides in the live check were 68 samples
+  long, which took **1.95 s** at 35 Hz (1.3 s at 52.5 Hz, as in sessions 6–8).
+- **Consequence for the rebuilder:** `DELAY_S` (2.0 s) must be longer than a glide. At 35 Hz the identity sample
+  arrived 1.95–1.98 s after its glide began, so nothing got through (checked offline: 0 glide samples released before
+  each identity), but the margin was 20–50 ms. Glides measured at 74–101 samples in sessions 7–8 would last 2.1–2.9 s
+  at 35 Hz and partly get through.
+- Since 2026-11-12 the rebuilder holds samples by count (DECISIONS "Hold samples by count"), so the rate no longer
+  matters.
+- **Transport stalls.** Gaps of 2.6–3.65 s between consecutive sequence numbers occur: at stream start (identity
+  samples only) and, four times, early in a stream mid-movement. One (data/outage2_raw.jsonl, +7.63 s) fell inside a
+  small (2°) glide. `GLIDE_STALL_S` (5 s), how long a suspected unfinished glide waits, is longer than all of these.
+- **The earbuds also go quiet without a re-centre.** In tests/fixtures/freeclip2/stream_restart.csv the head was held
+  down and the stream went silent for 10.7 s with no identity sample, then restarted.
+- Analysis scripts were run inline (not committed). The method: rate = samples / time over runs of consecutive seq
+  with gaps under 0.2 s; glide = consecutive samples before an identity whose angle to identity strictly decreases.
+
+## 43/88 acknowledgement says whether the switch took effect (data/live2_raw.jsonl, 2026-11-12)
+
+- The 43/88=1 sent at connect, while this computer was idle, was acknowledged with TLV 2 = `02`. The 43/88=1 re-sent
+  when this computer started streaming (43/54 state 0x09) was acknowledged with TLV 2 = `00`, and samples followed
+  within ~40 ms. Reading: `00` = applied, `02` = not applied (no stream to this device) `[inferred from one session]`.
+  This fits "Stream switch sent while idle" and explains why the re-send on streaming is needed.
+- The session ran at 35.1 Hz again (see "Sample rate varies between sessions"); glides at 68 samples.

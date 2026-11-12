@@ -5,7 +5,7 @@ use super::detector::{Config, Detector};
 use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
 use super::tracker::{Event, HeadTracker, TrackerTraits};
-use anyhow::Result;
+use anyhow::{Context, Result, ensure};
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -23,41 +23,93 @@ const TRACKING_WAIT_NOTE_S: f64 = 5.0;
 /// tracking resumes. Silence while available just means the head is still and never ends
 /// monitoring.
 const TRACKING_LOST_S: f64 = 30.0;
+/// How often the live status line is refreshed.
+const STATUS_EVERY_S: f64 = 1.0;
 /// How long to wait for a tracker event before re-checking timers.
 const POLL: Duration = Duration::from_secs(1);
 
-/// What the tracker produced, from the session's point of view.
-enum Step {
-    Pose(Quat),
-    /// Nothing new: the head is still (or the tracker is quiet), so the last state holds.
-    Silence,
-    /// The earbuds were taken off.
-    Removed,
-}
-
-/// Why monitoring stopped.
-enum MonitorEnd {
+/// Why a cycle (wait until worn, calibrate, monitor) ended early. Carried by `?`, so every wait
+/// in the session gives up the same way when the earbuds come off.
+enum Interrupt {
     /// The earbuds were taken off.
     Removed,
     /// The tracker was unavailable for TRACKING_LOST_S: the posture reference can't be trusted.
     TrackingLost,
+    /// A tracker or output error: ends the session.
+    Fatal(anyhow::Error),
 }
 
-enum Calibration {
-    /// Upright pose captured.
-    Done(Quat),
-    /// The earbuds were taken off meanwhile.
-    Removed,
-    /// The head kept moving on every attempt.
-    Failed,
+impl From<anyhow::Error> for Interrupt {
+    fn from(e: anyhow::Error) -> Self {
+        Interrupt::Fatal(e)
+    }
+}
+
+/// A session step's outcome: its value, or why the cycle ended early.
+type Flow<T> = std::result::Result<T, Interrupt>;
+
+/// A delivered pose: when it was measured (session seconds) and the orientation.
+type Pose = (f64, Quat);
+
+/// The session's timeline: seconds since the session started (monotonic, unlike log time), and how
+/// far along it the delivered posture reaches. A backend that holds samples delivers each pose
+/// `lag` after it was measured, so posture is known only up to `now - lag`. Reminders and
+/// calibration judge posture up to there, never beyond it, so a reminder cannot play after the
+/// user has already sat up. During silence that point advances with real time, because silence
+/// means the posture is unchanged. With a backend that holds nothing, `lag` is 0.
+struct Timeline {
+    start: Instant,
+    /// Measurement time of the latest pose, and how long after measurement it arrived.
+    measured: f64,
+    lag: f64,
+}
+
+impl Timeline {
+    fn new() -> Self {
+        Timeline {
+            start: Instant::now(),
+            measured: 0.0,
+            lag: 0.0,
+        }
+    }
+
+    /// Seconds since the session started.
+    fn now(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
+    }
+
+    /// How far the delivered posture reaches.
+    fn known_until(&self) -> f64 {
+        self.now() - self.lag
+    }
+
+    /// Take delivery of a pose measured at `at`; returns its measurement time. A pose from before
+    /// the session or out of order is a tracker bug.
+    fn deliver(&mut self, at: Instant) -> Result<f64> {
+        let measured = at
+            .checked_duration_since(self.start)
+            .context("tracker sent a pose from before the session started")?
+            .as_secs_f64();
+        ensure!(
+            measured >= self.measured,
+            "tracker sent poses out of order: {measured:.3} s after {:.3} s",
+            self.measured
+        );
+        (self.measured, self.lag) = (measured, self.now() - measured);
+        Ok(measured)
+    }
+
+    /// The instant of session time `t`.
+    fn instant(&self, t: f64) -> Instant {
+        self.start + Duration::from_secs_f64(t)
+    }
 }
 
 struct Session<'a, T: HeadTracker, C: CueSink> {
     tracker: &'a mut T,
     cues: &'a C,
     rec: &'a mut Recorder,
-    /// When the session started; timing uses seconds since then (monotonic, unlike log time).
-    start: Instant,
+    time: Timeline,
     worn: bool,
     /// When the tracker last became unavailable (`None` while available).
     unavailable_since: Option<f64>,
@@ -75,30 +127,23 @@ pub async fn run<T: HeadTracker, C: CueSink>(
         tracker,
         cues,
         rec,
-        start: Instant::now(),
+        time: Timeline::new(),
         worn: true,
         unavailable_since: None,
     };
     loop {
-        s.wait_until_worn().await?;
-        match s.calibrate().await? {
-            Calibration::Done(baseline) => match s.monitor(baseline).await? {
-                MonitorEnd::Removed => {}
-                MonitorEnd::TrackingLost => s.on_tracking_lost()?,
-            },
-            Calibration::Removed => {}
-            Calibration::Failed => {
-                s.rec.event(LogEvent::CalibrationFailed)?;
-                s.idle(CALIBRATION_RETRY_S).await?;
-            }
+        match s.cycle().await {
+            Ok(()) | Err(Interrupt::Removed) => {}
+            Err(Interrupt::TrackingLost) => s.on_tracking_lost()?,
+            Err(Interrupt::Fatal(e)) => return Err(e),
         }
     }
 }
 
 impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
-    /// Seconds since the session started.
+    /// Seconds since the session started; see [`Timeline`].
     fn now(&self) -> f64 {
-        self.start.elapsed().as_secs_f64()
+        self.time.now()
     }
 
     /// The tracker's hint as a message suffix (" (hint)"), or "" if it has none.
@@ -109,34 +154,44 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             .map_or(String::new(), |hint| format!(" ({hint})"))
     }
 
-    async fn next(&mut self, timeout: Duration) -> Result<Step> {
-        Ok(match self.tracker.next_event(timeout).await? {
-            Some(Event::Pose(q)) => {
+    /// One cycle: wait until worn, calibrate, then monitor (or back off after a failed
+    /// calibration).
+    async fn cycle(&mut self) -> Flow<()> {
+        self.wait_until_worn().await?;
+        match self.calibrate().await? {
+            Some(baseline) => self.monitor(baseline).await,
+            None => {
+                self.rec.event(LogEvent::CalibrationFailed)?;
+                self.idle(CALIBRATION_RETRY_S).await
+            }
+        }
+    }
+
+    /// The next pose within `timeout`, or `None` for silence. Taking the earbuds off interrupts.
+    async fn next(&mut self, timeout: Duration) -> Flow<Option<Pose>> {
+        match self.tracker.next_event(timeout).await? {
+            Some(Event::Pose { at, orientation }) => {
+                let measured = self.time.deliver(at)?;
                 // A pose proves tracking works, whether or not an `Available(true)` was announced.
                 self.unavailable_since = None;
-                Step::Pose(q)
+                return Ok(Some((measured, orientation)));
             }
             Some(Event::Worn(w)) => {
-                self.worn = w;
-                if w { Step::Silence } else { Step::Removed }
+                if std::mem::replace(&mut self.worn, w) && !w {
+                    return Err(Interrupt::Removed);
+                }
             }
             Some(Event::Available(a)) => {
-                let now = self.now();
-                self.unavailable_since = if a { None } else { Some(now) };
+                self.unavailable_since = (!a).then(|| self.now());
                 self.rec.event(if a {
                     LogEvent::TrackingAvailable
                 } else {
                     LogEvent::TrackingUnavailable
                 })?;
-                Step::Silence
             }
-            None => Step::Silence,
-        })
-    }
-
-    fn tracking_lost(&self, t: f64) -> bool {
-        self.unavailable_since
-            .is_some_and(|since| t - since >= TRACKING_LOST_S)
+            None => {}
+        }
+        Ok(None)
     }
 
     fn on_tracking_lost(&mut self) -> Result<()> {
@@ -148,7 +203,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         Ok(())
     }
 
-    async fn wait_until_worn(&mut self) -> Result<()> {
+    async fn wait_until_worn(&mut self) -> Flow<()> {
         if self.worn {
             return Ok(());
         }
@@ -157,62 +212,57 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         while !self.worn {
             self.next(POLL).await?;
         }
-        self.rec.event(LogEvent::Resumed)
+        Ok(self.rec.event(LogEvent::Resumed)?)
     }
 
-    /// Consume events for `secs`, or until the earbuds are taken off.
-    async fn idle(&mut self, secs: f64) -> Result<()> {
+    /// Consume events for `secs` (taking the earbuds off interrupts).
+    async fn idle(&mut self, secs: f64) -> Flow<()> {
         let end = self.now() + secs;
         while self.now() < end {
             let left = Duration::from_secs_f64(end - self.now());
-            if let Step::Removed = self.next(left.min(POLL)).await? {
-                break;
-            }
+            self.next(left.min(POLL)).await?;
         }
         Ok(())
     }
 
-    /// Wait for the first head pose; `None` if the earbuds were taken off first. Tracking can take
-    /// a while to start (until the device's precondition is met; see `TrackerTraits`), so this
-    /// waits without a deadline.
-    async fn first_pose(&mut self) -> Result<Option<Quat>> {
+    /// Wait for the first head pose. Tracking can take a while to start (until the device's
+    /// precondition is met; see `TrackerTraits`), so this waits without a deadline.
+    async fn first_pose(&mut self) -> Flow<Quat> {
         let start = self.now();
         let mut noted = false;
         loop {
-            match self.next(POLL).await? {
-                Step::Pose(q) => return Ok(Some(q)),
-                Step::Removed => return Ok(None),
-                Step::Silence if !noted && self.now() - start >= TRACKING_WAIT_NOTE_S => {
-                    let hint = self.tracking_hint_suffix();
-                    self.rec.note(&format!(
-                        "waiting for head tracking from the earbuds{hint}…"
-                    ));
-                    noted = true;
-                }
-                Step::Silence => {}
+            if let Some((_, q)) = self.next(POLL).await? {
+                return Ok(q);
+            }
+            if !noted && self.now() - start >= TRACKING_WAIT_NOTE_S {
+                let hint = self.tracking_hint_suffix();
+                self.rec.note(&format!(
+                    "waiting for head tracking from the earbuds{hint}…"
+                ));
+                noted = true;
             }
         }
     }
 
-    /// Capture the upright pose: CALIBRATION_S of poses whose 90th-percentile deviation from their
-    /// mean is under CALIBRATION_MAX_P90_DEG. Silence means the head is still, so the last pose
-    /// counts.
-    async fn calibrate(&mut self) -> Result<Calibration> {
-        let Some(mut last) = self.first_pose().await? else {
-            return Ok(Calibration::Removed);
-        };
+    /// Capture the upright pose: CALIBRATION_S of poses, measured after the prompt ends, whose
+    /// 90th-percentile deviation from their mean is under CALIBRATION_MAX_P90_DEG. `None` if the
+    /// head kept moving on every attempt. Silence means the head is still, so the last pose counts.
+    async fn calibrate(&mut self) -> Flow<Option<Quat>> {
+        let mut last = self.first_pose().await?;
         self.cues.say(Phrase::SitUpright).await?;
         for attempt in 1..=CALIBRATION_TRIES {
-            let end = self.now() + CALIBRATION_S;
+            // The window opens when the prompt ends: poses measured before then don't count, even
+            // when a backend that holds samples delivers them now. It closes once the delivered
+            // posture covers CALIBRATION_S.
+            let start = self.now();
+            let end = start + CALIBRATION_S;
             let mut samples = Vec::new();
-            while self.now() < end {
-                match self.next(Duration::from_millis(200)).await? {
-                    Step::Pose(q) => {
-                        last = q;
+            while self.time.known_until() < end {
+                if let Some((measured, q)) = self.next(Duration::from_millis(200)).await? {
+                    last = q;
+                    if measured >= start {
                         samples.push(q);
                     }
-                    Step::Silence => {}
-                    Step::Removed => return Ok(Calibration::Removed),
                 }
             }
             if samples.is_empty() {
@@ -225,28 +275,39 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             ));
             if p90 < CALIBRATION_MAX_P90_DEG {
                 self.cues.say(Phrase::Calibrated).await?;
-                return Ok(Calibration::Done(mean));
+                return Ok(Some(mean));
             }
             self.cues.say(Phrase::Moved).await?;
         }
-        Ok(Calibration::Failed)
+        Ok(None)
     }
 
-    /// Monitor until the earbuds are taken off or head tracking is lost.
-    async fn monitor(&mut self, baseline: Quat) -> Result<MonitorEnd> {
+    /// Monitor until interrupted: earbuds off, tracking lost, or an error.
+    async fn monitor(&mut self, baseline: Quat) -> Flow<()> {
         let mut det = Detector::new(detector_config(self.tracker.traits()));
         let mut last_status = f64::NEG_INFINITY;
         loop {
-            let step = self.next(POLL).await?;
+            // Wake when the known posture reaches the next reminder (at least 1 ms ahead, so a
+            // rounding gap cannot spin the loop).
+            let wait = det.next_due().map_or(POLL, |due| {
+                Duration::from_secs_f64(
+                    (due - self.time.known_until()).clamp(0.001, POLL.as_secs_f64()),
+                )
+            });
+            let pose = self.next(wait).await?;
             let t = self.now();
-            let cues = match step {
-                Step::Removed => return Ok(MonitorEnd::Removed),
-                Step::Silence if self.tracking_lost(t) => return Ok(MonitorEnd::TrackingLost),
-                Step::Silence => det.tick(t),
-                Step::Pose(q) => {
+            let cues = match pose {
+                None if self
+                    .unavailable_since
+                    .is_some_and(|since| t - since >= TRACKING_LOST_S) =>
+                {
+                    return Err(Interrupt::TrackingLost);
+                }
+                None => det.tick(self.time.known_until()),
+                Some((measured, q)) => {
                     let angles = (baseline.conj() * q).euler();
-                    self.rec.pose(angles)?;
-                    let update = det.update(t, angles.pitch);
+                    self.rec.pose(self.time.instant(measured), angles)?;
+                    let update = det.update(measured, angles.pitch);
                     if let Some(upright) = update.reanchored {
                         self.rec.event(LogEvent::Reanchored { upright })?;
                     }
@@ -257,7 +318,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 self.rec.event(LogEvent::Cue(cue))?;
                 self.cues.play(cue);
             }
-            if t - last_status >= 1.0 {
+            if t - last_status >= STATUS_EVERY_S {
                 last_status = t;
                 self.rec.status(det.smoothed(), det.slouching())?;
             }
@@ -284,10 +345,9 @@ fn mean_and_p90(samples: &[Quat]) -> (Quat, f64) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::detector::Cue;
     use crate::core::tracker::TrackerTraits;
+    use crate::testing::{Outcome, run_session};
     use anyhow::bail;
-    use std::cell::RefCell;
     use std::collections::VecDeque;
 
     fn tilt(deg: f64) -> Quat {
@@ -337,11 +397,51 @@ mod tests {
     struct FakeTracker {
         script: VecDeque<Script>,
         drifts: bool,
+        /// How long after measurement each pose is delivered (a backend that holds samples).
+        lag: f64,
+        /// Seconds until the next pose sample is due.
+        until_sample: f64,
+    }
+
+    impl FakeTracker {
+        fn new(script: Vec<Script>, drifts: bool, lag: f64) -> Self {
+            FakeTracker {
+                script: script.into(),
+                drifts,
+                lag,
+                // The first pose is measured one sample in and delivered `lag` later.
+                until_sample: SAMPLE + lag,
+            }
+        }
+    }
+
+    const SAMPLE: f64 = 0.02;
+
+    /// Like a real backend: wait for the next pose sample (of `pitch`, `left` seconds of poses
+    /// remaining) and deliver it `lag` after its measurement, or time out first.
+    async fn sample(
+        until_sample: &mut f64,
+        lag: f64,
+        timeout: Duration,
+        left: &mut f64,
+        pitch: f64,
+    ) -> Option<Event> {
+        if timeout.as_secs_f64() < *until_sample {
+            *until_sample -= timeout.as_secs_f64();
+            tokio::time::sleep(timeout).await;
+            return None;
+        }
+        tokio::time::sleep(Duration::from_secs_f64(*until_sample)).await;
+        *until_sample = SAMPLE;
+        *left -= SAMPLE;
+        Some(Event::Pose {
+            at: Instant::now() - Duration::from_secs_f64(lag),
+            orientation: tilt(pitch),
+        })
     }
 
     impl HeadTracker for FakeTracker {
         async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-            const SAMPLE: f64 = 0.02;
             loop {
                 let Some(front) = self.script.front_mut() else {
                     bail!("script finished");
@@ -358,20 +458,17 @@ mod tests {
                         self.script.pop_front();
                     }
                     Script::Poses(pitch, left) => {
-                        *left -= SAMPLE;
-                        let q = tilt(*pitch);
-                        tokio::time::sleep(Duration::from_secs_f64(SAMPLE)).await;
-                        return Ok(Some(Event::Pose(q)));
+                        let pitch = *pitch;
+                        return Ok(
+                            sample(&mut self.until_sample, self.lag, timeout, left, pitch).await,
+                        );
                     }
                     Script::Wobble(a, b, left) => {
-                        *left -= SAMPLE;
-                        let pitch = if (*left / SAMPLE).round() as i64 % 2 == 0 {
-                            *a
-                        } else {
-                            *b
-                        };
-                        tokio::time::sleep(Duration::from_secs_f64(SAMPLE)).await;
-                        return Ok(Some(Event::Pose(tilt(pitch))));
+                        let next = ((*left - SAMPLE) / SAMPLE).round() as i64;
+                        let pitch = if next % 2 == 0 { *a } else { *b };
+                        return Ok(
+                            sample(&mut self.until_sample, self.lag, timeout, left, pitch).await,
+                        );
                     }
                     Script::Quiet(left) => {
                         let d = left.min(timeout.as_secs_f64());
@@ -395,50 +492,21 @@ mod tests {
         }
     }
 
-    /// Records prompts and cues instead of playing them.
+    /// How the simulated tracker and cue output behave.
     #[derive(Default)]
-    struct FakeCues(RefCell<Vec<String>>);
-
-    impl CueSink for FakeCues {
-        fn play(&self, cue: Cue) {
-            self.0.borrow_mut().push(format!("{cue:?}"));
-        }
-        async fn say(&self, p: Phrase) -> Result<()> {
-            self.0.borrow_mut().push(format!("say {p:?}"));
-            Ok(())
-        }
-    }
-
-    /// Runs a script to its end; returns (prompts and cues, logged event names).
-    async fn run_script(name: &str, script: Vec<Script>) -> (Vec<String>, Vec<String>) {
-        run_script_with(name, script, false).await
-    }
-
-    async fn run_script_with(
-        name: &str,
-        script: Vec<Script>,
+    struct Sim {
+        /// The tracker declares `pose_drifts_up`.
         drifts: bool,
-    ) -> (Vec<String>, Vec<String>) {
-        let path = std::env::temp_dir().join(format!(
-            "headup-session-{name}-{}.jsonl",
-            std::process::id()
-        ));
-        let mut rec = Recorder::new(Some(std::fs::File::create(&path).unwrap()));
-        let cues = FakeCues::default();
-        let mut tracker = FakeTracker {
-            script: script.into(),
-            drifts,
-        };
-        let Err(err) = run(&mut tracker, &cues, &mut rec).await;
-        assert_eq!(err.to_string(), "script finished");
-        let log = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        let events = log
-            .lines()
-            .filter_map(|l| l.split(r#""event":""#).nth(1))
-            .map(|rest| rest.split('"').next().unwrap_or_default().to_string())
-            .collect();
-        (cues.0.into_inner(), events)
+        /// Each pose is delivered this long after it is measured.
+        lag: f64,
+        /// Each spoken prompt takes this long.
+        prompt_s: f64,
+    }
+
+    /// Run `script` to its end and report what the session did.
+    async fn simulate(script: Vec<Script>, sim: Sim) -> Outcome {
+        let mut tracker = FakeTracker::new(script, sim.drifts, sim.lag);
+        run_session(&mut tracker, sim.prompt_s).await
     }
 
     use Script::*;
@@ -447,58 +515,108 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn reanchors_only_for_drifting_trackers() {
         let script = || vec![Poses(0.0, 4.0), Poses(40.0, 15.0), Poses(-10.0, 3.0)];
-        let (_, events) = run_script_with("drift", script(), true).await;
-        assert_eq!(events, ["Tone", "Recovered", "Reanchored"]);
-        let (_, events) = run_script_with("nodrift", script(), false).await;
-        assert_eq!(events, ["Tone", "Recovered"]);
+        let drifting = Sim {
+            drifts: true,
+            ..Sim::default()
+        };
+        let run = simulate(script(), drifting).await;
+        assert_eq!(run.events, ["Tone", "Recovered", "Reanchored"]);
+        let run = simulate(script(), Sim::default()).await;
+        assert_eq!(run.events, ["Tone", "Recovered"]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn sustained_slouch_cues_even_while_head_is_still() {
         // Upright (calibration), then look down and hold still: the device goes quiet, but timers
         // keep running on the last pose.
-        let (cues, _) = run_script(
-            "still",
-            vec![Poses(0.0, 4.0), Poses(40.0, 2.0), Quiet(35.0)],
-        )
-        .await;
-        assert_eq!(cues, ["say SitUpright", "say Calibrated", "Tone", "Speak"]);
+        let script = vec![Poses(0.0, 4.0), Poses(40.0, 2.0), Quiet(35.0)];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(
+            run.names(),
+            ["say SitUpright", "say Calibrated", "Tone", "Speak"]
+        );
+    }
+
+    // While the head is held still the tracker is silent, and the tone must still come right at
+    // 10 s of slouching, not at the next once-a-second check.
+    #[tokio::test(start_paused = true)]
+    async fn tone_is_on_time_while_head_is_still() {
+        let script = vec![Poses(0.0, 4.0), Poses(40.0, 2.0), Quiet(15.0)];
+        let run = simulate(script, Sim::default()).await;
+        // The slouch starts at 4 s; smoothing crosses the threshold within 0.1 s of that.
+        let tone = run.first("Tone");
+        assert!((14.0..14.15).contains(&tone), "tone at {tone:.3} s");
+    }
+
+    // A backend that holds samples (here 1.5 s) delivers a sit-up late. Sitting up 9.5 s into a
+    // slouch, before the 10 s tone, must give no tone: reminders wait for delivered posture.
+    #[tokio::test(start_paused = true)]
+    async fn no_reminder_after_sitting_up_when_poses_arrive_late() {
+        // Upright long enough for calibration to see 3 s of posture after the 1.5 s lag.
+        let script = vec![Poses(0.0, 6.0), Poses(40.0, 9.5), Poses(0.0, 6.0)];
+        let lagging = Sim {
+            lag: 1.5,
+            ..Sim::default()
+        };
+        let run = simulate(script, lagging).await;
+        assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
+    }
+
+    // With the same lag, a slouch held past 10 s still cues, once its posture has arrived: the
+    // tone is due ~10.1 s into the slouch (measured from 6 s) and comes the 1.5 s lag later.
+    #[tokio::test(start_paused = true)]
+    async fn late_poses_delay_the_reminder_by_the_lag() {
+        let script = vec![Poses(0.0, 6.0), Poses(40.0, 14.0), Poses(0.0, 4.0)];
+        let lagging = Sim {
+            lag: 1.5,
+            ..Sim::default()
+        };
+        let tone = simulate(script, lagging).await.first("Tone");
+        assert!((17.5..17.7).contains(&tone), "tone at {tone:.3} s");
+    }
+
+    // The head moves while the 2 s "sit upright" prompt plays and is still afterwards. With poses
+    // delivered 1.5 s late, the ones measured during the prompt arrive inside the capture window;
+    // they must not count, so calibration succeeds at once.
+    #[tokio::test(start_paused = true)]
+    async fn calibration_ignores_poses_measured_during_the_prompt() {
+        let script = vec![Poses(0.0, 0.1), Wobble(0.0, 30.0, 2.0), Poses(0.0, 6.0)];
+        let sim = Sim {
+            lag: 1.5,
+            prompt_s: 2.0,
+            ..Sim::default()
+        };
+        let run = simulate(script, sim).await;
+        assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn taking_earbuds_off_pauses_then_recalibrates() {
-        let (cues, events) = run_script(
-            "wear",
-            vec![
-                Poses(0.0, 4.0),
-                Ev(Event::Worn(false)),
-                Quiet(10.0),
-                Ev(Event::Worn(true)),
-                Poses(0.0, 4.0),
-            ],
-        )
-        .await;
-        assert_eq!(events, ["Paused", "Resumed"]);
-        let prompts = cues.iter().filter(|c| *c == "say SitUpright").count();
-        assert_eq!(prompts, 2, "{cues:?}");
+        let script = vec![
+            Poses(0.0, 4.0),
+            Ev(Event::Worn(false)),
+            Quiet(10.0),
+            Ev(Event::Worn(true)),
+            Poses(0.0, 4.0),
+        ];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(run.events, ["Paused", "Resumed"]);
+        assert_eq!(run.count("say SitUpright"), 2, "{:?}", run.names());
     }
 
     #[tokio::test(start_paused = true)]
     async fn short_unavailability_carries_posture_over() {
-        let (cues, events) = run_script(
-            "short-gap",
-            vec![
-                Poses(0.0, 4.0),
-                Ev(Event::Available(false)),
-                Quiet(20.0),
-                Ev(Event::Available(true)),
-                Quiet(20.0),
-            ],
-        )
-        .await;
-        assert_eq!(events, ["TrackingUnavailable", "TrackingAvailable"]);
+        let script = vec![
+            Poses(0.0, 4.0),
+            Ev(Event::Available(false)),
+            Quiet(20.0),
+            Ev(Event::Available(true)),
+            Quiet(20.0),
+        ];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(run.events, ["TrackingUnavailable", "TrackingAvailable"]);
         assert_eq!(
-            cues,
+            run.names(),
             ["say SitUpright", "say Calibrated"],
             "no recalibration"
         );
@@ -509,20 +627,17 @@ mod tests {
         // Slouch from ~4 s; tracking becomes unavailable at 6 s. Tone (~14 s) and Speak (~34 s)
         // still fire within the 30 s grace, but tracking is lost at 36 s, so the 60 s notification
         // (~64 s) must not fire from that stale data.
-        let (cues, events) = run_script(
-            "long-gap",
-            vec![
-                Poses(0.0, 4.0),
-                Poses(40.0, 2.0),
-                Ev(Event::Available(false)),
-                Quiet(70.0),
-                Ev(Event::Available(true)),
-                Poses(0.0, 4.0),
-            ],
-        )
-        .await;
+        let script = vec![
+            Poses(0.0, 4.0),
+            Poses(40.0, 2.0),
+            Ev(Event::Available(false)),
+            Quiet(70.0),
+            Ev(Event::Available(true)),
+            Poses(0.0, 4.0),
+        ];
+        let run = simulate(script, Sim::default()).await;
         assert_eq!(
-            events,
+            run.events,
             [
                 "TrackingUnavailable",
                 "Tone",
@@ -531,47 +646,40 @@ mod tests {
                 "TrackingAvailable"
             ]
         );
-        assert!(!cues.contains(&"Notify".to_string()), "{cues:?}");
-        let prompts = cues.iter().filter(|c| *c == "say SitUpright").count();
-        assert_eq!(prompts, 2, "recalibrates after resuming: {cues:?}");
+        assert_eq!(run.count("Notify"), 0, "{:?}", run.names());
+        let prompts = run.count("say SitUpright");
+        assert_eq!(prompts, 2, "recalibrates after resuming: {:?}", run.names());
     }
 
     // Tracking resumes without an `Available(true)` announcement: the poses themselves prove it,
     // and a still head afterwards must not count as lost again (this used to loop forever).
     #[tokio::test(start_paused = true)]
     async fn poses_end_unavailability_without_announcement() {
-        let (_, events) = run_script(
-            "no-announce",
-            vec![
-                Poses(0.0, 4.0),
-                Ev(Event::Available(false)),
-                Quiet(35.0),
-                Poses(0.0, 4.0),
-                Quiet(60.0),
-            ],
-        )
-        .await;
-        assert_eq!(events, ["TrackingUnavailable", "TrackingLost"]);
+        let script = vec![
+            Poses(0.0, 4.0),
+            Ev(Event::Available(false)),
+            Quiet(35.0),
+            Poses(0.0, 4.0),
+            Quiet(60.0),
+        ];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(run.events, ["TrackingUnavailable", "TrackingLost"]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn failed_calibration_retries_later() {
-        let (cues, events) = run_script(
-            "calib-fail",
-            vec![
-                Wobble(0.0, 30.0, 14.0), // keeps moving through all 4 attempts
-                Quiet(CALIBRATION_RETRY_S + 1.0),
-                Poses(0.0, 4.0),
-            ],
-        )
-        .await;
-        assert_eq!(events, ["CalibrationFailed"]);
-        let expected: Vec<String> = ["say SitUpright"]
+        let script = vec![
+            Wobble(0.0, 30.0, 14.0), // keeps moving through all 4 attempts
+            Quiet(CALIBRATION_RETRY_S + 1.0),
+            Poses(0.0, 4.0),
+        ];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(run.events, ["CalibrationFailed"]);
+        let expected: Vec<&str> = ["say SitUpright"]
             .into_iter()
             .chain(["say Moved"; CALIBRATION_TRIES])
             .chain(["say SitUpright", "say Calibrated"])
-            .map(String::from)
             .collect();
-        assert_eq!(cues, expected);
+        assert_eq!(run.names(), expected);
     }
 }

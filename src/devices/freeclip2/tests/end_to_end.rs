@@ -1,10 +1,11 @@
-//! Recorded FreeClip 2 sessions replayed through the rebuilder and the detector, the way the
-//! session drives them.
+//! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session (and,
+//! for re-anchoring, straight into the detector).
 
-use super::replay::{Row, phase_at, phases, read_csv, replay};
-use crate::core::detector::{Config, Cue, Detector};
+use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay};
+use crate::core::detector::Detector;
 use crate::core::session::detector_config;
 use crate::devices::freeclip2::FreeClip2;
+use crate::testing::run_session;
 
 // Ground truth (guided.py --slouch): five upright → look-down cycles back to the same screen
 // point. The earbuds' re-centres add ~10° towards "looking up" per cycle; without the detector's
@@ -16,7 +17,7 @@ fn repeated_slouches_stay_detectable_end_to_end() {
     let mut det = Detector::new(detector_config(FreeClip2::TRAITS));
     let mut state = vec![(false, 0.0); ph.len()]; // (slouched, last smoothed) per phase
     for o in replay(&rows) {
-        det.update(o.now, o.abs.euler().pitch); // baseline = stream start (upright)
+        det.update(o.t, o.abs.euler().pitch); // baseline = stream start (upright)
         let s = &mut state[phase_at(&ph, o.t)];
         s.0 |= det.slouching();
         s.1 = det.smoothed().unwrap_or(0.0);
@@ -33,64 +34,67 @@ fn repeated_slouches_stay_detectable_end_to_end() {
     }
 }
 
-/// Replay through a detector the way the session drives it: poses at their release time and
-/// 1 s ticks in between. Returns (cue, measurement time of the last pose before it).
-fn cues_end_to_end(rows: &[Row]) -> Vec<(Cue, f64)> {
-    let mut det = Detector::new(Config::default());
-    let (mut cues, mut tick, mut cur) = (Vec::new(), 0.0, 0.0);
-    for o in replay(rows) {
-        while tick < o.now {
-            cues.extend(det.tick(tick).into_iter().map(|c| (c, cur))); // silence: the last pose holds
-            tick += 1.0;
-        }
-        cur = o.t;
-        // baseline = stream start (upright)
-        cues.extend(
-            det.update(o.now, o.abs.euler().pitch)
-                .cues
-                .into_iter()
-                .map(|c| (c, cur)),
-        );
-    }
-    cues
+/// The cues (not prompts) the real session plays on a recording, each with when it played
+/// (seconds since the recording began).
+async fn session_cues(name: &str) -> Vec<(String, f64)> {
+    let mut tracker = ReplayTracker::new(&read_csv(name));
+    let run = run_session(&mut tracker, 0.0).await;
+    run.cues
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with("say "))
+        .collect()
 }
 
-// End to end on the real long-hold recording: each 30 s look-down hold must cue, and sitting
-// back up must register as recovery (session 1 failed this before glides were suppressed).
-#[test]
-fn long_holds_trigger_cues_end_to_end() {
+/// The cue names, without the spoken reminder (its timing depends on exactly how long a hold
+/// lasted).
+fn kinds(cues: &[(String, f64)]) -> Vec<&str> {
+    cues.iter()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| *name != "Speak")
+        .collect()
+}
+
+// The real long-hold recording: each 30 s look-down hold must cue, and sitting back up must
+// register as recovery (session 1 failed this before glides were suppressed).
+#[tokio::test(start_paused = true)]
+async fn long_holds_trigger_cues_end_to_end() {
     let rows = read_csv("hold_test.csv");
     let ph = phases(&rows);
-    let cues = cues_end_to_end(&rows);
-    // Speech (at 30 s) depends on exactly how long each ~30 s hold lasted, so it is not asserted.
-    let key: Vec<(Cue, &str)> = cues
+    let cues = session_cues("hold_test.csv").await;
+    let key: Vec<(&str, &str)> = cues
         .iter()
-        .filter(|c| c.0 != Cue::Speak)
-        .map(|&(c, t)| (c, ph[phase_at(&ph, t)].0.as_str()))
+        .filter(|(name, _)| name != "Speak")
+        .map(|(name, t)| (name.as_str(), ph[phase_at(&ph, *t)].0.as_str()))
         .collect();
     let want = [
-        (Cue::Tone, "down"),
-        (Cue::Recovered, "center"),
-        (Cue::Tone, "down"),
-        (Cue::Recovered, "center"),
+        ("Tone", "down"),
+        ("Recovered", "center"),
+        ("Tone", "down"),
+        ("Recovered", "center"),
     ];
     assert_eq!(key, want, "cues: {cues:?}");
 }
 
-// End to end on the stream-restart recording: one slouch, so exactly one tone and one recovery,
-// and the recovery only once the user actually sat up (~25.6 s), not at the restart.
-#[test]
-fn stream_restart_end_to_end() {
-    let cues = cues_end_to_end(&read_csv("stream_restart.csv"));
-    let kinds: Vec<Cue> = cues
-        .iter()
-        .map(|c| c.0)
-        .filter(|c| *c != Cue::Speak)
-        .collect();
-    assert_eq!(kinds, [Cue::Tone, Cue::Recovered], "cues: {cues:?}");
-    let recovered_at = cues.iter().find(|c| c.0 == Cue::Recovered).unwrap().1;
+// The stream-restart recording: one slouch, so exactly one tone and one recovery, and the
+// recovery only once the user actually sat up (~25.6 s), not at the restart.
+#[tokio::test(start_paused = true)]
+async fn stream_restart_end_to_end() {
+    let cues = session_cues("stream_restart.csv").await;
+    assert_eq!(kinds(&cues), ["Tone", "Recovered"], "cues: {cues:?}");
+    let recovered_at = cues.iter().find(|(n, _)| n == "Recovered").unwrap().1;
     assert!(
         recovered_at >= 25.6,
         "recovered at {recovered_at:.2}, before sitting up"
     );
+}
+
+// data/live_check_raw.jsonl (2026-11-12), the one recording at 35 Hz instead of 52.5 Hz: a quick
+// glance down, a held slouch, sitting back up. At this rate each 68-sample glide takes ~1.95 s.
+// All four glides are dropped whole, the glance is ignored, and the slouch cues once and recovers.
+#[tokio::test(start_paused = true)]
+async fn live_35hz_session_end_to_end() {
+    let rows = read_csv("live_35hz.csv");
+    assert_eq!(rows.len() - replay(&rows).len(), 4 * 69, "glides dropped");
+    let cues = session_cues("live_35hz.csv").await;
+    assert_eq!(kinds(&cues), ["Tone", "Recovered"], "cues: {cues:?}");
 }

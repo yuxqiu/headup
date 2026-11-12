@@ -261,3 +261,41 @@
 ## 2026-11-12 00:12 UTC
 - `Recorder` holds no clock: console lines carry no time; the session owns its monotonic clock again.
 - Drafted `AGENTS.md` (layout, commands, design rules, tests, docs workflow). 42 tests pass. Staged, not committed.
+
+## 2026-11-12 00:23 UTC
+- Live check of the refactors (data/live_check*.jsonl) passed: wall-clock `t` in both logs, raw samples and frames
+  logged, the stream restart after 43/88 handled, a quick glance ignored, a held slouch toned, recovery and re-anchor.
+  Smoothing replayed over the log gives the same slouch onset with the old and new weights (+8.49 vs +8.53 s).
+- Tone came 1.0 s after it was due: the slouch was held still (no samples) and silence ticks run every `POLL` = 1 s;
+  the tick 10 ms before the due time missed it. Behaviour from before today; harmless at a 10 s dwell.
+- Finding: this session ran at 35 Hz (all earlier ones 52.5 Hz); glides stay 68 samples, so they took 1.95 s against
+  the 2.0 s delay. Recorded in FINDINGS; fix proposed in HANDOFF, not built.
+
+## 2026-11-12 00:31 UTC
+- Built both fixes (DECISIONS "Hold samples by count; poses carry measurement time; reminders on time"). Found on the
+  way that bursts of released poses defeated time-based smoothing with arrival times; poses now carry measurement time.
+- New fixture `live_35hz.csv` from the live check. 46 tests pass; clippy, fmt, rustdoc clean. Not run live yet.
+
+## 2026-11-12 00:49 UTC
+- Shape-aware release (DECISIONS): after 0.2 s of silence, release everything but a trailing run approaching identity;
+  that run waits up to 5 s. 47 tests pass.
+- Surveyed reminder timing in the five reference apps (UX_RESEARCH "Reminder timing"); spot-checked the key
+  citations against the source. Reminder timing kept as on-time pending the user's choice.
+
+## 2026-11-12 00:53 UTC
+- Reminder timing switched to confirmed (user): detector clock = last delivered pose's measured time + silence since.
+  Two new session tests (one fails on the on-time version); the fake tracker honours timeouts and can lag. 49 tests
+  pass; clippy, fmt, rustdoc clean. Staged; not run live.
+
+## 2026-11-12 01:40 UTC
+- Thermo-nuclear code quality review (two independent reviewers; findings verified), then applied all findings
+  with the user's approval (DECISIONS "Thermo review applied"). Session `Interrupt` + `Timeline`; calibration on
+  measured time; detector timers as data; FreeClip 2 split into protocol / sans-IO `Link` / socket; replays drive the
+  real Link and session; main `attempt()`. 55 tests pass; clippy, fmt, rustdoc clean; binary smoke-run (waiting note,
+  clean exit on Ctrl-C). Not run live with earbuds.
+
+## 2026-11-12 01:52 UTC
+- Live check of the reviewed build (data/live2*.jsonl): everything as designed at 35 Hz; tone and recovery each
+  exactly the 2.0 s hold after the measured events. Ctrl-C stop path exits 0 (the background task's exit 1 was the
+  wrapper shell, killed by an over-broad `pkill -f`). New finding: the 43/88 ack is `02` when sent while idle and `00`
+  once streaming (FINDINGS). headup.service was already inactive and was left so.

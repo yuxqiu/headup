@@ -21,7 +21,10 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   - `record.rs`: console output and logs.
   - `quat.rs`: orientation math.
 - `src/devices/`: the backend registry (`mod.rs`) and BlueZ discovery (`discovery.rs`).
-- `src/devices/<model>/`: one backend. Its test-only modules are in `src/devices/<model>/tests/`.
+- `src/devices/<model>/`: one backend. FreeClip 2: `protocol.rs` (wire messages), `link.rs` (protocol state, no
+  I/O), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (the socket). Its test-only modules are in
+  `src/devices/<model>/tests/`.
+- `src/testing.rs`: test support shared across modules (run the real session on any tracker).
 - Per model, outside `src/`: `docs/devices/<model>/`, `tools/<model>/` (Python research scripts) and
   `tests/fixtures/<model>/` (recordings the tests replay).
 - `assets/voice/`: embedded voice clips. `tools/gen_voice.sh` generates them.
@@ -49,12 +52,18 @@ Run everything inside `nix develop`.
   field defaults to "no quirk".
 - **Adding a backend.** Write `src/devices/<model>/`, implement `HeadTracker` and `Backend`, declare the module, and
   add one line to `backends!` in `src/devices/mod.rs`. Do not add parallel `match` arms anywhere.
+- **Protocol logic without I/O.** Keep a backend's decisions in a synchronous type that takes bytes and time and
+  returns events and frames to send (FreeClip 2: `Link`). The `HeadTracker` impl only moves bytes, so every
+  decision can be unit-tested without earbuds.
 - **One list per registry.** `backends!` (devices) and `phrases!` (voice prompts) generate their enums and dispatch.
   Extend the list instead of adding a lookup that can miss at runtime.
 - **Independent of sample rate.** Detection and session logic use seconds: timers, windows, and a smoothing time
   constant. Sample counts are allowed only inside a backend, where the protocol defines them.
 - **Two kinds of time.** Timing logic uses the monotonic `tokio::time::Instant`, so tests can run on a paused
   clock. Log lines use wall-clock Unix seconds (`t`). Console lines carry no time.
+- **Poses carry their measurement time** (`Event::Pose { at, .. }`). A backend that buffers reports when each pose
+  was measured; smoothing and slouch timers run on it, never on arrival time. Reminders fire only on delivered
+  posture: the detector's clock never runs ahead of the latest delivered pose (plus silence).
 - **Logging.** Log lines are JSON written with serde_json; never build JSON by hand. Session output goes through
   `Recorder` (event names in `LogEvent`). A backend's raw data goes to its `DeviceLog` (`--raw-log`).
 - **Make illegal states unrepresentable.** Fields that are valid only together, or that exclude each other, go into
@@ -67,8 +76,9 @@ Run everything inside `nix develop`.
 
 - Test behaviour that users can observe: cues, events, rebuilt angles. Do not test internals.
 - For a bug fix, add a test that fails without the fix, and check that it does.
-- Replay real recordings from `tests/fixtures/<model>/` where you can. Session tests use `FakeTracker` and
-  `FakeCues` on tokio's paused clock.
+- Replay real recordings from `tests/fixtures/<model>/` where you can, through the real protocol and the real
+  session (FreeClip 2: `Replay`, `ReplayTracker`). Do not copy production loops into test helpers. Session tests use
+  `FakeTracker` and `testing::run_session` on tokio's paused clock.
 - Test-only modules go in a `tests/` directory next to the module. Declare them from its inline `mod tests`, not in
   the production module list.
 

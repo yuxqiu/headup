@@ -40,18 +40,67 @@ fn open_append(p: &Path) -> Result<std::fs::File> {
         .with_context(|| format!("open {p:?}"))
 }
 
-/// Warn, then wait RETRY before the next attempt; `true` if Ctrl-C arrived instead.
-async fn retry_later(rec: &mut Recorder, what: &str, ctrl_c: &mut CtrlC) -> Result<bool> {
-    rec.warn(&format!("{what}; retrying in {}s", RETRY.as_secs()));
-    sleep_or_ctrl_c(RETRY, ctrl_c).await
-}
-
 /// Sleep for `d`; `true` if Ctrl-C arrived instead.
 async fn sleep_or_ctrl_c(d: Duration, ctrl_c: &mut CtrlC) -> Result<bool> {
     tokio::select! {
         _ = tokio::time::sleep(d) => Ok(false),
         r = ctrl_c => { r?; Ok(true) }
     }
+}
+
+/// How one attempt ended.
+enum Attempt {
+    /// Ctrl-C: headup stops (the stream was switched off).
+    Stopped,
+    /// No supported earbuds are connected yet; try again after RETRY.
+    Waiting,
+    /// Something failed (the message says what); try again after RETRY.
+    Failed(String),
+}
+
+/// One attempt: find the earbuds, connect, and run a session until it ends. Errors are fatal;
+/// everything that can be retried is an [`Attempt`].
+async fn attempt(
+    bt: &bluer::Session,
+    args: &Args,
+    cues: &Cues,
+    rec: &mut Recorder,
+    ctrl_c: &mut CtrlC,
+) -> Result<Attempt> {
+    let found = tokio::select! {
+        r = devices::find(bt, args.device) => r,
+        r = &mut *ctrl_c => { r?; return Ok(Attempt::Stopped); }
+    };
+    let found = match found {
+        Ok(Some(found)) => found,
+        Ok(None) => return Ok(Attempt::Waiting),
+        Err(e) => {
+            return Ok(Attempt::Failed(format!(
+                "looking for earbuds failed: {e:#}"
+            )));
+        }
+    };
+    rec.note(&format!("using {} ({})", found.name, found.address));
+    let device_log = DeviceLog::new(args.raw_log.as_deref().map(open_append).transpose()?);
+    let mut tracker = match AnyTracker::connect(&found, device_log).await {
+        Ok(t) => t,
+        Err(e) => return Ok(Attempt::Failed(format!("connecting failed: {e:#}"))),
+    };
+    let Err(e) = tokio::select! {
+        r = session::run(&mut tracker, cues, rec) => r,
+        r = &mut *ctrl_c => {
+            r?;
+            rec.note("stopping");
+            tracker.stop().await?;
+            return Ok(Attempt::Stopped);
+        }
+    };
+    // Usually fails because the link is gone; it matters only if the link is still up.
+    if let Err(e) = tracker.stop().await {
+        rec.warn(&format!("could not stop the stream: {e:#}"));
+    }
+    // Returning drops `tracker`, which releases the Bluetooth link before the retry wait.
+    Ok(Attempt::Failed(format!("session ended: {e:#}")))
 }
 
 #[tokio::main(flavor = "current_thread")]
@@ -69,57 +118,20 @@ async fn main() -> Result<()> {
 
     let mut waiting_noted = false;
     loop {
-        let found = tokio::select! {
-            r = devices::find(&bt, args.device) => r,
-            r = &mut ctrl_c => { r?; return Ok(()); }
-        };
-        let found = match found {
-            Ok(found) => found,
-            Err(e) => {
-                let what = format!("looking for earbuds failed: {e:#}");
-                if retry_later(&mut rec, &what, &mut ctrl_c).await? {
-                    return Ok(());
+        match attempt(&bt, &args, &cues, &mut rec, &mut ctrl_c).await? {
+            Attempt::Stopped => return Ok(()),
+            Attempt::Waiting => {
+                if !waiting_noted {
+                    rec.note("waiting for supported earbuds to connect…");
+                    waiting_noted = true;
                 }
-                continue;
             }
-        };
-        let Some(found) = found else {
-            if !waiting_noted {
-                rec.note("waiting for supported earbuds to connect…");
-                waiting_noted = true;
+            Attempt::Failed(what) => {
+                waiting_noted = false;
+                rec.warn(&format!("{what}; retrying in {}s", RETRY.as_secs()));
             }
-            if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
-                return Ok(());
-            }
-            continue;
-        };
-        waiting_noted = false;
-        rec.note(&format!("using {} ({})", found.name, found.address));
-
-        let device_log = DeviceLog::new(args.raw_log.as_deref().map(open_append).transpose()?);
-        let mut tracker = match AnyTracker::connect(&found, device_log).await {
-            Ok(t) => t,
-            Err(e) => {
-                if retry_later(&mut rec, &format!("connecting failed: {e:#}"), &mut ctrl_c).await? {
-                    return Ok(());
-                }
-                continue;
-            }
-        };
-        let Err(e) = tokio::select! {
-            r = session::run(&mut tracker, &cues, &mut rec) => r,
-            r = &mut ctrl_c => {
-                r?;
-                rec.note("stopping");
-                return tracker.stop().await;
-            }
-        };
-        // Usually fails because the link is gone; it matters only if the link is still up.
-        if let Err(e) = tracker.stop().await {
-            rec.warn(&format!("could not stop the stream: {e:#}"));
         }
-        drop(tracker);
-        if retry_later(&mut rec, &format!("session ended: {e:#}"), &mut ctrl_c).await? {
+        if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
             return Ok(());
         }
     }

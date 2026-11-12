@@ -3,6 +3,7 @@
 use super::quat::Quat;
 use anyhow::Result;
 use std::time::Duration;
+use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
@@ -10,7 +11,11 @@ pub enum Event {
     /// chosen by the backend), in the convention of [`Quat::euler`]: pitch > 0 = looking down,
     /// yaw > 0 = turned left, roll > 0 = tilted right. The frame may change after `Worn(true)`, or
     /// when tracking resumes after a long `Available(false)`; the session recalibrates in both cases.
-    Pose(Quat),
+    /// `at` is when the backend received the sample the pose comes from (the best available
+    /// measure of when it was measured), which is earlier than delivery if the backend holds
+    /// samples back; smoothing and slouch timing run on it. It must not go backwards, nor be
+    /// earlier than the session's start.
+    Pose { at: Instant, orientation: Quat },
     /// Whether the earbuds are worn well enough for head tracking (the backend decides what that
     /// takes). Sent on change; a backend should report the initial state soon after connecting.
     Worn(bool),

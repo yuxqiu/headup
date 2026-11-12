@@ -14,19 +14,29 @@ use serde::Serialize;
 use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::Instant;
 
-/// Append `{"t":<Unix time>, <fields>}` to `file` as one JSON line, in a single write.
-fn write_line(file: &mut File, fields: &impl Serialize) -> Result<()> {
+/// Wall-clock Unix time now, in seconds.
+fn unix_now() -> f64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before 1970")
+        .as_secs_f64()
+}
+
+/// Wall-clock Unix time of the monotonic instant `at`, in seconds.
+fn unix_time_of(at: Instant) -> f64 {
+    unix_now() - at.elapsed().as_secs_f64()
+}
+
+/// Append `{"t":<t>, <fields>}` to `file` as one JSON line, in a single write. `t` is Unix time.
+fn write_line(file: &mut File, t: f64, fields: &impl Serialize) -> Result<()> {
     #[derive(Serialize)]
     struct Line<'a, T> {
         t: f64,
         #[serde(flatten)]
         fields: &'a T,
     }
-    let t = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("system clock is before 1970")
-        .as_secs_f64();
     let mut line = serde_json::to_vec(&Line {
         t: round(t, 3),
         fields,
@@ -65,20 +75,22 @@ pub enum LogEvent {
 }
 
 impl LogEvent {
-    pub fn name(self) -> &'static str {
-        match self {
+    /// The event's name and, for `Reanchored`, the new upright.
+    fn parts(self) -> (&'static str, Option<f64>) {
+        let name = match self {
             LogEvent::Paused => "Paused",
             LogEvent::Resumed => "Resumed",
             LogEvent::CalibrationFailed => "CalibrationFailed",
             LogEvent::TrackingAvailable => "TrackingAvailable",
             LogEvent::TrackingUnavailable => "TrackingUnavailable",
             LogEvent::TrackingLost => "TrackingLost",
-            LogEvent::Reanchored { .. } => "Reanchored",
+            LogEvent::Reanchored { upright } => return ("Reanchored", Some(upright)),
             LogEvent::Cue(Cue::Tone) => "Tone",
             LogEvent::Cue(Cue::Speak) => "Speak",
             LogEvent::Cue(Cue::Notify) => "Notify",
             LogEvent::Cue(Cue::Recovered) => "Recovered",
-        }
+        };
+        (name, None)
     }
 }
 
@@ -126,11 +138,7 @@ impl Recorder {
             #[serde(skip_serializing_if = "Option::is_none")]
             upright: Option<f64>,
         }
-        let name = event.name();
-        let upright = match event {
-            LogEvent::Reanchored { upright } => Some(upright),
-            _ => None,
-        };
+        let (name, upright) = event.parts();
         let shown = upright.map_or(String::new(), |u| format!(" (upright {u:.1}°)"));
         self.note(&format!("{name}{shown}"));
         if let Some(f) = self.log.as_mut() {
@@ -138,13 +146,14 @@ impl Recorder {
                 event: name,
                 upright: upright.map(|u| round(u, 2)),
             };
-            write_line(f, &fields)?;
+            write_line(f, unix_now(), &fields)?;
         }
         Ok(())
     }
 
-    /// Head orientation relative to the calibrated upright pose, now: logged only.
-    pub fn pose(&mut self, e: Euler) -> Result<()> {
+    /// Head orientation relative to the calibrated upright pose, measured at `at`: logged only,
+    /// with `t` the time of measurement.
+    pub fn pose(&mut self, at: Instant, e: Euler) -> Result<()> {
         #[derive(Serialize)]
         struct Fields {
             pitch: f64,
@@ -157,7 +166,7 @@ impl Recorder {
                 roll: round(e.roll, 2),
                 yaw: round(e.yaw, 2),
             };
-            write_line(f, &fields)?;
+            write_line(f, unix_time_of(at), &fields)?;
         }
         Ok(())
     }
@@ -189,7 +198,7 @@ impl DeviceLog {
 
     pub fn record(&mut self, fields: &impl Serialize) -> Result<()> {
         if let Some(f) = self.file.as_mut() {
-            write_line(f, fields)?;
+            write_line(f, unix_now(), fields)?;
         }
         Ok(())
     }
@@ -205,13 +214,6 @@ mod tests {
         let path = std::env::temp_dir().join(format!("headup-{name}-{}.jsonl", std::process::id()));
         let file = File::create(&path).unwrap();
         (path, file)
-    }
-
-    fn unix_now() -> f64 {
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_secs_f64()
     }
 
     /// Runs `write`, then checks every line it wrote starts with a wall-clock `t` taken during the
@@ -242,11 +244,14 @@ mod tests {
     fn session_log_lines() {
         let lines = lines_without_t("session-log", |f| {
             let mut rec = Recorder::new(Some(f));
-            rec.pose(Euler {
-                roll: 1.0,
-                pitch: 25.504,
-                yaw: -3.0,
-            })
+            rec.pose(
+                Instant::now(),
+                Euler {
+                    roll: 1.0,
+                    pitch: 25.504,
+                    yaw: -3.0,
+                },
+            )
             .unwrap();
             rec.event(LogEvent::Cue(Cue::Tone)).unwrap();
             rec.event(LogEvent::Reanchored { upright: -3.6049 })

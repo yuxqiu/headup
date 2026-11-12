@@ -1,10 +1,10 @@
 # HANDOFF
 
-Last updated: 2026-11-12 00:12 UTC
+Last updated: 2026-11-12 01:52 UTC
 
 ## Current state
 - The protocol works.
-  - 43/88=1 starts a 43/89 relative-quaternion stream (~50 Hz). It re-centres to the held pose
+  - 43/88=1 starts a 43/89 relative-quaternion stream (usually ~52.5 Hz; 35 Hz in the 2026-11-12 live check). It re-centres to the held pose
     (identity sample) and pauses while the head is still.
   - The stream is rebuilt to ±5–10°.
   - Axes: pitch = y (down +), yaw = z (left +), roll = x (left tilt −).
@@ -33,17 +33,22 @@ Last updated: 2026-11-12 00:12 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- Thermo review applied (DECISIONS "Thermo review applied"); 55 tests pass. Live check passed 2026-11-12
+  (data/live2*.jsonl, 35 Hz): calibration first try, glance ignored, tone 10 s + 2.0 s hold after the measured slouch
+  start, recovery after the hold, re-anchor, resend on streaming, clean Ctrl-C (exit 0). Not yet seen live: no tone
+  when sitting up just before it is due. Next: release (minor bump: log format and notification text changed).
 - v0.1.1 is released (https://github.com/yuxqiu/headup/releases/tag/v0.1.1, signed tag on 6de8e88): buffered glide
   handling, re-anchoring upright after recoveries (`TrackerTraits::pose_drifts_up`), `HeadTracker::traits()`, no sound
   lead-in. Live-verified in data/session7 and data/session8. 41 tests pass; CI green on x86_64 and aarch64.
 0. v0.1.2 released (https://github.com/yuxqiu/headup/releases/tag/v0.1.2, signed tag on b01263b): re-sends the
    stream switch when this computer starts streaming. CI green on x86_64 and aarch64; release workflow uploaded both
    tarballs; x86_64 tarball verified (sha256, `--version` 0.1.2).
-1. Live smoke test of the 2026-11-12 refactors (registry, logging, posture), which no test covers end to end over
-   RFCOMM: stop the service, run with `--log` and `--raw-log` while audio plays, and check calibration, one slouch
-   cue, wall-clock `t` in both files, and raw samples/frames in `--raw-log`. Then release (minor bump: the log format
-   changed) and update the installed service (`nix flake update headup`, then switch). Point `logFile` at a new file
-   first: the old one holds relative `t`.
+1. Live check of the rebuilder and timing changes (DECISIONS "Hold samples by count"): the same steps as the last live
+   check (RUNBOOK). Expect the tone ~11.3 s after you look down at 52.5 Hz (~12 s at 35 Hz), and no tone if you sit
+   up just before it.
+2. Then release (minor bump: the log format changed) and update the installed service (`nix flake update headup`,
+   then switch). Point `logFile` at a new file first: the old one holds relative `t`. The live check of the
+   2026-11-12 refactors passed (data/live_check*.jsonl).
 2. Watch a normal day's use with `services.headup.logFile` set: count `Reanchored` events and any missed slouch.
 3. Not built: a manual snooze/pause control (no UI chosen). The 43/90-before-43/88 query is still unverified as the
    cure for the 2026-11-11 tracking outage (see Blockers).

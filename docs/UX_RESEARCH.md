@@ -45,6 +45,24 @@ Press coverage: [9to5Mac](https://9to5mac.com/2022/03/17/posture-pal-iphone-app-
 - **Known limitation, stated by several apps:** head angle ≠ spine posture. A slumped back with the head level
   goes undetected. Position this as a *head-tilt* reminder.
 
+## Reminder timing in the open-source apps (research/ios-refs, read 2026-11-12)
+
+How each app decides when "slouching for N seconds" has passed:
+
+| App | Dwell clock | Where the alert fires | Data gap |
+|---|---|---|---|
+| HeadOrbit | Sample timestamp: `trigger.update(pose.pitch, at: pose.timestamp)` (`Actions/PostureReminderAction.swift:52`), `t - since >= dwell` (`Actions/DwellTrigger.swift:22-31`) | Sample callback | A gap over 0.5 s pauses tracking and resets the dwell (`Motion/MotionDelivery.swift:61-64`) |
+| slouchless | Wall clock (`PostureViewModel.swift:205`) | An OS notification scheduled 5 s ahead, cancelled by a good sample (`PostureViewModel.swift:222-234`) | Not detected; a scheduled alert still fires |
+| dorso | Wall clock at processing (`Detectors/AirPodsPostureDetector.swift:495`) | Sample callback; onset after 8 consecutive bad samples (`Core/PostureEngine.swift:24,110-123`) | Clock keeps running; reset on disconnect |
+| posture-fix | Wall clock (`AppState.swift:398`) | Sample callback (`AppState.swift:438-446`) | Not detected; the gap counts as slouch time |
+| posture (cristdulcey) | Wall clock (`PostureKit/Tracker.swift:45,65`) | Sample callback | Menu-bar app resets after 3 s of silence (`PostureBar/Monitor.swift:207-218`) |
+
+- None of them holds samples back, so none faces headup's choice between on-time and confirmed reminders.
+- Only HeadOrbit uses measurement time, as headup now does. HeadOrbit's freshness gate (`MotionDelivery.swift:37-49`)
+  discards late data instead of waiting for it.
+- headup differs on silence: FreeClip 2 goes quiet while the head is still, so silence must hold the last posture,
+  not reset it.
+
 ## What this means for FreeClip 2 on Linux (approved by the user 2026-11-11; implemented parameters in DECISIONS.md)
 
 1. **We own the baseline.**

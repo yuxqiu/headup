@@ -2,3 +2,5 @@
 
 pub mod core;
 pub mod devices;
+#[cfg(test)]
+mod testing;

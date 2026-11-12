@@ -1,6 +1,6 @@
 //! Audio and desktop cues. Sounds are played with `pw-play`: generated tones, and spoken prompts
-//! pre-recorded with Piper's "alba" voice and embedded in the binary (assets/voice/, regenerate with tools/gen_voice.sh). Notifications use
-//! `notify-send`.
+//! pre-recorded with Piper's "alba" voice and embedded in the binary (assets/voice/, regenerated
+//! with tools/gen_voice.sh). Notifications use `notify-send`.
 
 use super::detector::Cue;
 use super::wav::Pcm;
@@ -104,7 +104,8 @@ impl CueSink for Cues {
                     "-a",
                     "headup",
                     "Sit up straight",
-                    "You have been looking down for a minute.",
+                    // No duration in the text: when it fires is the detector's setting.
+                    "You have been looking down for a while.",
                 ],
             ),
         }
@@ -129,7 +130,9 @@ fn path_str(p: &Path) -> &str {
     p.to_str().expect("runtime dir path is UTF-8")
 }
 
-/// Fire-and-forget a cue command; failures are reported but don't stop monitoring.
+/// Fire-and-forget a cue command; failures are reported but don't stop monitoring. They go to
+/// stderr directly, not through `Recorder`: the task outlives the call and cannot borrow it, and
+/// a failure is rare enough that breaking into a terminal status line is acceptable.
 fn spawn(cmd: &str, args: &[&str]) {
     match Command::new(cmd).args(args).spawn() {
         Ok(mut child) => {

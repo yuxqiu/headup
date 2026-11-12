@@ -200,6 +200,7 @@
   Efficiency review found nothing worth changing at 50 Hz.
 
 ## 2026-11-11: Buffered glide handling (user)
+- (Holding by seconds superseded on 2026-11-12 by "Hold samples by count; poses carry measurement time".)
 - `Rebuilder` holds every sample for `DELAY_S` = 2.0 s. On an identity sample it drops the `GLIDE_SAMPLES` = 70
   samples before it (the glide; measured 66–72, session 6) and takes the last released pose as the new reference.
   Replaces the stillness gate and step-size heuristic (`GLIDE_AFTER_STILL_S`, `GLIDE_MIN_STEP_DEG`,
@@ -285,3 +286,79 @@
 - With no time to show, `Recorder` has no clock. The session owns its monotonic clock again (`Session::start`).
 - `AGENTS.md` (repo root) collects the project's working rules for coding agents; it points to these docs rather
   than repeating them.
+
+## 2026-11-12: Hold samples by count; poses carry measurement time; reminders on time (user)
+- Why: the earbuds' rate varies (35 Hz in the live check, 52.5 Hz before; FINDINGS "Sample rate varies") while a
+  glide stays ~68 samples, so the 2.0 s hold (`DELAY_S`) had only 20–50 ms of margin at 35 Hz.
+- `Rebuilder` holds each sample until a sample `GLIDE_SAMPLES` (70) newer arrives, the same window it drops at a
+  re-centre, so it is right at any rate. At 52.5 Hz samples now come out after ~1.3 s instead of 2.0 s. If nothing
+  arrives for `QUIET_S` = 5 s, everything held is released (the stream stopped without a re-centre). 5 s is longer
+  than the longest transport stall seen (3.65 s), so a stall in the middle of a glide cannot let it out. (Refined
+  the same day: see "Shape-aware release when the earbuds go quiet".)
+- `Event::Pose { at, orientation }`: `at` is when the pose was measured, and the detector smooths and times the
+  slouch on it. Found while building the above: releases arrive in bursts (at a re-centre, or at the quiet
+  fallback), and with arrival times the time-based smoothing gave a burst almost no weight. The stream-restart replay
+  lost its slouch entirely. `Recorder::pose` logs `t` as the measurement time.
+- Reminders are due on measured slouch time. During silence the monitor wakes at `Detector::next_due()` instead of
+  the next 1 s poll; the live check's tone came 1.0 s late for this reason. (Clock refined in "Reminder timing".) `Episode::pending` lists due times for
+  both `tick` and `next_due`.
+- Tests: `hides_slow_glide_at_any_sample_rate` (35 Hz, 3 s stall mid-glide; fails with the 2.0 s hold) and
+  `tone_is_on_time_while_head_is_still` (fails with the 1 s poll: tone at 15.0 s instead of ~14.1 s), plus
+  `next_due_tracks_the_next_reminder` and `live_35hz_session_end_to_end` on the new fixture
+  `tests/fixtures/freeclip2/live_35hz.csv` (the live check; the old hold also passes it, narrowly).
+- Rejected: a 2.0 s quiet fallback. It was needed only while poses carried arrival time; it reopened the stall gap.
+
+## 2026-11-12: Shape-aware release when the earbuds go quiet (user)
+- A glide is a straight ramp to identity (FINDINGS "Re-centre model"), so when the earbuds go quiet only a trailing
+  run of consecutive samples that steadily approach identity can still be an unfinished glide. After `QUIET_S` =
+  0.2 s of silence, everything before that run is released; the run waits up to `GLIDE_STALL_S` = 5 s for its
+  identity sample. A slouch held still is flat, so it comes out after 0.2 s instead of 5 s.
+- `QUIET_S` affects only latency (anything it releases cannot be an unfinished glide); it is above the largest gap
+  seen between flowing samples (74 ms). `GLIDE_STALL_S` is the only value that guards correctness, and now applies
+  only to a suspected unfinished glide; it is above the longest stall seen (3.65 s).
+- Known limit: a very small glide whose steps are below sensor noise may not look like a steady approach, and part of
+  it can be released during a stall. The error is at most that glide's size (the one seen was 2°).
+- Test `releases_still_pose_soon_after_the_stream_goes_quiet`; `hides_slow_glide_at_any_sample_rate` still passes
+  with a 3 s stall in the middle of a 35 Hz glide.
+
+## 2026-11-12: Reminder timing: measured time, confirmed posture (user chose confirmed)
+- First version (same day): reminders played on time, judged on the posture known so far (up to the backend's hold,
+  ~1.3–2 s, old). Sitting up in that window just before a reminder was due gave the reminder and then the tink.
+- Now: the detector runs on measured time and never ahead of delivered posture. During silence its clock is the last
+  pose's measured time plus the silence since that pose arrived (`Delivered::clock` in session.rs), and the monitor
+  wakes when that clock reaches `Detector::next_due()`. Reminders come after the hold (~1.3 s at 52.5 Hz, 2 s at
+  35 Hz), never after the user has sat up. A threshold nobody can feel (10 s vs 11.3 s) is cheaper than a reminder
+  that reads as wrong.
+- Tests: `no_reminder_after_sitting_up_when_poses_arrive_late` (fails on the on-time version: Tone then Recovered)
+  and `late_poses_delay_the_reminder_by_the_lag`. The fake tracker now honours the wait timeout between samples like
+  a real backend, and can deliver poses late (`lag`). The end-to-end replay helper ticks on the same clock.
+- Prior art (docs/UX_RESEARCH.md "Reminder timing in the open-source apps"): HeadOrbit times the dwell on sample
+  timestamps; the other four use wall-clock time at processing. None buffers samples, so the edge case does not arise
+  for them.
+
+## 2026-11-12: Thermo review applied (user approved all, including two new abstractions)
+- Review: scratchpad report (two independent reviewers; summary `00_summary.md`). Findings checked against the code
+  before acting.
+- Session: one `Interrupt { Removed, TrackingLost, Fatal }` carried by `?` replaces `Step`, `MonitorEnd`,
+  `Calibration` and their `Removed` arms. `Timeline` holds the session's one clock plus the latest pose's delivery
+  lag (`known_until = now - lag`); it replaces the `Delivered` struct. A pose from before the session or out of order
+  is an error at this boundary (no silent clamps); the detector asserts monotonic time.
+- Calibration windows on measured time: the window opens when the prompt ends (`now`), ignores poses measured before
+  it, and closes when the delivered posture covers 3 s. Test `calibration_ignores_poses_measured_during_the_prompt`
+  (failed before: a spurious "Moved").
+- Detector: reminders are data (`Timer { cue, due, every }`), removing `pending`, `had_cue` and an `unreachable!`.
+  `upright()` removed; tests check `Update::reanchored`.
+- FreeClip 2: `protocol.rs` parses each frame once into a typed `Message` (a malformed 43/54 is now an error like the
+  others; all 10 real 43/54 frames in data/ are well-formed); `link.rs` is the protocol without I/O, with one ordered
+  event queue (no hand-paired reset of rebuild and pose queue) and frames stamped when read; `mod.rs` is the socket.
+  `Link` unit tests cover the startup frames, the re-wear restart, the v0.1.2 resend when this computer starts audio,
+  malformed frames and pose stamps. Rebuilder: `Pending { BeforeGlide, All }` replaces a `0` sentinel.
+  Rejected: the reviewer's "Rebuilder owns its ready queue" (one ordered queue in `Link` also keeps event order).
+  Rebuilder stays in `f64` seconds; `Link` converts at one place.
+- Tests: recordings replay through the real `Link` (`Replay`) and the real session (`ReplayTracker`,
+  `testing::run_session`); the copies of the backend's timer loop and the session's clock are gone. CSV via the
+  `csv` dev-dependency. The session harness records each cue once and parses the log with serde_json.
+- main: one `attempt()` returning `Attempt { Stopped, Waiting, Failed }`; Ctrl-C is checked in three places instead
+  of five bool checks.
+- Smaller: `LogEvent::parts` (one match), `Quat::dot`, `STATUS_EVERY_S`, documented cue stderr and discovery soft
+  fail. The notification text no longer says "for a minute" ("for a while"): the duration is the detector's setting.

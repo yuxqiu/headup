@@ -27,6 +27,8 @@ pub async fn find(session: &bluer::Session, want: Option<Address>) -> Result<Opt
 /// Fail if BlueZ knows `address` by a name that no backend recognises.
 pub async fn ensure_supported(session: &bluer::Session, address: Address) -> Result<()> {
     let device = session.default_adapter().await?.device(address)?;
+    // An unknown name passes: BlueZ may not have seen the device yet, and the run loop then waits
+    // for it to connect as a supported model.
     if let Ok(Some(name)) = device.name().await
         && Model::from_bluetooth_name(&name).is_none()
     {
