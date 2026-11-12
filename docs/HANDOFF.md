@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 14:32 UTC
+Last updated: 2026-11-12 14:36 UTC
 
 ## Current state
 - The protocol works.
@@ -33,6 +33,7 @@ Last updated: 2026-11-12 14:32 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- Releasing v0.2.2 (bump commit pushed; waiting for CI, then the GitHub release).
 - Readability refactor of detector, rebuilder and session done (DECISIONS); 61 tests pass; staged, not committed.
 - Thermo review applied (DECISIONS "Thermo review applied"); 55 tests pass. Live check passed 2026-11-12
   (data/live2*.jsonl, 35 Hz): calibration first try, glance ignored, tone 10 s + 2.0 s hold after the measured slouch

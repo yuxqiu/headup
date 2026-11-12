@@ -354,3 +354,6 @@
   pose; headup reads the new posture afterwards (within the known ~10° per re-centre). Potential issue resolved;
   corrected the FINDINGS explanation of non-fitting glides. Test `moving_during_a_glide_is_not_lost`; 62 tests pass.
   Service stopped for the test and restarted.
+
+## 2026-11-12 14:36 UTC
+- Bumped to 0.2.2 (Cargo.toml, Cargo.lock); `nix flake check` passes; the built binary reports 0.2.2. Release next.
