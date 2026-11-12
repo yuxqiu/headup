@@ -12,17 +12,17 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// Records each prompt and cue with when it started (seconds since the session began). A prompt
-/// takes `prompt_s` to speak.
+/// Records each prompt and cue with when it started (since the session began). A prompt takes
+/// `prompt` to speak.
 struct FakeCues {
     start: Instant,
-    prompt_s: f64,
-    log: RefCell<Vec<(String, f64)>>,
+    prompt: Duration,
+    log: RefCell<Vec<(String, Duration)>>,
 }
 
 impl FakeCues {
     fn record(&self, name: String) {
-        let at = self.start.elapsed().as_secs_f64();
+        let at = self.start.elapsed();
         self.log.borrow_mut().push((name, at));
     }
 }
@@ -33,16 +33,16 @@ impl CueSink for FakeCues {
     }
     async fn say(&self, p: Phrase) -> Result<()> {
         self.record(format!("say {p:?}"));
-        tokio::time::sleep(Duration::from_secs_f64(self.prompt_s)).await;
+        tokio::time::sleep(self.prompt).await;
         Ok(())
     }
 }
 
 /// What a session did.
 pub struct Outcome {
-    /// Prompts ("say SitUpright") and cues ("Tone"), with when each started (seconds since the
-    /// session began).
-    pub cues: Vec<(String, f64)>,
+    /// Prompts ("say SitUpright") and cues ("Tone"), with when each started (since the session
+    /// began).
+    pub cues: Vec<(String, Duration)>,
     /// The `"event"` names in the session log, in order.
     pub events: Vec<String>,
 }
@@ -57,7 +57,7 @@ impl Outcome {
     }
 
     /// When `name` first started.
-    pub fn first(&self, name: &str) -> f64 {
+    pub fn first(&self, name: &str) -> Duration {
         self.cues
             .iter()
             .find(|(n, _)| n == name)
@@ -67,8 +67,8 @@ impl Outcome {
 }
 
 /// Run the real session on `tracker` (on tokio's paused clock) until the tracker fails with
-/// `"script finished"`, and report what it did. Each spoken prompt takes `prompt_s`.
-pub async fn run_session(tracker: &mut impl HeadTracker, prompt_s: f64) -> Outcome {
+/// `"script finished"`, and report what it did. Each spoken prompt takes `prompt`.
+pub async fn run_session(tracker: &mut impl HeadTracker, prompt: Duration) -> Outcome {
     static RUN: AtomicUsize = AtomicUsize::new(0);
     let path = std::env::temp_dir().join(format!(
         "headup-session-{}-{}.jsonl",
@@ -78,7 +78,7 @@ pub async fn run_session(tracker: &mut impl HeadTracker, prompt_s: f64) -> Outco
     let mut rec = Recorder::new(Some(std::fs::File::create(&path).unwrap()));
     let cues = FakeCues {
         start: Instant::now(),
-        prompt_s,
+        prompt,
         log: RefCell::default(),
     };
     let Err(err) = session::run(tracker, &cues, &mut rec).await;

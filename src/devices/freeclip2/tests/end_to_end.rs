@@ -1,11 +1,12 @@
 //! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session (and,
 //! for re-anchoring, straight into the detector).
 
-use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay};
+use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay, secs};
 use crate::core::detector::Detector;
 use crate::core::session::detector_config;
 use crate::devices::freeclip2::FreeClip2;
 use crate::testing::run_session;
+use std::time::Duration;
 
 // Ground truth (guided.py --slouch): five upright → look-down cycles back to the same screen
 // point. The earbuds' re-centres add ~10° towards "looking up" per cycle; without the detector's
@@ -35,10 +36,10 @@ fn repeated_slouches_stay_detectable_end_to_end() {
 }
 
 /// The cues (not prompts) the real session plays on a recording, each with when it played
-/// (seconds since the recording began).
-async fn session_cues(name: &str) -> Vec<(String, f64)> {
+/// (since the recording began).
+async fn session_cues(name: &str) -> Vec<(String, Duration)> {
     let mut tracker = ReplayTracker::new(&read_csv(name));
-    let run = run_session(&mut tracker, 0.0).await;
+    let run = run_session(&mut tracker, Duration::ZERO).await;
     run.cues
         .into_iter()
         .filter(|(name, _)| !name.starts_with("say "))
@@ -47,7 +48,7 @@ async fn session_cues(name: &str) -> Vec<(String, f64)> {
 
 /// The cue names, without the spoken reminder (its timing depends on exactly how long a hold
 /// lasted).
-fn kinds(cues: &[(String, f64)]) -> Vec<&str> {
+fn kinds(cues: &[(String, Duration)]) -> Vec<&str> {
     cues.iter()
         .map(|(name, _)| name.as_str())
         .filter(|name| *name != "Speak")
@@ -83,8 +84,8 @@ async fn stream_restart_end_to_end() {
     assert_eq!(kinds(&cues), ["Tone", "Recovered"], "cues: {cues:?}");
     let recovered_at = cues.iter().find(|(n, _)| n == "Recovered").unwrap().1;
     assert!(
-        recovered_at >= 25.6,
-        "recovered at {recovered_at:.2}, before sitting up"
+        recovered_at >= secs(25.6),
+        "recovered at {recovered_at:?}, before sitting up"
     );
 }
 

@@ -314,3 +314,11 @@
   ≤ 0.8° (not the drift source).
 - Built model-based glide release (DECISIONS "Model-based glide release"); removed `GLIDE_STALL_S`. Fixed a
   nanosecond wake-time spin in `Link::on_timer`. 60 tests pass; clippy, fmt, rustdoc clean. Staged, not committed.
+
+## 2026-11-12 02:37 UTC
+- Exact time in the timing path (DECISIONS): rebuilder, Link, detector and session timeline on `Duration`; removed the
+  `on_timer` patch and the session's 1 ms floor. 60 tests pass; clippy, fmt, rustdoc clean. Staged, not committed.
+
+## 2026-11-12 02:40 UTC
+- Exact time extended to the test harness and replay driver (user asked about the script's floats). The replay
+  driver had the same float round trip as `Link`. 60 tests pass; clippy, fmt, rustdoc clean. Staged.

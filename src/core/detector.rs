@@ -12,12 +12,13 @@
 //! way is not corrected.
 
 use std::collections::VecDeque;
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Cue {
     /// Soft tone in the earbuds after the dwell time.
     Tone,
-    /// Spoken reminder; repeated every `renudge_s` while the slouch continues.
+    /// Spoken reminder; repeated every `renudge` while the slouch continues.
     Speak,
     /// Desktop notification.
     Notify,
@@ -27,14 +28,14 @@ pub enum Cue {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
-    /// Time constant of the exponential smoothing of pitch, seconds.
-    pub smoothing_s: f64,
+    /// Time constant of the exponential smoothing of pitch.
+    pub smoothing: Duration,
     pub on_deg: f64,
     pub off_deg: f64,
-    pub tone_after_s: f64,
-    pub speak_after_s: f64,
-    pub notify_after_s: f64,
-    pub renudge_s: f64,
+    pub tone_after: Duration,
+    pub speak_after: Duration,
+    pub notify_after: Duration,
+    pub renudge: Duration,
     /// Re-anchor upright after each recovery (see the module docs).
     pub reanchor_after_recovery: bool,
 }
@@ -51,34 +52,34 @@ impl Default for Config {
     fn default() -> Self {
         Config {
             // Same as a per-sample weight of 0.15 at 50 Hz: -0.02 s / ln(0.85).
-            smoothing_s: 0.123,
+            smoothing: Duration::from_millis(123),
             on_deg: 20.0,
             off_deg: 15.0,
-            tone_after_s: 10.0,
-            speak_after_s: 30.0,
-            notify_after_s: 60.0,
-            renudge_s: 120.0,
+            tone_after: Duration::from_secs(10),
+            speak_after: Duration::from_secs(30),
+            notify_after: Duration::from_secs(60),
+            renudge: Duration::from_secs(120),
             reanchor_after_recovery: false,
         }
     }
 }
 
-/// "Holding still" for the re-anchor: pitch samples spanning at least `SETTLE_MIN_S` of the last
-/// `SETTLE_WINDOW_S` all lie within `SETTLE_RANGE_DEG`.
-const SETTLE_WINDOW_S: f64 = 1.0;
-const SETTLE_MIN_S: f64 = 0.8;
+/// "Holding still" for the re-anchor: pitch samples spanning at least `SETTLE_MIN` of the last
+/// `SETTLE_WINDOW` all lie within `SETTLE_RANGE_DEG`.
+const SETTLE_WINDOW: Duration = Duration::from_secs(1);
+const SETTLE_MIN: Duration = Duration::from_millis(800);
 const SETTLE_RANGE_DEG: f64 = 2.0;
 
 /// Recent (time, pitch) while waiting for the head to settle after a recovery.
 #[derive(Default)]
-struct Settling(VecDeque<(f64, f64)>);
+struct Settling(VecDeque<(Duration, f64)>);
 
 impl Settling {
     /// Add a sample; true once the head has held still (see `SETTLE_*`).
-    fn settled(&mut self, t: f64, pitch: f64) -> bool {
+    fn settled(&mut self, t: Duration, pitch: f64) -> bool {
         let w = &mut self.0;
         w.push_back((t, pitch));
-        while w.front().is_some_and(|&(t0, _)| t - t0 > SETTLE_WINDOW_S) {
+        while w.front().is_some_and(|&(t0, _)| t - t0 > SETTLE_WINDOW) {
             w.pop_front();
         }
         let span = t - w.front().map_or(t, |&(t0, _)| t0);
@@ -87,22 +88,22 @@ impl Settling {
             .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, x)| {
                 (lo.min(x), hi.max(x))
             });
-        span >= SETTLE_MIN_S && hi - lo < SETTLE_RANGE_DEG
+        span >= SETTLE_MIN && hi - lo < SETTLE_RANGE_DEG
     }
 }
 
 /// The smoothed pitch and when it was last updated.
 #[derive(Clone, Copy)]
 struct Smoothed {
-    t: f64,
+    t: Duration,
     pitch: f64,
 }
 
-/// A reminder timer: fires `cue` at `due`, then again `every` seconds later (`None`: once).
+/// A reminder timer: fires `cue` at `due`, then again `every` later (`None`: once).
 struct Timer {
     cue: Cue,
-    due: Option<f64>,
-    every: Option<f64>,
+    due: Option<Duration>,
+    every: Option<Duration>,
 }
 
 /// One slouch, from crossing `on_deg` until dropping below `off_deg`.
@@ -114,7 +115,7 @@ struct Episode {
 }
 
 impl Episode {
-    fn new(since: f64, c: &Config) -> Self {
+    fn new(since: Duration, c: &Config) -> Self {
         let timer = |cue, after, every| Timer {
             cue,
             due: Some(since + after),
@@ -122,15 +123,15 @@ impl Episode {
         };
         Episode {
             timers: [
-                timer(Cue::Tone, c.tone_after_s, None),
-                timer(Cue::Speak, c.speak_after_s, Some(c.renudge_s)),
-                timer(Cue::Notify, c.notify_after_s, None),
+                timer(Cue::Tone, c.tone_after, None),
+                timer(Cue::Speak, c.speak_after, Some(c.renudge)),
+                timer(Cue::Notify, c.notify_after, None),
             ],
             cued: false,
         }
     }
 
-    fn fire(&mut self, t: f64) -> Vec<Cue> {
+    fn fire(&mut self, t: Duration) -> Vec<Cue> {
         let mut out = Vec::new();
         for tm in &mut self.timers {
             if tm.due.is_some_and(|d| t >= d) {
@@ -142,8 +143,8 @@ impl Episode {
         out
     }
 
-    fn next_due(&self) -> Option<f64> {
-        self.timers.iter().filter_map(|tm| tm.due).reduce(f64::min)
+    fn next_due(&self) -> Option<Duration> {
+        self.timers.iter().filter_map(|tm| tm.due).min()
     }
 }
 
@@ -185,7 +186,7 @@ impl Detector {
 
     /// After a recovery, wait for the head to settle; if it settles above upright, move upright
     /// there (once) and return the new upright.
-    fn reanchor(&mut self, t: f64, pitch: f64) -> Option<f64> {
+    fn reanchor(&mut self, t: Duration, pitch: f64) -> Option<f64> {
         let p = pitch - self.upright;
         let Posture::Upright(Some(settling)) = &mut self.posture else {
             return None;
@@ -204,24 +205,23 @@ impl Detector {
         Some(self.upright)
     }
 
-    /// New pitch sample at time `t` (seconds), relative to the calibrated upright pose.
-    pub fn update(&mut self, t: f64, pitch: f64) -> Update {
+    /// New pitch sample at time `t`, relative to the calibrated upright pose. Times must not go
+    /// backwards.
+    pub fn update(&mut self, t: Duration, pitch: f64) -> Update {
         let reanchored = self.reanchor(t, pitch);
         let cues = self.classify(t, pitch - self.upright);
         Update { cues, reanchored }
     }
 
     /// Smooth `pitch` (relative to upright) and step the posture state machine.
-    fn classify(&mut self, t: f64, pitch: f64) -> Vec<Cue> {
+    fn classify(&mut self, t: Duration, pitch: f64) -> Vec<Cue> {
         let s = match self.smoothed {
             None => pitch,
             Some(prev) => {
-                assert!(
-                    t >= prev.t,
-                    "pose times went backwards: {t} after {}",
-                    prev.t
-                );
-                let weight = 1.0 - (-(t - prev.t) / self.cfg.smoothing_s).exp();
+                let dt = t.checked_sub(prev.t).unwrap_or_else(|| {
+                    panic!("pose times went backwards: {t:?} after {:?}", prev.t)
+                });
+                let weight = 1.0 - (-dt.as_secs_f64() / self.cfg.smoothing.as_secs_f64()).exp();
                 prev.pitch + weight * (pitch - prev.pitch)
             }
         };
@@ -241,8 +241,9 @@ impl Detector {
         self.tick(t)
     }
 
-    /// Advance timers without a new sample.
-    pub fn tick(&mut self, t: f64) -> Vec<Cue> {
+    /// Advance timers to `t` without a new sample. At (or after) `next_due()` the due reminder
+    /// always fires: times are exact.
+    pub fn tick(&mut self, t: Duration) -> Vec<Cue> {
         let Posture::Slouching(ep) = &mut self.posture else {
             return vec![];
         };
@@ -251,7 +252,7 @@ impl Detector {
 
     /// When the next reminder falls due if the slouch goes on (same clock as `update` and
     /// `tick`); `None` while upright.
-    pub fn next_due(&self) -> Option<f64> {
+    pub fn next_due(&self) -> Option<Duration> {
         let Posture::Slouching(ep) = &self.posture else {
             return None;
         };
@@ -262,6 +263,11 @@ impl Detector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `x` seconds.
+    fn s(x: f64) -> Duration {
+        Duration::from_secs_f64(x)
+    }
 
     fn reanchoring() -> Config {
         Config {
@@ -274,7 +280,7 @@ mod tests {
     fn reanchors(d: &mut Detector, t0: f64, secs: f64, pitch: f64, out: &mut Vec<f64>) -> f64 {
         let mut t = t0;
         while t < t0 + secs {
-            out.extend(d.update(t, pitch).reanchored);
+            out.extend(d.update(s(t), pitch).reanchored);
             t += 0.02;
         }
         t
@@ -284,7 +290,7 @@ mod tests {
     fn run(d: &mut Detector, t0: f64, secs: f64, pitch: f64, out: &mut Vec<(f64, Cue)>) -> f64 {
         let mut t = t0;
         while t < t0 + secs {
-            out.extend(d.update(t, pitch).cues.into_iter().map(|c| (t, c)));
+            out.extend(d.update(s(t), pitch).cues.into_iter().map(|c| (t, c)));
             t += 0.02;
         }
         t
@@ -332,7 +338,7 @@ mod tests {
         let t = run(&mut d, 0.0, 3.0, 30.0, &mut cues); // device then goes quiet: head held still
         let mut t2 = t;
         while t2 < 35.0 {
-            cues.extend(d.tick(t2).into_iter().map(|c| (t2, c)));
+            cues.extend(d.tick(s(t2)).into_iter().map(|c| (t2, c)));
             t2 += 1.0;
         }
         let kinds: Vec<Cue> = cues.iter().map(|c| c.1).collect();
@@ -345,13 +351,13 @@ mod tests {
         assert_eq!(d.next_due(), None);
         let t = run(&mut d, 0.0, 1.0, 30.0, &mut vec![]);
         let tone = d.next_due().unwrap();
-        assert!((tone - 10.0).abs() < 0.1, "tone due at {tone}");
-        assert_eq!(d.tick(tone - 0.001), []);
-        assert_eq!(d.tick(tone), [Cue::Tone]);
         assert!(
-            (d.next_due().unwrap() - (tone + 20.0)).abs() < 1e-9,
-            "speak next"
+            (tone.as_secs_f64() - 10.0).abs() < 0.1,
+            "tone due at {tone:?}"
         );
+        assert_eq!(d.tick(tone - Duration::from_nanos(1)), []);
+        assert_eq!(d.tick(tone), [Cue::Tone]);
+        assert_eq!(d.next_due(), Some(tone + s(20.0)), "speak next");
         run(&mut d, t + 10.0, 1.0, 0.0, &mut vec![]);
         assert_eq!(d.next_due(), None);
     }
@@ -429,10 +435,10 @@ mod tests {
     fn smoothing_is_independent_of_sample_rate() {
         let after_step = |hz: f64| {
             let mut d = Detector::new(Config::default());
-            d.update(0.0, 0.0);
+            d.update(Duration::ZERO, 0.0);
             let steps = (0.24 * hz).round() as u32;
             for i in 1..=steps {
-                d.update(f64::from(i) / hz, 30.0);
+                d.update(s(f64::from(i) / hz), 30.0);
             }
             d.smoothed().unwrap()
         };

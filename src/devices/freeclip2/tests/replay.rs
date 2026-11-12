@@ -14,12 +14,18 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// One recorded 43/89 sample; `phase` is the guided-test step ("" if the recording has none).
+/// One recorded 43/89 sample, received at `t` since the recording began; `phase` is the
+/// guided-test step ("" if the recording has none).
 pub struct Row {
     pub phase: String,
-    pub t: f64,
+    pub t: Duration,
     pub seq: u32,
     pub raw: Quat,
+}
+
+/// `x` seconds, for recorded and hand-written test times.
+pub fn secs(x: f64) -> Duration {
+    Duration::from_secs_f64(x)
 }
 
 pub fn read_csv(name: &str) -> Vec<Row> {
@@ -45,7 +51,7 @@ pub fn read_csv(name: &str) -> Vec<Row> {
             let l = line.unwrap_or_else(|e| panic!("{path}: {e}"));
             Row {
                 phase: l.phase,
-                t: l.t,
+                t: secs(l.t), // the recording's float seconds, converted once
                 seq: l.seq,
                 raw: Quat {
                     w: l.w,
@@ -59,71 +65,62 @@ pub fn read_csv(name: &str) -> Vec<Row> {
 }
 
 /// Feeds a recording to a [`Link`] as the socket would: each sample as a 43/89 frame at its
-/// recorded time, and the link's timer whenever that falls due first. Times are seconds since
-/// `start`.
+/// recorded time, and the link's timer whenever that falls due first. All times are exact
+/// `Instant`s.
 pub struct Replay {
     link: Link,
-    start: Instant,
-    rows: VecDeque<(f64, Vec<u8>)>,
-    now: f64,
+    rows: VecDeque<(Instant, Vec<u8>)>,
+    now: Instant,
 }
 
 impl Replay {
+    /// Replay `rows`, with the recording's time zero at `start`.
     pub fn new(rows: &[Row], start: Instant) -> Self {
         let adapter = "00:00:00:00:00:01".parse().unwrap();
         let mut link = Link::new(adapter, DeviceLog::new(None), start);
         link.take_outbox();
         let rows = rows
             .iter()
-            .map(|r| (r.t, sample_frame(r.seq, r.raw).encode()))
+            .map(|r| (start + r.t, sample_frame(r.seq, r.raw).encode()))
             .collect();
         Replay {
             link,
-            start,
             rows,
-            now: 0.0,
+            now: start,
         }
     }
 
     /// The next event and when it is handed out; `None` once the recording and everything the
     /// link held are out.
-    pub fn next(&mut self) -> Option<(f64, Event)> {
+    pub fn next(&mut self) -> Option<(Instant, Event)> {
         loop {
             if let Some(event) = self.link.next_event() {
                 return Some((self.now, event));
             }
-            let wake = self.link.next_wake().map(|w| self.seconds(w));
-            let row = self.rows.front().map(|&(t, _)| t);
+            let wake = self.link.next_wake();
+            let row = self.rows.front().map(|&(at, _)| at);
             let feed_row = match (row, wake) {
-                (Some(t), Some(w)) => t <= w,
+                (Some(at), Some(w)) => at <= w,
                 (Some(_), None) => true,
                 (None, Some(_)) => false,
                 (None, None) => return None,
             };
             if feed_row {
-                let (t, bytes) = self.rows.pop_front().unwrap();
-                self.now = t;
-                self.link.on_bytes(self.instant(t), &bytes).unwrap();
+                let (at, bytes) = self.rows.pop_front().unwrap();
+                self.now = at;
+                self.link.on_bytes(at, &bytes).unwrap();
             } else {
                 let w = wake.unwrap();
                 self.now = w;
-                self.link.on_timer(self.instant(w));
+                self.link.on_timer(w);
             }
         }
     }
-
-    fn instant(&self, t: f64) -> Instant {
-        self.start + Duration::from_secs_f64(t)
-    }
-
-    fn seconds(&self, at: Instant) -> f64 {
-        at.duration_since(self.start).as_secs_f64()
-    }
 }
 
-/// A released pose, measured at `t` (seconds since the recording began).
+/// A released pose, received at `t` since the recording began.
 pub struct Out {
-    pub t: f64,
+    pub t: Duration,
     pub abs: Quat,
 }
 
@@ -134,7 +131,7 @@ pub fn replay(rows: &[Row]) -> Vec<Out> {
     std::iter::from_fn(|| replay.next())
         .map(|(_, event)| match event {
             Event::Pose { at, orientation } => Out {
-                t: at.duration_since(start).as_secs_f64(),
+                t: at - start,
                 abs: orientation,
             },
             other => panic!("a recording of samples produced {other:?}"),
@@ -147,16 +144,13 @@ pub fn replay(rows: &[Row]) -> Vec<Out> {
 /// finished" when the recording is over.
 pub struct ReplayTracker {
     replay: Replay,
-    start: Instant,
-    pending: Option<(f64, Event)>,
+    pending: Option<(Instant, Event)>,
 }
 
 impl ReplayTracker {
     pub fn new(rows: &[Row]) -> Self {
-        let start = Instant::now();
         ReplayTracker {
-            replay: Replay::new(rows, start),
-            start,
+            replay: Replay::new(rows, Instant::now()),
             pending: None,
         }
     }
@@ -168,10 +162,9 @@ impl HeadTracker for ReplayTracker {
         if self.pending.is_none() {
             self.pending = self.replay.next();
         }
-        let Some((t, _)) = self.pending else {
+        let Some((when, _)) = self.pending else {
             bail!("script finished");
         };
-        let when = self.start + Duration::from_secs_f64(t);
         if when > deadline {
             tokio::time::sleep_until(deadline).await;
             return Ok(None);
@@ -190,8 +183,8 @@ impl HeadTracker for ReplayTracker {
 }
 
 /// The guided phases of a recording, in order, with their start times.
-pub fn phases(rows: &[Row]) -> Vec<(String, f64)> {
-    let mut v: Vec<(String, f64)> = Vec::new();
+pub fn phases(rows: &[Row]) -> Vec<(String, Duration)> {
+    let mut v: Vec<(String, Duration)> = Vec::new();
     for r in rows {
         if v.last().is_none_or(|p| p.0 != r.phase) {
             v.push((r.phase.clone(), r.t));
@@ -201,6 +194,6 @@ pub fn phases(rows: &[Row]) -> Vec<(String, f64)> {
 }
 
 /// Index into `phases` of the phase a sample measured at `t` belongs to.
-pub fn phase_at(phases: &[(String, f64)], t: f64) -> usize {
+pub fn phase_at(phases: &[(String, Duration)], t: Duration) -> usize {
     phases.partition_point(|p| p.1 <= t).saturating_sub(1)
 }

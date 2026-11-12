@@ -17,7 +17,7 @@ use tokio::time::Instant;
 pub struct Link {
     decoder: Decoder,
     rebuild: Rebuilder,
-    /// Time zero for `rebuild`, which works in seconds.
+    /// Time zero for `rebuild`, which works in durations since it.
     epoch: Instant,
     /// This computer's adapter address, to pick its entry out of 43/54 pushes.
     adapter: Address,
@@ -59,21 +59,14 @@ impl Link {
 
     /// Nothing arrived until `now`: release the held poses the silence allows.
     pub fn on_timer(&mut self, now: Instant) {
-        let mut t = self.seconds(now);
-        // `next_wake` rounds the rebuilder's due time (seconds) to an Instant, which can land a
-        // nanosecond early; once that Instant is reached, release with the due time itself.
-        if let Some(due) = self.rebuild.next_release()
-            && self.instant(due) <= now
-        {
-            t = t.max(due);
-        }
-        let released = self.rebuild.release(t);
+        let released = self.rebuild.release(self.since_epoch(now));
         self.queue_poses(released);
     }
 
-    /// When to call [`Link::on_timer`] if nothing arrives first.
+    /// When to call [`Link::on_timer`] if nothing arrives first. Calling it then always releases
+    /// what was due: times are exact (integer nanoseconds) all the way through.
     pub fn next_wake(&self) -> Option<Instant> {
-        Some(self.instant(self.rebuild.next_release()?))
+        Some(self.epoch + self.rebuild.next_release()?)
     }
 
     /// The next event for the session, in order.
@@ -101,7 +94,7 @@ impl Link {
             Message::Wear { both_worn } => self.on_wear(both_worn),
             Message::DeviceAudio { address, streaming } => self.on_audio(address, streaming),
             Message::Sample { seq, raw } => {
-                let released = self.rebuild.push(self.seconds(now), seq, raw);
+                let released = self.rebuild.push(self.since_epoch(now), seq, raw);
                 self.queue_poses(released);
             }
             Message::Other => {}
@@ -134,20 +127,16 @@ impl Link {
         self.events.push_back(Event::Available(streaming));
     }
 
-    fn queue_poses(&mut self, released: Vec<(f64, Quat)>) {
+    fn queue_poses(&mut self, released: Vec<(Duration, Quat)>) {
         for (t, orientation) in released {
-            let at = self.instant(t);
+            let at = self.epoch + t;
             self.events.push_back(Event::Pose { at, orientation });
         }
     }
 
-    /// The rebuilder's clock (seconds since `epoch`) and Instants, converted in one place each way.
-    fn seconds(&self, now: Instant) -> f64 {
-        now.duration_since(self.epoch).as_secs_f64()
-    }
-
-    fn instant(&self, t: f64) -> Instant {
-        self.epoch + Duration::from_secs_f64(t)
+    fn since_epoch(&self, now: Instant) -> Duration {
+        now.checked_duration_since(self.epoch)
+            .expect("time went backwards past the link's start")
     }
 }
 
@@ -229,17 +218,19 @@ mod tests {
         assert_eq!(link.take_outbox(), []);
     }
 
-    // The timer fired exactly when `next_wake` asked: it must release something. Converting the
-    // rebuilder's seconds to an Instant and back can land a nanosecond early; then nothing was
-    // released, `next_wake` stayed the same, and a caller looping on it spun forever.
+    // The timer fired exactly when `next_wake` asked: it must release something. When the
+    // rebuilder kept time in f64 seconds, converting to an Instant and back could land a
+    // nanosecond early; then nothing was released, `next_wake` stayed the same, and a caller
+    // looping on it spun forever.
     #[test]
     fn timer_at_next_wake_makes_progress() {
         let start = Instant::now();
         for k in 0..200u32 {
             let mut link = link(start);
-            let base = f64::from(k) * 0.0137;
+            // Arbitrary offsets and a 35 Hz spacing, so due times land on many different values.
+            let base = Duration::from_micros(13_700) * k;
             for seq in 1..=3u32 {
-                let at = start + Duration::from_secs_f64(base + f64::from(seq) / 35.0);
+                let at = start + base + Duration::from_nanos(28_571_429) * seq;
                 let raw = Quat::IDENTITY;
                 link.on_bytes(at, &sample_frame(seq, raw).encode()).unwrap();
             }
@@ -275,10 +266,6 @@ mod tests {
         let Some(Event::Pose { at: first, .. }) = link.next_event() else {
             panic!("no pose");
         };
-        let off = first.max(at(1)) - first.min(at(1));
-        assert!(
-            off < Duration::from_micros(1),
-            "first pose stamped {off:?} off its read time"
-        );
+        assert_eq!(first, at(1));
     }
 }

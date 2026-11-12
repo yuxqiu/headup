@@ -60,7 +60,8 @@ Run everything inside `nix develop`.
 - **Independent of sample rate.** Detection and session logic use seconds: timers, windows, and a smoothing time
   constant. Sample counts are allowed only inside a backend, where the protocol defines them.
 - **Two kinds of time.** Timing logic uses the monotonic `tokio::time::Instant`, so tests can run on a paused
-  clock. Log lines use wall-clock Unix seconds (`t`). Console lines carry no time.
+  clock, and spans of it as `Duration` (exact integer nanoseconds), never `f64` seconds: a float round trip can land
+  a nanosecond early and make a timer loop spin. Convert to seconds only inside formulas (e.g. smoothing). Log lines use wall-clock Unix seconds (`t`). Console lines carry no time.
 - **Poses carry their measurement time** (`Event::Pose { at, .. }`). A backend that buffers reports when each pose
   was measured; smoothing and slouch timers run on it, never on arrival time. Reminders fire only on delivered
   posture: the detector's clock never runs ahead of the latest delivered pose (plus silence).

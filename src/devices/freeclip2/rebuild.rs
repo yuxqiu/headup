@@ -15,7 +15,7 @@
 //!   lives while every later sample fits the model within `FIT_TOL_DEG`.
 //! - On an identity sample, the samples of the hypothesis that fits it are dropped (the head was
 //!   still at its `q_s`), and the pose before them becomes the new reference.
-//! - When the earbuds go quiet for `QUIET_S`, everything up to the earliest live hypothesis's
+//! - When the earbuds go quiet for `QUIET`, everything up to the earliest live hypothesis's
 //!   start pose is released: nothing before it can be part of an unfinished glide. The rest waits
 //!   for its identity sample, however long the silence: the model says the head is still at `q_s`.
 //! - When the earbuds start a new stream (sequence number goes backwards), a live glide is dropped
@@ -23,6 +23,7 @@
 
 use crate::core::quat::Quat;
 use std::collections::VecDeque;
+use std::time::Duration;
 
 /// Samples a sample is held for while the stream flows: longer than a glide, with margin.
 const GLIDE_SAMPLES: u32 = 70;
@@ -35,12 +36,12 @@ const FIT_TOL_DEG: f64 = 0.5;
 /// earbuds also go quiet without a re-centre, e.g. a slouch held still:
 /// tests/fixtures/freeclip2/stream_restart.csv). Only latency depends on it, not correctness: above
 /// the largest gap seen between samples while they flow (74 ms).
-const QUIET_S: f64 = 0.2;
+const QUIET: Duration = Duration::from_millis(200);
 
-/// A raw sample as received.
+/// A raw sample as received, at `t` since the stream's time zero.
 #[derive(Clone, Copy)]
 struct Held {
-    t: f64,
+    t: Duration,
     seq: u32,
     raw: Quat,
 }
@@ -89,9 +90,9 @@ impl Default for Rebuilder {
 }
 
 impl Rebuilder {
-    /// Feed one raw sample (time in seconds). Returns the samples released by it, oldest first, as
-    /// (sample time, absolute orientation since stream start).
-    pub fn push(&mut self, t: f64, seq: u32, raw: Quat) -> Vec<(f64, Quat)> {
+    /// Feed one raw sample received at `t` (since the caller's time zero). Returns the samples
+    /// released by it, oldest first, as (receive time, absolute orientation since stream start).
+    pub fn push(&mut self, t: Duration, seq: u32, raw: Quat) -> Vec<(Duration, Quat)> {
         let sample = Held { t, seq, raw };
         let mut out = Vec::new();
         if let Some(prev) = self.prev {
@@ -123,9 +124,9 @@ impl Rebuilder {
         out
     }
 
-    /// After `QUIET_S` of silence, release the held samples that cannot be part of an unfinished
-    /// glide.
-    pub fn release(&mut self, now: f64) -> Vec<(f64, Quat)> {
+    /// After `QUIET` of silence, release the held samples that cannot be part of an unfinished
+    /// glide. Calling it at (or after) `next_release()` always releases them: times are exact.
+    pub fn release(&mut self, now: Duration) -> Vec<(Duration, Quat)> {
         match self.next_release() {
             Some(due) if due <= now => {
                 let n = self.releasable();
@@ -136,9 +137,9 @@ impl Rebuilder {
     }
 
     /// When the next release happens if nothing else arrives, if anything is releasable.
-    pub fn next_release(&self) -> Option<f64> {
+    pub fn next_release(&self) -> Option<Duration> {
         let last = self.prev?;
-        (self.releasable() > 0).then_some(last.t + QUIET_S)
+        (self.releasable() > 0).then_some(last.t + QUIET)
     }
 
     /// How many held samples, from the oldest, cannot be part of an unfinished glide: those up to
@@ -153,7 +154,7 @@ impl Rebuilder {
     /// `end` (the one closest to `GLIDE_LEN` long if several do). A glide during which the head
     /// moved fits none, and a small one may have no hypothesis; then the `GLIDE_SAMPLES` before
     /// `end` are dropped.
-    fn recentre(&mut self, end: &Held) -> Vec<(f64, Quat)> {
+    fn recentre(&mut self, end: &Held) -> Vec<(Duration, Quat)> {
         let start = self
             .glides
             .iter()
@@ -169,7 +170,7 @@ impl Rebuilder {
 
     /// The stream ended (a new one starts): drop a live glide (the head was still at its start),
     /// release the rest, and take the last orientation as the new stream's reference.
-    fn end_stream(&mut self) -> Vec<(f64, Quat)> {
+    fn end_stream(&mut self) -> Vec<(Duration, Quat)> {
         if let Some(g) = self.glides.first() {
             let start = g.seq;
             self.drop_after(start);
@@ -187,16 +188,16 @@ impl Rebuilder {
         self.glides.clear();
     }
 
-    fn release_first(&mut self, n: usize) -> Vec<(f64, Quat)> {
+    fn release_first(&mut self, n: usize) -> Vec<(Duration, Quat)> {
         let first: Vec<Held> = self.held.drain(..n).collect();
         first.into_iter().map(|h| self.emit(h)).collect()
     }
 
-    fn release_all(&mut self) -> Vec<(f64, Quat)> {
+    fn release_all(&mut self) -> Vec<(Duration, Quat)> {
         self.release_first(self.held.len())
     }
 
-    fn emit(&mut self, h: Held) -> (f64, Quat) {
+    fn emit(&mut self, h: Held) -> (Duration, Quat) {
         self.last_abs = self.reference * h.raw;
         (h.t, self.last_abs)
     }
@@ -206,7 +207,7 @@ impl Rebuilder {
 mod tests {
     use super::*;
     use crate::core::quat::{Euler, Quat};
-    use crate::devices::freeclip2::tests::replay::{Row, phase_at, phases, read_csv, replay};
+    use crate::devices::freeclip2::tests::replay::{Row, phase_at, phases, read_csv, replay, secs};
 
     /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples of
     /// each phase, in order.
@@ -282,7 +283,7 @@ mod tests {
         };
         Row {
             phase: String::new(),
-            t,
+            t: secs(t),
             seq,
             raw,
         }
@@ -322,7 +323,11 @@ mod tests {
         let out = replay(&rows);
         for o in &out {
             let pitch = o.abs.euler().pitch;
-            assert!((pitch - 30.0).abs() < 0.5, "t={:.2}: pitch {pitch:.1}", o.t);
+            assert!(
+                (pitch - 30.0).abs() < 0.5,
+                "t={:.2}: pitch {pitch:.1}",
+                o.t.as_secs_f64()
+            );
         }
         // Exactly the glide's 67 samples; the still samples before it all come out.
         assert_eq!(rows.len() - out.len(), 67, "the glide is dropped");
@@ -334,14 +339,10 @@ mod tests {
     #[test]
     fn releases_still_pose_soon_after_the_stream_goes_quiet() {
         let mut rb = Rebuilder::default();
-        let mut t = 0.0;
-        for seq in 1..=100 {
-            rb.push(t, seq, pitch_quat(30.0));
-            t += 0.02;
-        }
-        let last = t - 0.02;
+        let samples: Vec<(u32, f64)> = (1..=100).map(|seq| (seq, 30.0)).collect();
+        let last = push_all(&mut rb, &samples);
         let due = rb.next_release().unwrap();
-        assert!((due - (last + QUIET_S)).abs() < 1e-9, "due at {due}");
+        assert_eq!(due, last + QUIET);
         let out = rb.release(due);
         // All of it: a still pose far from identity cannot be an unfinished glide.
         assert_eq!(out.len(), 70);
@@ -352,19 +353,22 @@ mod tests {
     }
 
     /// Push `(seq, pitch)` samples at 50 Hz from t = 0; returns the time of the last one.
-    fn push_all(rb: &mut Rebuilder, samples: &[(u32, f64)]) -> f64 {
-        let mut t = 0.0;
+    fn push_all(rb: &mut Rebuilder, samples: &[(u32, f64)]) -> Duration {
+        let mut t = Duration::ZERO;
         for (i, &(seq, pitch)) in samples.iter().enumerate() {
-            t = i as f64 * 0.02;
+            t = Duration::from_millis(20 * i as u64);
             rb.push(t, seq, pitch_quat(pitch));
         }
         t
     }
 
     /// Release everything the silence after `last` allows; returns how many came out.
-    fn drain_quiet(rb: &mut Rebuilder, last: f64) -> usize {
+    fn drain_quiet(rb: &mut Rebuilder, last: Duration) -> usize {
         let mut n = 0;
-        while let Some(due) = rb.next_release().filter(|&d| d <= last + 1.0) {
+        while let Some(due) = rb
+            .next_release()
+            .filter(|&d| d <= last + Duration::from_secs(1))
+        {
             n += rb.release(due).len();
         }
         n
@@ -432,7 +436,11 @@ mod tests {
         }
         for o in replay(&rows) {
             let pitch = o.abs.euler().pitch;
-            assert!((pitch - 30.0).abs() < 0.5, "t={:.2}: pitch {pitch:.1}", o.t);
+            assert!(
+                (pitch - 30.0).abs() < 0.5,
+                "t={:.2}: pitch {pitch:.1}",
+                o.t.as_secs_f64()
+            );
         }
     }
 
@@ -447,7 +455,11 @@ mod tests {
         }
         for o in replay(&rows) {
             let pitch = o.abs.euler().pitch;
-            assert!((pitch - 30.0).abs() < 0.5, "t={:.2}: pitch {pitch:.1}", o.t);
+            assert!(
+                (pitch - 30.0).abs() < 0.5,
+                "t={:.2}: pitch {pitch:.1}",
+                o.t.as_secs_f64()
+            );
         }
     }
 
@@ -461,17 +473,17 @@ mod tests {
         for o in &out {
             let (name, start) = &ph[phase_at(&ph, o.t)];
             let pitch = o.abs.euler().pitch;
-            if o.t - start > 2.0 {
+            if o.t - *start > secs(2.0) {
                 match name.as_str() {
                     "down" => assert!(
                         pitch > 45.0,
                         "t={:.2} down hold emitted pitch {pitch:.1}",
-                        o.t
+                        o.t.as_secs_f64()
                     ),
                     "center" => assert!(
                         pitch.abs() < 10.0,
                         "t={:.2} center hold emitted pitch {pitch:.1}",
-                        o.t
+                        o.t.as_secs_f64()
                     ),
                     _ => {}
                 }
@@ -489,11 +501,11 @@ mod tests {
     fn hides_glide_after_short_hold() {
         for o in replay(&read_csv("short_hold_glide.csv")) {
             let pitch = o.abs.euler().pitch;
-            if o.t > 16.0 {
+            if o.t > secs(16.0) {
                 assert!(
                     pitch > 40.0,
                     "t={:.2}: still looking down, but pitch {pitch:.1}",
-                    o.t
+                    o.t.as_secs_f64()
                 );
             }
         }
@@ -507,7 +519,7 @@ mod tests {
             let n = rows.len() as u32 + 1;
             rows.push(Row {
                 phase: String::new(),
-                t: n as f64 * 0.02,
+                t: Duration::from_millis(20 * u64::from(n)),
                 seq: n,
                 raw: pitch_quat(p),
             });
@@ -540,12 +552,12 @@ mod tests {
             .t;
         let out = replay(&rows);
         // Still looking down right after the restart, until the user starts to sit up (~25.6 s).
-        for o in out.iter().filter(|o| o.t >= restart && o.t < 25.6) {
+        for o in out.iter().filter(|o| o.t >= restart && o.t < secs(25.6)) {
             let p = o.abs.euler().pitch;
             assert!(
                 p > 40.0,
                 "t={:.2}: still looking down, but pitch {p:.1}",
-                o.t
+                o.t.as_secs_f64()
             );
         }
         let end = out.last().unwrap();
@@ -553,7 +565,7 @@ mod tests {
         assert!(
             p.abs() < 10.0,
             "t={:.2}: upright again, but pitch {p:.1}",
-            end.t
+            end.t.as_secs_f64()
         );
     }
 }

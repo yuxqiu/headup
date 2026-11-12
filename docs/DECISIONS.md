@@ -386,3 +386,21 @@
   (fails before). Production was very unlikely to hit it (tokio timers round up to milliseconds).
 - Rejected: the reviewer-era "release everything after 5 s"; a minimum-travel threshold for the old shape rule
   (another number, and the model makes it unnecessary).
+
+## 2026-11-12: Exact time in the timing path (user)
+- Cause: the rebuilder kept time as `f64` seconds and `Link` converted it to an `Instant` and back. The round trip can
+  land up to a nanosecond before the due time, so `on_timer` at exactly `next_wake()` released nothing and a loop on
+  `next_wake` spun forever. The session had the same shape, papered over with a 1 ms minimum wait.
+- Fix: one exact time type. `Rebuilder`, `Link`, `Detector` (timers, settle window, `next_due`) and the session's
+  `Timeline` work in `Duration` since their time zero; `Instant` and `Duration` arithmetic is integer nanoseconds, so
+  reaching a due time always fires it. The patch in `Link::on_timer` and the session's 1 ms floor are gone.
+  Detector `Config` fields are `Duration`s (`smoothing`, `tone_after`, `speak_after`, `notify_after`, `renudge`).
+  Seconds as `f64` remain only inside the smoothing formula and in test scripting.
+- Test `timer_at_next_wake_makes_progress` (failed with the float rebuilder) passes without the patch; the pose-stamp
+  test now asserts exact equality.
+- Tests too: the session tests' `Script`, fake tracker and `Sim`, and `testing::run_session` (prompt length, cue
+  times) use `Duration`; script literals go through `secs(x)` (whole milliseconds), and a pose span that is not a
+  whole number of 20 ms samples fails loudly. The replay driver (`Replay`, `ReplayTracker`) keeps `Instant`s
+  throughout; it had the same float round trip around `next_wake` and only passed by luck. Recording timestamps
+  (float seconds in the CSVs) are converted once, when loaded (`Row.t`, `Out.t` and phase starts are `Duration`).
+- Floats remaining on purpose: the smoothing formula, wall-clock Unix seconds in the logs, and display.

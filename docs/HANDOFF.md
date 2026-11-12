@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 02:31 UTC
+Last updated: 2026-11-12 02:40 UTC
 
 ## Current state
 - The protocol works.
@@ -40,7 +40,8 @@ Last updated: 2026-11-12 02:31 UTC
   CI green on x86_64 and aarch64; release workflow uploaded both tarballs; x86_64 tarball verified (sha256,
   `--version` 0.2.0). Next: update the installed service (`nix flake update headup`, then switch), pointing
   `services.headup.logFile` at a new file (the log format changed).
-- Model-based glide release (DECISIONS) built after v0.2.0: 60 tests pass; not yet run live, not released.
+- Model-based glide release and exact time in the timing path (DECISIONS) built after v0.2.0: 60 tests pass;
+  not yet run live, not released.
 - v0.1.1 is released (https://github.com/yuxqiu/headup/releases/tag/v0.1.1, signed tag on 6de8e88): buffered glide
   handling, re-anchoring upright after recoveries (`TrackerTraits::pose_drifts_up`), `HeadTracker::traits()`, no sound
   lead-in. Live-verified in data/session7 and data/session8. 41 tests pass; CI green on x86_64 and aarch64.
