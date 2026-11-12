@@ -1,4 +1,8 @@
-//! Everything a run reports: messages and events on the console, and an optional JSON-lines log.
+//! Everything a run reports: messages and events on the console, an optional JSON-lines session
+//! log ([`Recorder`]), and an optional JSON-lines log of raw device data ([`DeviceLog`]). Every log
+//! line starts with `t`: wall-clock Unix time in seconds, to the millisecond, so lines from both
+//! logs, from different runs and from the journal line up. Timing logic uses a monotonic clock
+//! instead ([`Recorder::now`]), because the wall clock can jump.
 //!
 //! The live status line (`\r`-updated) is shown only when stdout is a terminal; under systemd the
 //! journal gets one clean line per message instead.
@@ -6,8 +10,38 @@
 use super::detector::Cue;
 use super::quat::Euler;
 use anyhow::Result;
+use serde::Serialize;
 use std::fs::File;
 use std::io::{IsTerminal, Write};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tokio::time::Instant;
+
+/// Append `{"t":<Unix time>, <fields>}` to `file` as one JSON line, in a single write.
+fn write_line(file: &mut File, fields: &impl Serialize) -> Result<()> {
+    #[derive(Serialize)]
+    struct Line<'a, T> {
+        t: f64,
+        #[serde(flatten)]
+        fields: &'a T,
+    }
+    let t = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before 1970")
+        .as_secs_f64();
+    let mut line = serde_json::to_vec(&Line {
+        t: round(t, 3),
+        fields,
+    })?;
+    line.push(b'\n');
+    file.write_all(&line)?;
+    Ok(())
+}
+
+/// `x` rounded to `places` decimals, so log lines stay short.
+fn round(x: f64, places: i32) -> f64 {
+    let scale = 10f64.powi(places);
+    (x * scale).round() / scale
+}
 
 /// Everything that appears as `{"t":…,"event":"<name>"}` in the log.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -50,6 +84,8 @@ impl LogEvent {
 }
 
 pub struct Recorder {
+    /// When the run started, for [`Recorder::now`].
+    start: Instant,
     log: Option<File>,
     live: bool,
     /// A status line is on screen without a trailing newline.
@@ -59,10 +95,16 @@ pub struct Recorder {
 impl Recorder {
     pub fn new(log: Option<File>) -> Self {
         Recorder {
+            start: Instant::now(),
             log,
             live: std::io::stdout().is_terminal(),
             status_shown: false,
         }
+    }
+
+    /// Seconds since the run started, on a monotonic clock: for timing, and for console messages.
+    pub fn now(&self) -> f64 {
+        self.start.elapsed().as_secs_f64()
     }
 
     /// End an on-screen status line so the next message starts on its own line.
@@ -85,40 +127,57 @@ impl Recorder {
         eprintln!("{msg}");
     }
 
-    /// A session event at time `t`: shown and logged.
-    pub fn event(&mut self, t: f64, event: LogEvent) -> Result<()> {
+    /// A session event, now: shown and logged.
+    pub fn event(&mut self, event: LogEvent) -> Result<()> {
+        #[derive(Serialize)]
+        struct Fields {
+            event: &'static str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            upright: Option<f64>,
+        }
+        let t = self.now();
         let name = event.name();
-        let (shown, logged) = match event {
-            LogEvent::Reanchored { upright } => (
-                format!(" (upright {upright:.1}°)"),
-                format!(r#","upright":{upright:.2}"#),
-            ),
-            _ => (String::new(), String::new()),
+        let upright = match event {
+            LogEvent::Reanchored { upright } => Some(upright),
+            _ => None,
         };
+        let shown = upright.map_or(String::new(), |u| format!(" (upright {u:.1}°)"));
         self.note(&format!("{t:8.1}s  {name}{shown}"));
         if let Some(f) = self.log.as_mut() {
-            writeln!(f, r#"{{"t":{t:.3},"event":"{name}"{logged}}}"#)?;
+            let fields = Fields {
+                event: name,
+                upright: upright.map(|u| round(u, 2)),
+            };
+            write_line(f, &fields)?;
         }
         Ok(())
     }
 
-    /// Head orientation relative to the calibrated upright pose at time `t`: logged only.
-    pub fn pose(&mut self, t: f64, e: Euler) -> Result<()> {
+    /// Head orientation relative to the calibrated upright pose, now: logged only.
+    pub fn pose(&mut self, e: Euler) -> Result<()> {
+        #[derive(Serialize)]
+        struct Fields {
+            pitch: f64,
+            roll: f64,
+            yaw: f64,
+        }
         if let Some(f) = self.log.as_mut() {
-            writeln!(
-                f,
-                r#"{{"t":{t:.3},"pitch":{:.2},"roll":{:.2},"yaw":{:.2}}}"#,
-                e.pitch, e.roll, e.yaw
-            )?;
+            let fields = Fields {
+                pitch: round(e.pitch, 2),
+                roll: round(e.roll, 2),
+                yaw: round(e.yaw, 2),
+            };
+            write_line(f, &fields)?;
         }
         Ok(())
     }
 
     /// Overwrite the live status line (terminals only).
-    pub fn status(&mut self, t: f64, smoothed_pitch: Option<f64>, slouching: bool) -> Result<()> {
+    pub fn status(&mut self, smoothed_pitch: Option<f64>, slouching: bool) -> Result<()> {
         if !self.live {
             return Ok(());
         }
+        let t = self.now();
         let pitch = smoothed_pitch.map_or("  --  ".into(), |p| format!("{p:5.1}°"));
         let state = if slouching { "SLOUCHING" } else { "ok       " };
         print!("\r{t:8.1}s  pitch {pitch}  {state}   ");
@@ -128,30 +187,110 @@ impl Recorder {
     }
 }
 
+/// A backend's log of raw device data for debugging it (`--raw-log`). Each record is one JSON line,
+/// `{"t":…, <fields>}`, with fields the backend chooses. Without a file, records are dropped.
+pub struct DeviceLog {
+    file: Option<File>,
+}
+
+impl DeviceLog {
+    pub fn new(file: Option<File>) -> Self {
+        DeviceLog { file }
+    }
+
+    pub fn record(&mut self, fields: &impl Serialize) -> Result<()> {
+        if let Some(f) = self.file.as_mut() {
+            write_line(f, fields)?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::{Value, json};
+    use std::path::PathBuf;
 
-    #[test]
-    fn log_lines_are_json() {
-        let path =
-            std::env::temp_dir().join(format!("headup-record-test-{}.jsonl", std::process::id()));
-        let mut rec = Recorder::new(Some(File::create(&path).unwrap()));
-        rec.pose(
-            1.0,
-            Euler {
-                roll: 1.0,
-                pitch: 25.5,
-                yaw: -3.0,
-            },
-        )
-        .unwrap();
-        rec.event(2.0, LogEvent::Cue(Cue::Tone)).unwrap();
+    fn temp(name: &str) -> (PathBuf, File) {
+        let path = std::env::temp_dir().join(format!("headup-{name}-{}.jsonl", std::process::id()));
+        let file = File::create(&path).unwrap();
+        (path, file)
+    }
+
+    fn unix_now() -> f64 {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs_f64()
+    }
+
+    /// Runs `write`, then checks every line it wrote starts with a wall-clock `t` taken during the
+    /// write, and returns the lines without `t`.
+    fn lines_without_t(name: &str, write: impl FnOnce(File)) -> Vec<Value> {
+        let (path, file) = temp(name);
+        let before = unix_now();
+        write(file);
+        let after = unix_now();
         let text = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
+        text.lines()
+            .map(|line| {
+                assert!(line.starts_with(r#"{"t":"#), "t is not first: {line}");
+                let mut v: Value = serde_json::from_str(line).unwrap();
+                let t = v.as_object_mut().unwrap().remove("t").unwrap();
+                let t = t.as_f64().unwrap();
+                assert!(
+                    before - 0.001 <= t && t <= after + 0.001,
+                    "t {t} not in [{before}, {after}]"
+                );
+                v
+            })
+            .collect()
+    }
+
+    #[test]
+    fn session_log_lines() {
+        let lines = lines_without_t("session-log", |f| {
+            let mut rec = Recorder::new(Some(f));
+            rec.pose(Euler {
+                roll: 1.0,
+                pitch: 25.504,
+                yaw: -3.0,
+            })
+            .unwrap();
+            rec.event(LogEvent::Cue(Cue::Tone)).unwrap();
+            rec.event(LogEvent::Reanchored { upright: -3.6049 })
+                .unwrap();
+        });
         assert_eq!(
-            text,
-            "{\"t\":1.000,\"pitch\":25.50,\"roll\":1.00,\"yaw\":-3.00}\n{\"t\":2.000,\"event\":\"Tone\"}\n"
+            lines,
+            [
+                json!({"pitch": 25.5, "roll": 1.0, "yaw": -3.0}),
+                json!({"event": "Tone"}),
+                json!({"event": "Reanchored", "upright": -3.6}),
+            ]
         );
+    }
+
+    #[test]
+    fn device_log_records_backend_fields() {
+        #[derive(Serialize)]
+        struct Sample {
+            seq: u32,
+            name: &'static str,
+        }
+        let lines = lines_without_t("device-log", |f| {
+            DeviceLog::new(Some(f))
+                .record(&Sample {
+                    seq: 7,
+                    name: "a \"quoted\" name",
+                })
+                .unwrap();
+        });
+        assert_eq!(lines, [json!({"seq": 7, "name": "a \"quoted\" name"})]);
+        DeviceLog::new(None)
+            .record(&Sample { seq: 8, name: "" })
+            .unwrap(); // dropped
     }
 }

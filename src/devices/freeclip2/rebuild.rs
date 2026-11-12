@@ -133,103 +133,7 @@ impl Rebuilder {
 mod tests {
     use super::*;
     use crate::core::quat::{Euler, Quat};
-
-    /// One recorded 43/89 sample; `phase` is the guided-test step ("" if the recording has none).
-    struct Row {
-        phase: String,
-        t: f64,
-        seq: u32,
-        raw: Quat,
-    }
-
-    fn read_csv(name: &str) -> Vec<Row> {
-        let path = format!(
-            "{}/tests/fixtures/freeclip2/{name}",
-            env!("CARGO_MANIFEST_DIR")
-        );
-        let text = std::fs::read_to_string(&path).unwrap();
-        let mut lines = text.lines();
-        let header: Vec<&str> = lines.next().unwrap().split(',').collect();
-        let col = |n: &str| header.iter().position(|h| *h == n);
-        let c = |n: &str| col(n).unwrap_or_else(|| panic!("{path}: no column {n}"));
-        let (ct, cs, cw, cx, cy, cz, cp) = (
-            c("t"),
-            c("seq"),
-            c("w"),
-            c("x"),
-            c("y"),
-            c("z"),
-            col("phase"),
-        );
-        lines
-            .map(|line| {
-                let f: Vec<&str> = line.split(',').collect();
-                let p = |i: usize| f[i].parse::<f64>().unwrap();
-                Row {
-                    phase: cp.map_or(String::new(), |i| f[i].to_string()),
-                    t: p(ct),
-                    seq: f[cs].parse().unwrap(),
-                    raw: Quat {
-                        w: p(cw),
-                        x: p(cx),
-                        y: p(cy),
-                        z: p(cz),
-                    },
-                }
-            })
-            .collect()
-    }
-
-    /// A released sample: measured at `t`, released at `now` (the delay later, or at a re-centre).
-    struct Out {
-        t: f64,
-        now: f64,
-        abs: Quat,
-    }
-
-    /// Replay a recording through a `Rebuilder`, then release everything still held.
-    fn replay(rows: &[Row]) -> Vec<Out> {
-        let mut rb = Rebuilder::default();
-        let mut out = Vec::new();
-        for r in rows {
-            // Held samples come out on time even when nothing arrives (the backend's timer).
-            while let Some(due) = rb.next_release().filter(|&due| due <= r.t) {
-                out.extend(
-                    rb.release(due)
-                        .into_iter()
-                        .map(|(t, abs)| Out { t, now: due, abs }),
-                );
-            }
-            out.extend(rb.push(r.t, r.seq, r.raw).into_iter().map(|(t, abs)| Out {
-                t,
-                now: r.t,
-                abs,
-            }));
-        }
-        let end = rows.last().map_or(0.0, |r| r.t) + DELAY_S;
-        out.extend(
-            rb.release(end)
-                .into_iter()
-                .map(|(t, abs)| Out { t, now: end, abs }),
-        );
-        out
-    }
-
-    /// The guided phases of a recording, in order, with their start times.
-    fn phases(rows: &[Row]) -> Vec<(String, f64)> {
-        let mut v: Vec<(String, f64)> = Vec::new();
-        for r in rows {
-            if v.last().is_none_or(|p| p.0 != r.phase) {
-                v.push((r.phase.clone(), r.t));
-            }
-        }
-        v
-    }
-
-    /// Index into `phases` of the phase a sample measured at `t` belongs to.
-    fn phase_at(phases: &[(String, f64)], t: f64) -> usize {
-        phases.partition_point(|p| p.1 <= t).saturating_sub(1)
-    }
+    use crate::devices::freeclip2::tests::replay::{Row, phase_at, phases, read_csv, replay};
 
     /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples of
     /// each phase, in order.
@@ -344,34 +248,6 @@ mod tests {
         }
     }
 
-    // Ground truth (guided.py --slouch): five upright → look-down cycles back to the same screen
-    // point. The earbuds' re-centres add ~10° towards "looking up" per cycle; without the detector's
-    // re-anchoring, upright drifts to about -40° and the last look-down never counts as a slouch.
-    #[test]
-    fn repeated_slouches_stay_detectable_end_to_end() {
-        use crate::core::detector::{Config, Detector};
-        let rows = read_csv("slouch_guided.csv");
-        let ph = phases(&rows);
-        let mut det = Detector::new(Config::for_traits(super::super::FreeClip2::TRAITS));
-        let mut state = vec![(false, 0.0); ph.len()]; // (slouched, last smoothed) per phase
-        for o in replay(&rows) {
-            det.update(o.now, o.abs.euler().pitch); // baseline = stream start (upright)
-            let s = &mut state[phase_at(&ph, o.t)];
-            s.0 |= det.slouching();
-            s.1 = det.smoothed().unwrap_or(0.0);
-        }
-        for ((name, _), (slouched, end)) in ph.iter().zip(&state) {
-            if name.starts_with("down") {
-                assert!(slouched, "{name}: look-down not detected; {state:?}");
-            } else {
-                assert!(
-                    end.abs() < 6.0,
-                    "{name}: upright ends at {end:.1}; {state:?}"
-                );
-            }
-        }
-    }
-
     // A real head lift after a still hold must come through.
     #[test]
     fn real_lift_after_hold_is_not_swallowed() {
@@ -397,52 +273,6 @@ mod tests {
             (pitch - p).abs() < 0.5,
             "lift to {p:.1} reported as {pitch:.1}"
         );
-    }
-
-    /// Replay through a detector the way the session drives it: poses at their release time and
-    /// 1 s ticks in between. Returns (cue, measurement time of the last pose before it).
-    fn cues_end_to_end(rows: &[Row]) -> Vec<(crate::core::detector::Cue, f64)> {
-        use crate::core::detector::{Config, Detector};
-        let mut det = Detector::new(Config::default());
-        let (mut cues, mut tick, mut cur) = (Vec::new(), 0.0, 0.0);
-        for o in replay(rows) {
-            while tick < o.now {
-                cues.extend(det.tick(tick).into_iter().map(|c| (c, cur))); // silence: the last pose holds
-                tick += 1.0;
-            }
-            cur = o.t;
-            // baseline = stream start (upright)
-            cues.extend(
-                det.update(o.now, o.abs.euler().pitch)
-                    .cues
-                    .into_iter()
-                    .map(|c| (c, cur)),
-            );
-        }
-        cues
-    }
-
-    // End to end on the real long-hold recording: each 30 s look-down hold must cue, and sitting
-    // back up must register as recovery (session 1 failed this before glides were suppressed).
-    #[test]
-    fn long_holds_trigger_cues_end_to_end() {
-        use crate::core::detector::Cue;
-        let rows = read_csv("hold_test.csv");
-        let ph = phases(&rows);
-        let cues = cues_end_to_end(&rows);
-        // Speech (at 30 s) depends on exactly how long each ~30 s hold lasted, so it is not asserted.
-        let key: Vec<(Cue, &str)> = cues
-            .iter()
-            .filter(|c| c.0 != Cue::Speak)
-            .map(|&(c, t)| (c, ph[phase_at(&ph, t)].0.as_str()))
-            .collect();
-        let want = [
-            (Cue::Tone, "down"),
-            (Cue::Recovered, "center"),
-            (Cue::Tone, "down"),
-            (Cue::Recovered, "center"),
-        ];
-        assert_eq!(key, want, "cues: {cues:?}");
     }
 
     // data/session3 (stream_restart.csv): looking down ~51°, head held still, then the earbuds
@@ -473,25 +303,6 @@ mod tests {
             p.abs() < 10.0,
             "t={:.2}: upright again, but pitch {p:.1}",
             end.t
-        );
-    }
-
-    // End to end on the stream-restart recording: one slouch, so exactly one tone and one recovery,
-    // and the recovery only once the user actually sat up (~25.6 s), not at the restart.
-    #[test]
-    fn stream_restart_end_to_end() {
-        use crate::core::detector::Cue;
-        let cues = cues_end_to_end(&read_csv("stream_restart.csv"));
-        let kinds: Vec<Cue> = cues
-            .iter()
-            .map(|c| c.0)
-            .filter(|c| *c != Cue::Speak)
-            .collect();
-        assert_eq!(kinds, [Cue::Tone, Cue::Recovered], "cues: {cues:?}");
-        let recovered_at = cues.iter().find(|c| c.0 == Cue::Recovered).unwrap().1;
-        assert!(
-            recovered_at >= 25.6,
-            "recovered at {recovered_at:.2}, before sitting up"
         );
     }
 

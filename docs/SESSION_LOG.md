@@ -227,3 +227,28 @@
 - Released v0.1.2: CI green on b01263b; the user created the signed tag and the release (the auto-mode classifier
   blocked it for the agent); the release workflow uploaded both tarballs; x86_64 tarball verified (sha256, `--version`
   0.1.2, run with nixpkgs dbus on LD_LIBRARY_PATH).
+
+## 2026-11-11 23:48 UTC
+- Restructured src/devices (DECISIONS "Backend registry generated from one list"): `Backend` trait plus a
+  `backends!` macro, so adding a model takes 2 lines in the registry instead of ~7 edits. FreeClip 2 has a
+  `stream_switch` helper and uses tokio `Instant` throughout. No change in behaviour; 41 tests pass; clippy and fmt
+  clean. A throwaway second backend compiled with only a `mod` line and a list line, then was removed. Uncommitted;
+  the user commits.
+
+## 2026-11-11 23:54 UTC
+- Fixed the two items left alone earlier: the rustdoc warning (private `rebuild` link), and the end-to-end tests that
+  reached `super::super::FreeClip2::TRAITS`. They moved to `src/devices/freeclip2/tests/{replay,end_to_end}.rs`,
+  declared from the inline `mod tests` (user: test-only modules stay out of the production module list).
+- Logging (DECISIONS "Shared logging for backends"): `DeviceLog` in core; FreeClip 2 logs serde records; the session
+  log also uses serde_json (shorter number formatting, same keys). Added serde + serde_json. 41 tests pass;
+  `nix flake check` passes. Changes staged, not committed. A live run with `--raw-log` has not been done yet.
+
+## 2026-11-12 00:01 UTC
+- Redesign pass (user: no backward compatibility needed). One run clock owned by `Recorder` and shared with
+  `DeviceLog` (logs line up; `t` no longer resets on reconnect). BlueZ discovery moved to `devices/discovery.rs`.
+  `session::run` returns `Result<Infallible>`. 41 tests pass; `nix flake check` passes. Staged, not committed.
+  Not run live (would compete with the installed service for the earbuds' RFCOMM channel).
+
+## 2026-11-12 00:03 UTC
+- Log `t` is now wall-clock Unix time (user). Timing logic stays monotonic. `DeviceLog::new` is back;
+  `Recorder::device_log` removed. 41 tests pass; `nix flake check` passes. Staged, not committed; not run live.

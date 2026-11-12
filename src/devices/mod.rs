@@ -1,107 +1,92 @@
-//! Earbud backends implementing [`HeadTracker`], how to recognise them, and [`AnyTracker`] so the
-//! rest of the program never names a model. Adding a model: a backend module, a [`Model`] variant
-//! with its name rule, and an [`AnyTracker`] variant with its arms below.
+//! Earbud backends, how to recognise them, and [`AnyTracker`] so the rest of the program never
+//! names a model.
+//!
+//! Adding a model: write a backend module whose tracker implements [`HeadTracker`] and
+//! [`Backend`], declare the module and add one line to the `backends!` list below.
+
+mod discovery;
+
+pub use discovery::{Found, ensure_supported, find};
+
+use crate::core::record::DeviceLog;
+use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
+use anyhow::Result;
+use std::time::Duration;
+
+/// What the registry needs from a backend on top of [`HeadTracker`].
+#[allow(async_fn_in_trait)] // used through generics only, not as dyn or across threads
+pub trait Backend: HeadTracker + Sized {
+    /// Whether a Bluetooth device name belongs to this model.
+    fn recognises(bluetooth_name: &str) -> bool;
+
+    /// Connect to `found` and start head tracking. `log` is for raw device data that helps debug
+    /// the backend (`--raw-log`).
+    async fn connect(found: &Found, log: DeviceLog) -> Result<Self>;
+}
+
+/// Generates [`Model`] (one variant per backend) and [`AnyTracker`] (dispatch to the connected
+/// backend) from the list of `Variant => backend type` pairs. When several backends recognise a
+/// name, the first listed wins.
+macro_rules! backends {
+    ($($model:ident => $backend:ty),+ $(,)?) => {
+        /// Earbud models that have a backend.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub enum Model {
+            $($model),+
+        }
+
+        impl Model {
+            /// Recognise a model from its Bluetooth name.
+            pub fn from_bluetooth_name(name: &str) -> Option<Model> {
+                $(if <$backend as Backend>::recognises(name) {
+                    return Some(Model::$model);
+                })+
+                None
+            }
+        }
+
+        /// A connected backend of any supported model.
+        pub enum AnyTracker {
+            $($model($backend)),+
+        }
+
+        impl AnyTracker {
+            /// Connect to `found` with its model's backend; see [`Backend::connect`].
+            pub async fn connect(found: &Found, log: DeviceLog) -> Result<Self> {
+                Ok(match found.model {
+                    $(Model::$model => {
+                        AnyTracker::$model(<$backend as Backend>::connect(found, log).await?)
+                    })+
+                })
+            }
+        }
+
+        impl HeadTracker for AnyTracker {
+            async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
+                match self {
+                    $(AnyTracker::$model(t) => t.next_event(timeout).await,)+
+                }
+            }
+
+            async fn stop(&mut self) -> Result<()> {
+                match self {
+                    $(AnyTracker::$model(t) => t.stop().await,)+
+                }
+            }
+
+            fn traits(&self) -> TrackerTraits {
+                match self {
+                    $(AnyTracker::$model(t) => t.traits(),)+
+                }
+            }
+        }
+    };
+}
 
 pub mod freeclip2;
 
-use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
-use anyhow::{Context, Result};
-use bluer::Address;
-use std::time::Duration;
-
-/// Earbud models that have a backend.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Model {
-    FreeClip2,
-}
-
-impl Model {
-    pub const ALL: [Model; 1] = [Model::FreeClip2];
-
-    /// Recognise a model from its Bluetooth name.
-    pub fn from_bluetooth_name(name: &str) -> Option<Model> {
-        Model::ALL.into_iter().find(|m| m.matches(name))
-    }
-
-    fn matches(self, name: &str) -> bool {
-        match self {
-            // Same rule as the vendor app's device whitelist: `^(?=(HUAWEI FreeClip 2))`.
-            Model::FreeClip2 => name.starts_with("HUAWEI FreeClip 2"),
-        }
-    }
-}
-
-/// A connected Bluetooth device that a backend supports.
-#[derive(Debug, Clone)]
-pub struct Found {
-    pub address: Address,
-    pub name: String,
-    pub model: Model,
-    /// This computer's Bluetooth adapter, as the earbuds know it.
-    pub adapter: Address,
-}
-
-/// Connected devices on the default BlueZ adapter that have a backend.
-pub async fn connected_supported(session: &bluer::Session) -> Result<Vec<Found>> {
-    let adapter = session.default_adapter().await.context("default adapter")?;
-    let adapter_address = adapter.address().await.context("adapter address")?;
-    let mut found = Vec::new();
-    for address in adapter.device_addresses().await.context("device list")? {
-        let device = adapter.device(address).context("device")?;
-        // BlueZ forgets nearby BLE devices at any time, so a device can vanish between listing and
-        // querying it ("target object was either not present or removed"); skip it.
-        let (Ok(connected), Ok(name)) = (device.is_connected().await, device.name().await) else {
-            continue;
-        };
-        let Some(name) = name.filter(|_| connected) else {
-            continue;
-        };
-        if let Some(model) = Model::from_bluetooth_name(&name) {
-            found.push(Found {
-                address,
-                name,
-                model,
-                adapter: adapter_address,
-            });
-        }
-    }
-    Ok(found)
-}
-
-/// A connected backend of any supported model.
-pub enum AnyTracker {
-    FreeClip2(freeclip2::FreeClip2),
-}
-
-impl AnyTracker {
-    /// Connect to `found` and start head tracking. `raw_log` receives backend-specific raw samples.
-    pub async fn connect(found: &Found, raw_log: Option<std::fs::File>) -> Result<Self> {
-        Ok(match found.model {
-            Model::FreeClip2 => AnyTracker::FreeClip2(
-                freeclip2::FreeClip2::connect(found.address, found.adapter, raw_log).await?,
-            ),
-        })
-    }
-}
-
-impl HeadTracker for AnyTracker {
-    async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        match self {
-            AnyTracker::FreeClip2(t) => t.next_event(timeout).await,
-        }
-    }
-
-    async fn stop(&mut self) -> Result<()> {
-        match self {
-            AnyTracker::FreeClip2(t) => t.stop().await,
-        }
-    }
-
-    fn traits(&self) -> TrackerTraits {
-        match self {
-            AnyTracker::FreeClip2(t) => t.traits(),
-        }
-    }
+backends! {
+    FreeClip2 => freeclip2::FreeClip2,
 }
 
 #[cfg(test)]

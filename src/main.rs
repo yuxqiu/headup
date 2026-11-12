@@ -1,7 +1,8 @@
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use clap::Parser;
-use headup::core::{cues::Cues, record::Recorder, session, tracker::HeadTracker};
-use headup::devices::{self, AnyTracker, Found, Model};
+use headup::core::record::{DeviceLog, Recorder};
+use headup::core::{cues::Cues, session, tracker::HeadTracker};
+use headup::devices::{self, AnyTracker};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
@@ -39,26 +40,6 @@ fn open_append(p: &Path) -> Result<std::fs::File> {
         .with_context(|| format!("open {p:?}"))
 }
 
-/// The requested (or first) supported earbuds currently connected, if any.
-async fn find(bt: &bluer::Session, want: Option<bluer::Address>) -> Result<Option<Found>> {
-    let found = devices::connected_supported(bt).await?;
-    Ok(match want {
-        Some(addr) => found.into_iter().find(|f| f.address == addr),
-        None => found.into_iter().next(),
-    })
-}
-
-/// Fail fast if the user named a known device that has no backend.
-async fn check_supported(bt: &bluer::Session, addr: bluer::Address) -> Result<()> {
-    let device = bt.default_adapter().await?.device(addr)?;
-    if let Ok(Some(name)) = device.name().await
-        && Model::from_bluetooth_name(&name).is_none()
-    {
-        bail!("{addr} ({name}) is not a supported device (see README)");
-    }
-    Ok(())
-}
-
 /// Warn, then wait RETRY before the next attempt; `true` if Ctrl-C arrived instead.
 async fn retry_later(rec: &mut Recorder, what: &str, ctrl_c: &mut CtrlC) -> Result<bool> {
     rec.warn(&format!("{what}; retrying in {}s", RETRY.as_secs()));
@@ -82,14 +63,14 @@ async fn main() -> Result<()> {
         .await
         .context("connect to BlueZ over D-Bus")?;
     if let Some(addr) = args.device {
-        check_supported(&bt, addr).await?;
+        devices::ensure_supported(&bt, addr).await?;
     }
     let mut ctrl_c: CtrlC = Box::pin(tokio::signal::ctrl_c());
 
     let mut waiting_noted = false;
     loop {
         let found = tokio::select! {
-            r = find(&bt, args.device) => r,
+            r = devices::find(&bt, args.device) => r,
             r = &mut ctrl_c => { r?; return Ok(()); }
         };
         let found = match found {
@@ -115,8 +96,8 @@ async fn main() -> Result<()> {
         waiting_noted = false;
         rec.note(&format!("using {} ({})", found.name, found.address));
 
-        let raw_log = args.raw_log.as_deref().map(open_append).transpose()?;
-        let mut tracker = match AnyTracker::connect(&found, raw_log).await {
+        let device_log = DeviceLog::new(args.raw_log.as_deref().map(open_append).transpose()?);
+        let mut tracker = match AnyTracker::connect(&found, device_log).await {
             Ok(t) => t,
             Err(e) => {
                 if retry_later(&mut rec, &format!("connecting failed: {e:#}"), &mut ctrl_c).await? {
@@ -125,7 +106,7 @@ async fn main() -> Result<()> {
                 continue;
             }
         };
-        let ended = tokio::select! {
+        let Err(e) = tokio::select! {
             r = session::run(&mut tracker, &cues, &mut rec) => r,
             r = &mut ctrl_c => {
                 r?;
@@ -138,11 +119,7 @@ async fn main() -> Result<()> {
             rec.warn(&format!("could not stop the stream: {e:#}"));
         }
         drop(tracker);
-        let what = match ended {
-            Err(e) => format!("session ended: {e:#}"),
-            Ok(()) => "session ended".to_string(),
-        };
-        if retry_later(&mut rec, &what, &mut ctrl_c).await? {
+        if retry_later(&mut rec, &format!("session ended: {e:#}"), &mut ctrl_c).await? {
             return Ok(());
         }
     }

@@ -219,3 +219,49 @@
 - `FreeClip2` sends 43/88=1 again on every 43/54 transition of this computer to streaming. A 43/88 sent while idle
   left tracking off for an hour after audio started (FINDINGS "Stream switch sent while idle"). The extra 43/88 is
   harmless during playback: earlier restarts of the stream were acked and the rebuilder handles stream restarts.
+
+## 2026-11-11: Backend registry generated from one list (user approved)
+- Each backend implements `devices::Backend` (`recognises(bluetooth_name)`, `connect(&Found, raw_log)`) on top of
+  `HeadTracker`, so the backend owns its name rule and its connect arguments.
+- A `backends!` macro in src/devices/mod.rs generates `Model`, `Model::from_bluetooth_name` and the `AnyTracker`
+  enum with its dispatch from one list of `Variant => type` pairs. Adding a model takes a `mod` line and one list
+  line (checked by compiling a throwaway second backend). Before, it took ~7 edits in the registry. When several
+  backends recognise a name, the first listed wins.
+- Rejected: a `&[&dyn Backend]` slice. It needs boxed futures and an object-safe twin of `HeadTracker`.
+- FreeClip 2 cleanups with no change in behaviour: `stream_switch(on)` builds the 43/88 frame (4 copies before);
+  the backend uses `tokio::time::Instant` throughout instead of converting from `std`.
+
+## 2026-11-11: Shared logging for backends; serde_json for both logs (user approved)
+- `core::record::DeviceLog` replaces the bare `Option<File>` that backends got for `--raw-log`. It owns the file
+  and the clock, and `record(&fields)` writes `{"t":…, <fields>}` for any `Serialize` value. Without a file,
+  records are dropped. `Backend::connect` takes a `DeviceLog`. For what `t` means, see "Wall-clock log time"
+  below.
+- FreeClip 2 logs `RawSample { seq, raw }` (components as the f32 the earbuds send) and `RawFrame { svc, cmd, tlvs }`
+  (TLVs in hex, ordered by tag). Its hand-built JSON (`raw_log_line`, `raw_frame_line`) was removed.
+- The session log (`--log`) is also written with serde_json (user's choice: one serializer). Values are rounded
+  as before (t to 3 decimals, angles to 2) but printed in shortest form, e.g. `"t":1.0` instead of `"t":1.000`.
+  Keys and their order are unchanged.
+- New dependencies: serde (derive) and serde_json.
+
+## 2026-11-11: Test-only modules live in a `tests/` directory (user)
+- Test-only Rust modules sit apart from production modules: a backend's inline `mod tests` declares them, and their
+  files live in `<backend>/tests/` (FreeClip 2: `tests/replay.rs` for fixture replay, `tests/end_to_end.rs` for
+  rebuilder + detector runs). They cannot go in the crate's top-level `tests/` because they use private types
+  (`Rebuilder`).
+
+## 2026-11-11: One run clock; discovery module; `session::run` cannot return `Ok` (user: redesign freely)
+- `Recorder` owns the run's monotonic clock (`Recorder::now`), used for session timing and console messages, and
+  stamps every log line itself: `event(e)`, `pose(angles)` and `status(..)` no longer take `t`. The session reads
+  time from the recorder. (Log timestamps: superseded by "Wall-clock log time".)
+- `src/devices/discovery.rs` holds all BlueZ lookup: `Found`, `find(session, want)` and `ensure_supported` (moved
+  out of main). `src/devices/mod.rs` is only the backend registry.
+- `session::run` returns `Result<Infallible>`, so main has no "session ended without an error" branch.
+
+## 2026-11-12: Wall-clock log time (user)
+- `t` in `--log` and `--raw-log` is wall-clock Unix time in seconds, rounded to the millisecond, read when the line
+  is written. Lines from both logs, from different runs appended to one file, and from the journal line up. This
+  stays right across suspend, where a monotonic clock stops.
+- Session timing (detector, calibration, timeouts) stays monotonic (`Recorder::now`), because the wall clock can
+  jump. Console messages keep seconds since start; journald adds the date and time.
+- `DeviceLog::new(file)` again; it no longer shares a clock with `Recorder`. Unix seconds rather than RFC 3339 text:
+  no date crate, and analysis needs only subtraction.

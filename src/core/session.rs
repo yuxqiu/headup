@@ -6,8 +6,8 @@ use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
 use super::tracker::{Event, HeadTracker};
 use anyhow::Result;
+use std::convert::Infallible;
 use std::time::Duration;
-use tokio::time::Instant;
 
 const CALIBRATION_S: f64 = 3.0;
 const CALIBRATION_MAX_P90_DEG: f64 = 8.0;
@@ -55,25 +55,23 @@ struct Session<'a, T: HeadTracker, C: CueSink> {
     tracker: &'a mut T,
     cues: &'a C,
     rec: &'a mut Recorder,
-    start: Instant,
     worn: bool,
     /// When the tracker last became unavailable (`None` while available).
     unavailable_since: Option<f64>,
 }
 
 /// Calibrate, then monitor; pause while the earbuds are off and recalibrate when they are put back
-/// on (reseating changes how the earbud sits) or after tracking was lost. Runs until a tracker
-/// error; the caller handles Ctrl-C.
+/// on (reseating changes how the earbud sits) or after tracking was lost. Returns only with a
+/// tracker error; the caller handles Ctrl-C.
 pub async fn run<T: HeadTracker, C: CueSink>(
     tracker: &mut T,
     cues: &C,
     rec: &mut Recorder,
-) -> Result<()> {
+) -> Result<Infallible> {
     let mut s = Session {
         tracker,
         cues,
         rec,
-        start: Instant::now(),
         worn: true,
         unavailable_since: None,
     };
@@ -86,7 +84,7 @@ pub async fn run<T: HeadTracker, C: CueSink>(
             },
             Calibration::Removed => {}
             Calibration::Failed => {
-                s.event(LogEvent::CalibrationFailed)?;
+                s.rec.event(LogEvent::CalibrationFailed)?;
                 s.idle(CALIBRATION_RETRY_S).await?;
             }
         }
@@ -94,9 +92,9 @@ pub async fn run<T: HeadTracker, C: CueSink>(
 }
 
 impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
-    /// Seconds since the session started.
+    /// Seconds on the run's clock.
     fn now(&self) -> f64 {
-        self.start.elapsed().as_secs_f64()
+        self.rec.now()
     }
 
     /// The tracker's hint as a message suffix (" (hint)"), or "" if it has none.
@@ -105,11 +103,6 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             .traits()
             .tracking_hint
             .map_or(String::new(), |hint| format!(" ({hint})"))
-    }
-
-    fn event(&mut self, event: LogEvent) -> Result<()> {
-        let t = self.now();
-        self.rec.event(t, event)
     }
 
     async fn next(&mut self, timeout: Duration) -> Result<Step> {
@@ -126,7 +119,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             Some(Event::Available(a)) => {
                 let now = self.now();
                 self.unavailable_since = if a { None } else { Some(now) };
-                self.event(if a {
+                self.rec.event(if a {
                     LogEvent::TrackingAvailable
                 } else {
                     LogEvent::TrackingUnavailable
@@ -143,7 +136,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     }
 
     fn on_tracking_lost(&mut self) -> Result<()> {
-        self.event(LogEvent::TrackingLost)?;
+        self.rec.event(LogEvent::TrackingLost)?;
         let hint = self.tracking_hint_suffix();
         self.rec.note(&format!(
             "head tracking stopped; will recalibrate when it resumes{hint}"
@@ -155,12 +148,12 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         if self.worn {
             return Ok(());
         }
-        self.event(LogEvent::Paused)?;
+        self.rec.event(LogEvent::Paused)?;
         self.rec.note("paused until the earbuds are worn");
         while !self.worn {
             self.next(POLL).await?;
         }
-        self.event(LogEvent::Resumed)
+        self.rec.event(LogEvent::Resumed)
     }
 
     /// Consume events for `secs`, or until the earbuds are taken off.
@@ -248,21 +241,21 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 Step::Silence => det.tick(t),
                 Step::Pose(q) => {
                     let angles = (baseline.conj() * q).euler();
-                    self.rec.pose(t, angles)?;
+                    self.rec.pose(angles)?;
                     let update = det.update(t, angles.pitch);
                     if let Some(upright) = update.reanchored {
-                        self.rec.event(t, LogEvent::Reanchored { upright })?;
+                        self.rec.event(LogEvent::Reanchored { upright })?;
                     }
                     update.cues
                 }
             };
             for cue in cues {
-                self.rec.event(t, LogEvent::Cue(cue))?;
+                self.rec.event(LogEvent::Cue(cue))?;
                 self.cues.play(cue);
             }
             if t - last_status >= 1.0 {
                 last_status = t;
-                self.rec.status(t, det.smoothed(), det.slouching())?;
+                self.rec.status(det.smoothed(), det.slouching())?;
             }
         }
     }
@@ -442,7 +435,7 @@ mod tests {
             script: script.into(),
             drifts,
         };
-        let err = run(&mut tracker, &cues, &mut rec).await.unwrap_err();
+        let Err(err) = run(&mut tracker, &cues, &mut rec).await;
         assert_eq!(err.to_string(), "script finished");
         let log = std::fs::read_to_string(&path).unwrap();
         std::fs::remove_file(&path).unwrap();

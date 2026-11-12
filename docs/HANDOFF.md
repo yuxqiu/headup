@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-11 22:38 UTC
+Last updated: 2026-11-12 00:03 UTC
 
 ## Current state
 - The protocol works.
@@ -13,7 +13,12 @@ Last updated: 2026-11-11 22:38 UTC
     - `src/core/`: quat, the `HeadTracker` trait, detector, session (calibration + monitor), cues.
     - `src/devices/freeclip2/`: mbb framing, rebuild, and the backend with `--raw-log`.
   - `src/core/` also has `record.rs` (console/log output) and `wav.rs` (WAV parse, encode, tones); `src/devices/mod.rs` has
-    the model registry and the `AnyTracker` dispatch.
+    the `Backend` trait and the `backends!` list, which generates `Model` and the `AnyTracker` dispatch. Adding a model
+    takes a backend module, its `mod` line and one list line.
+  - Logging: `core::record::Recorder` (session log, `--log`, and the run clock) and `DeviceLog` (the backend's raw
+    data, `--raw-log`), both JSON lines via serde_json; `t` is wall-clock Unix time (session timing stays
+    monotonic). BlueZ lookup is
+    in `src/devices/discovery.rs`. Test-only backend modules live in `src/devices/<model>/tests/`.
   - 34 tests pass, including replays of real recordings (guided axes, long holds, stream restart), end-to-end
     cue tests, and scripted session tests on a paused clock (core/session.rs).
   - The design was approved by the user (docs/UX_RESEARCH.md); the parameters are in docs/DECISIONS.md.

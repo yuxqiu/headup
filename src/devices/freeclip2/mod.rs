@@ -1,7 +1,7 @@
 //! HUAWEI FreeClip 2 backend: MBB over RFCOMM channel 1 (docs/devices/freeclip2/FINDINGS.md).
 //!
 //! - 43/88 switches the spatial-audio pose stream on/off; 43/89 carries relative quaternions that
-//!   re-centre themselves and restart with each new stream ([`rebuild`] makes them continuous).
+//!   re-centre themselves and restart with each new stream (`rebuild` makes them continuous).
 //! - 43/37 reports per-earbud wear state, pushed on change and answered when queried. Tracking
 //!   stops when either earbud is off, so [`Event::Worn`] means both are worn.
 //! - 43/54 reports each connected source device's audio state; head tracking only flows while
@@ -12,15 +12,18 @@ mod mbb;
 mod rebuild;
 
 use crate::core::quat::Quat;
+use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
+use crate::devices::{Backend, Found};
 use anyhow::{Context, Result, bail, ensure};
 use bluer::rfcomm::{SocketAddr, Stream};
 use mbb::{Decoder, Frame};
 use rebuild::{Rebuilder, decode_sample};
-use std::collections::VecDeque;
-use std::io::Write;
-use std::time::{Duration, Instant};
+use serde::Serialize;
+use std::collections::{BTreeMap, VecDeque};
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::time::Instant;
 
 const RFCOMM_CHANNEL: u8 = 1;
 const SVC: u8 = 43;
@@ -29,6 +32,11 @@ const CMD_STREAM_DATA: u8 = 89;
 const CMD_WEAR_STATE: u8 = 37;
 const CMD_DEVICE_STATE: u8 = 54;
 const CMD_SPATIAL_CAPABILITY: u8 = 90;
+
+/// 43/88: switch the pose stream on or off.
+fn stream_switch(on: bool) -> Frame {
+    Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[u8::from(on)])])
+}
 
 /// Wear state from a 43/37 frame: TLV 1 = left, TLV 2 = right, 1 = worn. Head tracking stops as
 /// soon as either earbud comes off (tools/freeclip2/single_bud_test.py), so "worn" means both.
@@ -58,7 +66,7 @@ pub struct FreeClip2 {
     decoder: Decoder,
     rebuild: Rebuilder,
     start: Instant,
-    raw_log: Option<std::fs::File>,
+    log: DeviceLog,
     worn: Option<bool>,
     /// This computer's adapter address, to pick its entry out of 43/54 pushes.
     adapter: bluer::Address,
@@ -78,38 +86,6 @@ impl FreeClip2 {
         pose_drifts_up: true,
     };
 
-    /// Connect, query wear state and start the pose stream. `raw_log` receives every raw sample as
-    /// a JSON line (time, seq, quaternion as sent) and every other frame.
-    pub async fn connect(
-        addr: bluer::Address,
-        adapter: bluer::Address,
-        raw_log: Option<std::fs::File>,
-    ) -> Result<Self> {
-        let stream = Stream::connect(SocketAddr::new(addr, RFCOMM_CHANNEL))
-            .await
-            .with_context(|| format!("RFCOMM connect to {addr} channel {RFCOMM_CHANNEL} (is the FreeClip 2 connected?)"))?;
-        let mut dev = FreeClip2 {
-            stream,
-            decoder: Decoder::default(),
-            rebuild: Rebuilder::default(),
-            start: Instant::now(),
-            raw_log,
-            worn: None,
-            adapter,
-            streaming: None,
-            poses: VecDeque::new(),
-        };
-        dev.send(Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])]))
-            .await?;
-        // Possibly needed to arm the stream: tracking came back right after this query once
-        // (FINDINGS "Tracking outage") [unverified]. Its reply is ignored.
-        dev.send(Frame::new(SVC, CMD_SPATIAL_CAPABILITY, &[(1, &[])]))
-            .await?;
-        dev.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
-            .await?;
-        Ok(dev)
-    }
-
     async fn send(&mut self, f: Frame) -> Result<()> {
         self.stream
             .write_all(&f.encode())
@@ -119,11 +95,8 @@ impl FreeClip2 {
 
     /// Handle one frame from the earbuds; `None` if it produces no event.
     async fn handle(&mut self, f: Frame) -> Result<Option<Event>> {
-        if (f.svc, f.cmd) != (SVC, CMD_STREAM_DATA)
-            && let Some(log) = self.raw_log.as_mut()
-        {
-            let t = self.start.elapsed().as_secs_f64();
-            writeln!(log, "{}", raw_frame_line(t, &f))?;
+        if (f.svc, f.cmd) != (SVC, CMD_STREAM_DATA) {
+            self.log.record(&RawFrame::from(&f))?;
         }
         match (f.svc, f.cmd) {
             (SVC, CMD_WEAR_STATE) => self.on_wear_state(&f).await,
@@ -145,8 +118,7 @@ impl FreeClip2 {
             // Back on the ear: start a fresh orientation frame.
             self.rebuild = Rebuilder::default();
             self.poses.clear();
-            self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
-                .await?;
+            self.send(stream_switch(true)).await?;
         }
         Ok(Some(Event::Worn(worn)))
     }
@@ -161,8 +133,7 @@ impl FreeClip2 {
         if streaming {
             // A 43/88 sent while this computer was idle once left tracking off after audio began
             // (FINDINGS "Stream switch sent while idle"), so switch the stream on again now.
-            self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[1])]))
-                .await?;
+            self.send(stream_switch(true)).await?;
         }
         Ok(Some(Event::Available(streaming)))
     }
@@ -173,10 +144,8 @@ impl FreeClip2 {
             bail!("malformed 43/89: {f:?}")
         };
         let (seq, raw) = decode_sample(s, q).with_context(|| format!("malformed 43/89: {f:?}"))?;
+        self.log.record(&RawSample::new(seq, raw))?;
         let t = self.elapsed();
-        if let Some(log) = self.raw_log.as_mut() {
-            writeln!(log, "{}", raw_log_line(t, seq, raw))?;
-        }
         let released = self.rebuild.push(t, seq, raw);
         self.poses.extend(released.into_iter().map(|(_, abs)| abs));
         Ok(None)
@@ -187,38 +156,79 @@ impl FreeClip2 {
     }
 }
 
-/// One JSON line for `--raw-log`: the sample as sent.
-fn raw_log_line(t: f64, seq: u32, raw: Quat) -> String {
-    format!(
-        r#"{{"t":{t:.4},"seq":{seq},"raw":[{:.6},{:.6},{:.6},{:.6}]}}"#,
-        raw.w, raw.x, raw.y, raw.z
-    )
+/// `--raw-log` record of a 43/89 sample as sent: `{"seq":7,"raw":[w,x,y,z]}`. The earbuds send
+/// f32, so the components are logged as f32 (exact and short).
+#[derive(Serialize)]
+struct RawSample {
+    seq: u32,
+    raw: [f32; 4],
 }
 
-/// One JSON line for `--raw-log` describing a non-pose frame, e.g. wear state or a device push:
-/// `{"t":1.5000,"svc":43,"cmd":37,"tlvs":{"1":"01","2":"01"}}`.
-fn raw_frame_line(t: f64, f: &Frame) -> String {
-    let tlvs: Vec<String> = f
-        .tlvs
-        .iter()
-        .map(|(k, v)| {
-            format!(
-                r#""{k}":"{}""#,
-                v.iter().map(|b| format!("{b:02x}")).collect::<String>()
-            )
-        })
-        .collect();
-    format!(
-        r#"{{"t":{t:.4},"svc":{},"cmd":{},"tlvs":{{{}}}}}"#,
-        f.svc,
-        f.cmd,
-        tlvs.join(",")
-    )
+impl RawSample {
+    fn new(seq: u32, q: Quat) -> Self {
+        let raw = [q.w, q.x, q.y, q.z].map(|c| c as f32);
+        RawSample { seq, raw }
+    }
+}
+
+/// `--raw-log` record of any other frame, e.g. wear state or a device push, with TLV values in hex:
+/// `{"svc":43,"cmd":37,"tlvs":{"1":"01","2":"01"}}`.
+#[derive(Serialize)]
+struct RawFrame {
+    svc: u8,
+    cmd: u8,
+    tlvs: BTreeMap<u8, String>,
+}
+
+impl From<&Frame> for RawFrame {
+    fn from(f: &Frame) -> Self {
+        let hex = |v: &[u8]| v.iter().map(|b| format!("{b:02x}")).collect();
+        RawFrame {
+            svc: f.svc,
+            cmd: f.cmd,
+            tlvs: f.tlvs.iter().map(|(k, v)| (*k, hex(v))).collect(),
+        }
+    }
+}
+
+impl Backend for FreeClip2 {
+    fn recognises(bluetooth_name: &str) -> bool {
+        // Same rule as the vendor app's device whitelist: `^(?=(HUAWEI FreeClip 2))`.
+        bluetooth_name.starts_with("HUAWEI FreeClip 2")
+    }
+
+    /// Connect, query wear state and start the pose stream. `log` receives every raw sample
+    /// (`RawSample`) and every other frame (`RawFrame`).
+    async fn connect(found: &Found, log: DeviceLog) -> Result<Self> {
+        let addr = found.address;
+        let stream = Stream::connect(SocketAddr::new(addr, RFCOMM_CHANNEL))
+            .await
+            .with_context(|| format!("RFCOMM connect to {addr} channel {RFCOMM_CHANNEL} (is the FreeClip 2 connected?)"))?;
+        let mut dev = FreeClip2 {
+            stream,
+            decoder: Decoder::default(),
+            rebuild: Rebuilder::default(),
+            start: Instant::now(),
+            log,
+            worn: None,
+            adapter: found.adapter,
+            streaming: None,
+            poses: VecDeque::new(),
+        };
+        dev.send(Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])]))
+            .await?;
+        // Possibly needed to arm the stream: tracking came back right after this query once
+        // (FINDINGS "Tracking outage") [unverified]. Its reply is ignored.
+        dev.send(Frame::new(SVC, CMD_SPATIAL_CAPABILITY, &[(1, &[])]))
+            .await?;
+        dev.send(stream_switch(true)).await?;
+        Ok(dev)
+    }
 }
 
 impl HeadTracker for FreeClip2 {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        let deadline = tokio::time::Instant::now() + timeout;
+        let deadline = Instant::now() + timeout;
         loop {
             if let Some(q) = self.poses.pop_front() {
                 return Ok(Some(Event::Pose(q)));
@@ -233,7 +243,7 @@ impl HeadTracker for FreeClip2 {
             let release = self
                 .rebuild
                 .next_release()
-                .map(|t| tokio::time::Instant::from_std(self.start) + Duration::from_secs_f64(t));
+                .map(|t| self.start + Duration::from_secs_f64(t));
             let wake = release.map_or(deadline, |r| r.min(deadline));
             let mut buf = [0u8; 1024];
             match tokio::time::timeout_at(wake, self.stream.read(&mut buf)).await {
@@ -246,7 +256,7 @@ impl HeadTracker for FreeClip2 {
                     let now = self.elapsed();
                     let released = self.rebuild.release(now);
                     self.poses.extend(released.into_iter().map(|(_, abs)| abs));
-                    if self.poses.is_empty() && tokio::time::Instant::now() >= deadline {
+                    if self.poses.is_empty() && Instant::now() >= deadline {
                         return Ok(None);
                     }
                 }
@@ -255,8 +265,7 @@ impl HeadTracker for FreeClip2 {
     }
 
     async fn stop(&mut self) -> Result<()> {
-        self.send(Frame::new(SVC, CMD_STREAM_SWITCH, &[(1, &[0])]))
-            .await
+        self.send(stream_switch(false)).await
     }
 
     fn traits(&self) -> TrackerTraits {
@@ -267,6 +276,10 @@ impl HeadTracker for FreeClip2 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Test-only modules in tests/: recordings replayed through the rebuilder (and detector).
+    mod end_to_end;
+    pub(super) mod replay;
 
     // Frames as pushed by a real FreeClip 2 during tools/freeclip2/single_bud_test.py: head
     // tracking only runs while both earbuds are worn.
@@ -281,25 +294,21 @@ mod tests {
     }
 
     #[test]
-    fn raw_log_line_format() {
+    fn raw_log_records() {
         let q = Quat {
             w: 1.0,
-            x: 0.0,
+            x: f64::from(-0.25f32),
             y: 0.0,
             z: 0.0,
         };
         assert_eq!(
-            raw_log_line(1.5, 7, q),
-            r#"{"t":1.5000,"seq":7,"raw":[1.000000,0.000000,0.000000,0.000000]}"#
+            serde_json::to_string(&RawSample::new(7, q)).unwrap(),
+            r#"{"seq":7,"raw":[1.0,-0.25,0.0,0.0]}"#
         );
-    }
-
-    #[test]
-    fn raw_frame_line_format() {
-        let f = Frame::new(43, 37, &[(1, &[1]), (2, &[0])]);
+        let f = Frame::new(43, 37, &[(2, &[0]), (1, &[1, 0xab])]);
         assert_eq!(
-            raw_frame_line(1.5, &f),
-            r#"{"t":1.5000,"svc":43,"cmd":37,"tlvs":{"1":"01","2":"00"}}"#
+            serde_json::to_string(&RawFrame::from(&f)).unwrap(),
+            r#"{"svc":43,"cmd":37,"tlvs":{"1":"01ab","2":"00"}}"#
         );
     }
 
