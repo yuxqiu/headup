@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 01:55 UTC
+Last updated: 2026-11-12 02:00 UTC
 
 ## Current state
 - The protocol works.
@@ -36,7 +36,10 @@ Last updated: 2026-11-12 01:55 UTC
 - Thermo review applied (DECISIONS "Thermo review applied"); 55 tests pass. Live check passed 2026-11-12
   (data/live2*.jsonl, 35 Hz): calibration first try, glance ignored, tone 10 s + 2.0 s hold after the measured slouch
   start, recovery after the hold, re-anchor, resend on streaming, clean Ctrl-C (exit 0). Not yet seen live: no tone
-  when sitting up just before it is due. Releasing v0.2.0 (bump commit pushed; waiting for CI, then the GitHub release).
+  when sitting up just before it is due. v0.2.0 released (https://github.com/yuxqiu/headup/releases/tag/v0.2.0, signed tag on a2eb9fc).
+  CI green on x86_64 and aarch64; release workflow uploaded both tarballs; x86_64 tarball verified (sha256,
+  `--version` 0.2.0). Next: update the installed service (`nix flake update headup`, then switch), pointing
+  `services.headup.logFile` at a new file (the log format changed).
 - v0.1.1 is released (https://github.com/yuxqiu/headup/releases/tag/v0.1.1, signed tag on 6de8e88): buffered glide
   handling, re-anchoring upright after recoveries (`TrackerTraits::pose_drifts_up`), `HeadTracker::traits()`, no sound
   lead-in. Live-verified in data/session7 and data/session8. 41 tests pass; CI green on x86_64 and aarch64.

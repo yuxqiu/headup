@@ -302,3 +302,8 @@
 
 ## 2026-11-12 01:55 UTC
 - Bumped to 0.2.0 (Cargo.toml, Cargo.lock); `nix flake check` passes; the built binary reports 0.2.0. Release next.
+
+## 2026-11-12 02:00 UTC
+- Released v0.2.0: bump commit a2eb9fc (signed), CI green on both architectures, signed tag v0.2.0, GitHub release
+  with notes (user-visible changes; log format as a breaking change). Release workflow uploaded both tarballs; x86_64
+  tarball verified (sha256, `--version` 0.2.0, run with nixpkgs dbus on LD_LIBRARY_PATH).
