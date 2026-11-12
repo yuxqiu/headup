@@ -494,3 +494,7 @@
   takeover the stream does not resume until a new 43/88 (re-send grounded; FINDINGS, DECISIONS updated).
 - Live headup run 4 (data/live4*.jsonl): all steps behaved; the turned slouch read pitch 31.9° roll 2.2° (old order
   would give roll −25.2°). Service restarted.
+
+## 2026-11-12 22:15 UTC
+- v0.3.0 released by the user (tag on 027d65d). CI green (main and tag, x86_64 and aarch64); Release workflow
+  uploaded both tarballs; x86_64 sha256 OK and `--version` prints 0.3.0. Next: update the service.

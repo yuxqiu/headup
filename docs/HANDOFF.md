@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 22:30 UTC
+Last updated: 2026-11-12 22:15 UTC
 
 ## Current state
 - The protocol works.
@@ -37,8 +37,10 @@ Last updated: 2026-11-12 22:30 UTC
   firmware re-centre fully read (reference = current pose, silent re-centres while paused explain the ~10° error);
   Stitch order fixed to `raw × reference` (DECISIONS "Stitch composes on the right"). 70 tests pass; staged. The
   live test should include turning the head and then slouching (the fix changes readings after turns).
-- 2026-11-12 22:30: live tests passed (DECISIONS "Live grounding test 3", "Live headup run 4"). Next: the user
-  commits, bumps the version (0.2.3 or 0.3.0: readings after head turns changed), releases, updates the service.
+- v0.3.0 released (https://github.com/yuxqiu/headup/releases/tag/v0.3.0, tag on 027d65d) after live tests passed
+  (DECISIONS "Live grounding test 3", "Live headup run 4"). CI green on both architectures for main and the tag;
+  Release workflow uploaded both tarballs; x86_64 tarball verified (sha256 OK, `--version` 0.3.0 with libdbus from
+  nixpkgs). Next: update the installed service (`nix flake update headup`, then switch).
 - Link state refactor and thermo review fixes done (DECISIONS "Link state: one switch enum, derived availability",
   "Research tools: shared modules, checks in code"); 69 tests, clippy, fmt, flake check pass; firmware tools
   re-verified on 526 (anchors output = baseline, all checks ok); device scripts verified offline only. Staged, not
