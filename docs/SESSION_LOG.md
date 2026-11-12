@@ -299,3 +299,6 @@
   exactly the 2.0 s hold after the measured events. Ctrl-C stop path exits 0 (the background task's exit 1 was the
   wrapper shell, killed by an over-broad `pkill -f`). New finding: the 43/88 ack is `02` when sent while idle and `00`
   once streaming (FINDINGS). headup.service was already inactive and was left so.
+
+## 2026-11-12 01:55 UTC
+- Bumped to 0.2.0 (Cargo.toml, Cargo.lock); `nix flake check` passes; the built binary reports 0.2.0. Release next.
