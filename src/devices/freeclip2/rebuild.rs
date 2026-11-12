@@ -6,20 +6,30 @@
 //! zero on a fixed axis; the first sample is already two steps along), and sample `GLIDE_LEN` is an
 //! exact identity sample. The length is a sample count at any sample rate
 //! (docs/devices/freeclip2/FINDINGS.md "Glide model checked against every recording").
-//! `Rebuilder` turns this into one continuous orientation relative to the stream start:
+//! `Rebuilder` turns this into one continuous orientation relative to the stream start, in two
+//! parts:
+//!
+//! - [`GlideFilter`] decides, for raw samples only, which come out, which are dropped as a glide,
+//!   and where a re-centre (or a new stream) moves the earbuds' reference. It hands its decisions
+//!   to the other part as an ordered list of [`Step`]s.
+//! - [`Stitch`] turns those steps into absolute orientations: `reference × raw`, and at each
+//!   `Step::Rebase` the reference becomes the last absolute orientation (where the earbuds'
+//!   reference moved to).
+//!
+//! The filter's rules:
 //!
 //! - Every sample is held until a sample `GLIDE_SAMPLES` newer arrives: by then no identity sample
 //!   can make it part of a glide. This also covers glides during which the head moved, which
 //!   don't fit the model.
-//! - Glide hypotheses: for each recent sample, "a glide started from this pose". A hypothesis
-//!   lives while every later sample fits the model within `FIT_TOL_DEG`.
+//! - [`Hypotheses`]: for each recent sample, "a glide started from this pose", alive while every
+//!   later sample fits the model within `FIT_TOL_DEG`.
 //! - On an identity sample, the samples of the hypothesis that fits it are dropped (the head was
-//!   still at its `q_s`), and the pose before them becomes the new reference.
+//!   still at its `q_s`), the rest come out, and the reference moves.
 //! - When the earbuds go quiet for `QUIET`, everything up to the earliest live hypothesis's
-//!   start pose is released: nothing before it can be part of an unfinished glide. The rest waits
+//!   start pose comes out: nothing before it can be part of an unfinished glide. The rest waits
 //!   for its identity sample, however long the silence: the model says the head is still at `q_s`.
 //! - When the earbuds start a new stream (sequence number goes backwards), a live glide is dropped
-//!   (the head was still) and the last known orientation becomes the reference.
+//!   (the head was still), the rest comes out, and the reference moves to the last orientation.
 
 use crate::core::quat::Quat;
 use std::collections::VecDeque;
@@ -46,6 +56,36 @@ struct Held {
     raw: Quat,
 }
 
+/// A decision of the [`GlideFilter`], applied in order by the [`Stitch`].
+enum Step {
+    /// This sample comes out.
+    Release(Held),
+    /// The earbuds' reference has moved to where the head was at the last released sample.
+    Rebase,
+}
+
+/// What an arriving sample means, given the one before it.
+enum Arrival {
+    /// The sequence number went backwards: a new stream, measured from the head pose at its start.
+    NewStream,
+    /// The first exact identity sample after others: a re-centre has ended.
+    GlideEnd,
+    /// Any other sample.
+    Sample,
+}
+
+impl Arrival {
+    fn of(prev: &Held, now: &Held) -> Arrival {
+        if now.seq < prev.seq {
+            Arrival::NewStream
+        } else if now.raw == Quat::IDENTITY && prev.raw != Quat::IDENTITY {
+            Arrival::GlideEnd
+        } else {
+            Arrival::Sample
+        }
+    }
+}
+
 /// "A glide started from this pose": the start pose and its sequence number.
 #[derive(Clone, Copy)]
 struct Glide {
@@ -64,69 +104,105 @@ impl Glide {
     }
 }
 
-pub struct Rebuilder {
-    /// Reference for every held sample (it only changes once the held samples before it are out).
-    reference: Quat,
-    /// The last released absolute orientation.
-    last_abs: Quat,
-    /// The last pushed sample.
-    prev: Option<Held>,
-    /// Samples not yet released, oldest first.
+/// The live glide hypotheses, oldest start first.
+#[derive(Default)]
+struct Hypotheses(Vec<Glide>);
+
+impl Hypotheses {
+    /// `h` could be the pose a glide starts from. A glide from within `FIT_TOL_DEG` of identity
+    /// moves the reading by less than the tolerance: indistinguishable from holding still, and
+    /// harmless either way, so it is not tracked.
+    fn start(&mut self, h: &Held) {
+        if h.raw.angle_to(Quat::IDENTITY) > FIT_TOL_DEG {
+            self.0.push(Glide {
+                seq: h.seq,
+                from: h.raw,
+            });
+        }
+    }
+
+    /// Keep only the hypotheses that `h` fits.
+    fn observe(&mut self, h: &Held) {
+        self.0.retain(|g| g.fits(h));
+    }
+
+    /// The start pose's sequence number of the earliest live hypothesis.
+    fn earliest_start(&self) -> Option<u32> {
+        self.0.first().map(|g| g.seq)
+    }
+
+    /// The start of the glide that the identity sample `end` ends: the live hypothesis that
+    /// predicts it (the one closest to `GLIDE_LEN` long if several do).
+    fn ending_at(&self, end: &Held) -> Option<u32> {
+        self.0
+            .iter()
+            .filter(|g| g.fits(end))
+            .map(|g| g.seq)
+            .min_by_key(|&s| (end.seq - s).abs_diff(GLIDE_LEN))
+    }
+
+    fn clear(&mut self) {
+        self.0.clear();
+    }
+}
+
+/// Decides which raw samples come out, which are dropped, and where the reference moves.
+#[derive(Default)]
+struct GlideFilter {
+    /// The last arrived sample.
+    last: Option<Held>,
+    /// Samples not yet out, oldest first.
     held: VecDeque<Held>,
-    /// Live glide hypotheses, oldest start first.
-    glides: Vec<Glide>,
+    glides: Hypotheses,
 }
 
-impl Default for Rebuilder {
-    fn default() -> Self {
-        Rebuilder {
-            reference: Quat::IDENTITY,
-            last_abs: Quat::IDENTITY,
-            prev: None,
-            held: VecDeque::new(),
-            glides: Vec::new(),
-        }
-    }
-}
-
-impl Rebuilder {
-    /// Feed one raw sample received at `t` (since the caller's time zero). Returns the samples
-    /// released by it, oldest first, as (receive time, absolute orientation since stream start).
-    pub fn push(&mut self, t: Duration, seq: u32, raw: Quat) -> Vec<(Duration, Quat)> {
-        let sample = Held { t, seq, raw };
-        let mut out = Vec::new();
-        if let Some(prev) = self.prev {
-            if seq < prev.seq {
-                // A new stream measures from the head pose at its start; the head was last seen
-                // at the last orientation, and streams stop only while the head is still.
-                out.extend(self.end_stream());
-            } else if raw == Quat::IDENTITY && prev.raw != Quat::IDENTITY {
-                out.extend(self.recentre(&sample));
-            } else {
-                self.glides.retain(|g| g.fits(&sample));
+impl GlideFilter {
+    fn push(&mut self, sample: Held) -> Vec<Step> {
+        let mut steps = Vec::new();
+        match self.last.map(|prev| Arrival::of(&prev, &sample)) {
+            Some(Arrival::NewStream) => {
+                // A live glide is dropped: the head was still at its start.
+                if let Some(start) = self.glides.earliest_start() {
+                    self.drop_after(start);
+                }
+                steps.extend(self.release_all());
+                steps.push(Step::Rebase);
             }
+            Some(Arrival::GlideEnd) => {
+                // A glide during which the head moved fits no hypothesis, and a small one may have
+                // none: then the `GLIDE_SAMPLES` before the identity sample are dropped.
+                let start = self
+                    .glides
+                    .ending_at(&sample)
+                    .unwrap_or(sample.seq.saturating_sub(GLIDE_SAMPLES));
+                self.drop_after(start);
+                steps.extend(self.release_all());
+                steps.push(Step::Rebase);
+            }
+            Some(Arrival::Sample) => self.glides.observe(&sample),
+            None => {}
         }
-        self.prev = Some(sample);
+        self.last = Some(sample);
         self.held.push_back(sample);
-        // A glide from within FIT_TOL_DEG of identity moves the reading by less than the tolerance:
-        // indistinguishable from holding still, and harmless either way. Only track the others.
-        if raw.angle_to(Quat::IDENTITY) > FIT_TOL_DEG {
-            self.glides.push(Glide { seq, from: raw });
-        }
+        self.glides.start(&sample);
         // Samples `GLIDE_SAMPLES` older than this one can no longer be part of a glide.
-        while let Some(&h) = self.held.front() {
-            if seq.saturating_sub(h.seq) < GLIDE_SAMPLES {
-                break;
-            }
-            self.held.pop_front();
-            out.push(self.emit(h));
-        }
-        out
+        let old = self
+            .held
+            .iter()
+            .take_while(|h| sample.seq.saturating_sub(h.seq) >= GLIDE_SAMPLES)
+            .count();
+        steps.extend(self.release_first(old));
+        steps
     }
 
-    /// After `QUIET` of silence, release the held samples that cannot be part of an unfinished
-    /// glide. Calling it at (or after) `next_release()` always releases them: times are exact.
-    pub fn release(&mut self, now: Duration) -> Vec<(Duration, Quat)> {
+    /// When the samples that cannot be part of an unfinished glide come out if nothing else
+    /// arrives, if there are any.
+    fn next_release(&self) -> Option<Duration> {
+        let last = self.last?;
+        (self.releasable() > 0).then_some(last.t + QUIET)
+    }
+
+    fn release(&mut self, now: Duration) -> Vec<Step> {
         match self.next_release() {
             Some(due) if due <= now => {
                 let n = self.releasable();
@@ -136,51 +212,14 @@ impl Rebuilder {
         }
     }
 
-    /// When the next release happens if nothing else arrives, if anything is releasable.
-    pub fn next_release(&self) -> Option<Duration> {
-        let last = self.prev?;
-        (self.releasable() > 0).then_some(last.t + QUIET)
-    }
-
     /// How many held samples, from the oldest, cannot be part of an unfinished glide: those up to
     /// and including the earliest live hypothesis's start pose.
     fn releasable(&self) -> usize {
-        let start = self.glides.first().map_or(u32::MAX, |g| g.seq);
+        let start = self.glides.earliest_start().unwrap_or(u32::MAX);
         self.held.iter().take_while(|h| h.seq <= start).count()
     }
 
-    /// The identity sample `end` ends a glide: drop it, release what came before it, and take the
-    /// pose at its start as the new reference. The glide is the live hypothesis that predicts
-    /// `end` (the one closest to `GLIDE_LEN` long if several do). A glide during which the head
-    /// moved fits none, and a small one may have no hypothesis; then the `GLIDE_SAMPLES` before
-    /// `end` are dropped.
-    fn recentre(&mut self, end: &Held) -> Vec<(Duration, Quat)> {
-        let start = self
-            .glides
-            .iter()
-            .filter(|g| g.fits(end))
-            .map(|g| g.seq)
-            .min_by_key(|&s| (end.seq - s).abs_diff(GLIDE_LEN))
-            .unwrap_or(end.seq.saturating_sub(GLIDE_SAMPLES));
-        self.drop_after(start);
-        let out = self.release_all();
-        self.reference = self.last_abs;
-        out
-    }
-
-    /// The stream ended (a new one starts): drop a live glide (the head was still at its start),
-    /// release the rest, and take the last orientation as the new stream's reference.
-    fn end_stream(&mut self) -> Vec<(Duration, Quat)> {
-        if let Some(g) = self.glides.first() {
-            let start = g.seq;
-            self.drop_after(start);
-        }
-        let out = self.release_all();
-        self.reference = self.last_abs;
-        out
-    }
-
-    /// Drop held samples after sequence number `start`, and every hypothesis.
+    /// Drop held samples after sequence number `start` (a glide), and every hypothesis.
     fn drop_after(&mut self, start: u32) {
         while self.held.back().is_some_and(|h| h.seq > start) {
             self.held.pop_back();
@@ -188,18 +227,77 @@ impl Rebuilder {
         self.glides.clear();
     }
 
-    fn release_first(&mut self, n: usize) -> Vec<(Duration, Quat)> {
-        let first: Vec<Held> = self.held.drain(..n).collect();
-        first.into_iter().map(|h| self.emit(h)).collect()
+    fn release_first(&mut self, n: usize) -> Vec<Step> {
+        self.held.drain(..n).map(Step::Release).collect()
     }
 
-    fn release_all(&mut self) -> Vec<(Duration, Quat)> {
+    fn release_all(&mut self) -> Vec<Step> {
         self.release_first(self.held.len())
     }
+}
 
-    fn emit(&mut self, h: Held) -> (Duration, Quat) {
-        self.last_abs = self.reference * h.raw;
-        (h.t, self.last_abs)
+/// Raw samples to absolute orientation: `absolute = reference × raw`. The reference is where the
+/// earbuds' reference is, in the stream-start frame; at a `Step::Rebase` it becomes the last
+/// absolute orientation, because the earbuds just moved their reference to where the head was.
+struct Stitch {
+    reference: Quat,
+    last_abs: Quat,
+}
+
+impl Stitch {
+    /// Apply the filter's steps in order; returns the released samples as (receive time,
+    /// absolute orientation).
+    fn apply(&mut self, steps: Vec<Step>) -> Vec<(Duration, Quat)> {
+        let mut out = Vec::new();
+        for step in steps {
+            match step {
+                Step::Release(h) => {
+                    self.last_abs = self.reference * h.raw;
+                    out.push((h.t, self.last_abs));
+                }
+                Step::Rebase => self.reference = self.last_abs,
+            }
+        }
+        out
+    }
+}
+
+/// See the module docs.
+pub struct Rebuilder {
+    filter: GlideFilter,
+    stitch: Stitch,
+}
+
+impl Default for Rebuilder {
+    fn default() -> Self {
+        Rebuilder {
+            filter: GlideFilter::default(),
+            stitch: Stitch {
+                reference: Quat::IDENTITY,
+                last_abs: Quat::IDENTITY,
+            },
+        }
+    }
+}
+
+impl Rebuilder {
+    /// Feed one raw sample received at `t` (since the caller's time zero). Returns the samples
+    /// released by it, oldest first, as (receive time, absolute orientation since stream start).
+    pub fn push(&mut self, t: Duration, seq: u32, raw: Quat) -> Vec<(Duration, Quat)> {
+        let steps = self.filter.push(Held { t, seq, raw });
+        self.stitch.apply(steps)
+    }
+
+    /// After `QUIET` of silence, release the held samples that cannot be part of an unfinished
+    /// glide. Calling it at (or after) `next_release()` always releases them: times are exact.
+    pub fn release(&mut self, now: Duration) -> Vec<(Duration, Quat)> {
+        let steps = self.filter.release(now);
+        self.stitch.apply(steps)
+    }
+
+    /// When the next release happens if nothing else arrives, if anything is releasable.
+    pub fn next_release(&self) -> Option<Duration> {
+        self.filter.next_release()
     }
 }
 

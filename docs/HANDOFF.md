@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 02:59 UTC
+Last updated: 2026-11-12 14:11 UTC
 
 ## Current state
 - The protocol works.
@@ -33,6 +33,7 @@ Last updated: 2026-11-12 02:59 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- Readability refactor of detector, rebuilder and session done (DECISIONS); 61 tests pass; staged, not committed.
 - Thermo review applied (DECISIONS "Thermo review applied"); 55 tests pass. Live check passed 2026-11-12
   (data/live2*.jsonl, 35 Hz): calibration first try, glance ignored, tone 10 s + 2.0 s hold after the measured slouch
   start, recovery after the hold, re-anchor, resend on streaming, clean Ctrl-C (exit 0). Not yet seen live: no tone
@@ -60,6 +61,11 @@ Last updated: 2026-11-12 02:59 UTC
 2. Watch a normal day's use with `services.headup.logFile` set: count `Reanchored` events and any missed slouch.
 3. Not built: a manual snooze/pause control (no UI chosen). The 43/90-before-43/88 query is still unverified as the
    cure for the 2026-11-11 tracking outage (see Blockers).
+
+- Potential issue (not confirmed): moving the head during a re-centre glide might leave the rebuilt pose off by
+  the whole movement, if the earbuds re-centre onto the end pose rather than the glide's start. The guided runs
+  suggest the start pose (no error), but no recording has movement before the identity sample. Live test plan in
+  FINDINGS "Head movement during a glide".
 
 Older open items:
 0. FreeClip 2 tracking needs this computer to stream audio, and goes silent ~5 s into any still hold, even

@@ -5,6 +5,10 @@
 //! must also call `tick` periodically and timers keep running on the last smoothed value.
 //! Smoothing is by time, not by sample, so it behaves the same at any sample rate.
 //!
+//! Each sample goes through three steps, in [`Detector::update`]: smooth it (relative to
+//! calibration), let a `Settling` state finish and maybe re-anchor upright, then step the posture
+//! `State` machine on the smoothed pitch relative to upright.
+//!
 //! With `reanchor_after_recovery` (for trackers whose pose drifts towards "looking up"), upright is
 //! re-anchored after each recovery: the first time the head holds still after sitting back up, a
 //! pitch above upright (< 0) becomes the new upright. People sit back up to their upright, not
@@ -92,11 +96,37 @@ impl Settling {
     }
 }
 
-/// The smoothed pitch and when it was last updated.
-#[derive(Clone, Copy)]
-struct Smoothed {
-    t: Duration,
-    pitch: f64,
+/// Exponential smoothing with a time constant, so it behaves the same at any sample rate.
+struct Smoother {
+    tau: Duration,
+    /// The smoothed value and when it was last updated.
+    last: Option<(Duration, f64)>,
+}
+
+impl Smoother {
+    fn new(tau: Duration) -> Self {
+        Smoother { tau, last: None }
+    }
+
+    /// Smooth sample `x` at time `t` (times must not go backwards).
+    fn smooth(&mut self, t: Duration, x: f64) -> f64 {
+        let s = match self.last {
+            None => x,
+            Some((prev_t, prev)) => {
+                let dt = t
+                    .checked_sub(prev_t)
+                    .unwrap_or_else(|| panic!("pose times went backwards: {t:?} after {prev_t:?}"));
+                let weight = 1.0 - (-dt.as_secs_f64() / self.tau.as_secs_f64()).exp();
+                prev + weight * (x - prev)
+            }
+        };
+        self.last = Some((t, s));
+        s
+    }
+
+    fn value(&self) -> Option<f64> {
+        self.last.map(|(_, s)| s)
+    }
 }
 
 /// A reminder timer: fires `cue` at `due`, then again `every` later (`None`: once).
@@ -148,18 +178,73 @@ impl Episode {
     }
 }
 
-enum Posture {
-    /// Not slouching. `Some` while waiting to re-anchor upright after a recovery.
-    Upright(Option<Settling>),
+/// The posture state machine. Its transitions (all in [`State::step`], except the last):
+///
+/// - `Upright` or `Settling` → `Slouching` when the smoothed pitch reaches `on_deg`.
+/// - `Slouching` → `Settling` (re-anchoring trackers) or `Upright` when it drops below `off_deg`;
+///   "recovered" if a reminder played.
+/// - `Slouching` stays `Slouching` otherwise, and its timers fire reminders as they fall due.
+/// - `Settling` → `Upright` once the head holds still ([`State::settle`]), re-anchoring upright if it
+///   settled above it.
+enum State {
+    Upright,
+    /// Just recovered from a slouch; waiting for the head to hold still, to re-anchor upright.
+    Settling(Settling),
     Slouching(Episode),
+}
+
+impl State {
+    /// While settling: once the head holds still, stop settling, and return how far above
+    /// upright it settled (`p` < 0), if it did. `p` is the unsmoothed pitch relative to upright.
+    fn settle(&mut self, t: Duration, p: f64) -> Option<f64> {
+        let State::Settling(settling) = self else {
+            return None;
+        };
+        if !settling.settled(t, p) {
+            return None;
+        }
+        *self = State::Upright;
+        (p < 0.0).then_some(p)
+    }
+
+    /// The transition for smoothed pitch `s` (relative to upright) at time `t`, and the cues it
+    /// produces: entering a slouch, recovering from one, or a reminder falling due.
+    fn step(self, t: Duration, s: f64, cfg: &Config) -> (State, Vec<Cue>) {
+        match self {
+            State::Upright | State::Settling(_) if s >= cfg.on_deg => {
+                let mut episode = Episode::new(t, cfg);
+                let cues = episode.fire(t);
+                (State::Slouching(episode), cues)
+            }
+            State::Slouching(episode) if s < cfg.off_deg => {
+                let next = if cfg.reanchor_after_recovery {
+                    State::Settling(Settling::default())
+                } else {
+                    State::Upright
+                };
+                let cues = if episode.cued {
+                    vec![Cue::Recovered]
+                } else {
+                    vec![]
+                };
+                (next, cues)
+            }
+            State::Slouching(mut episode) => {
+                let cues = episode.fire(t);
+                (State::Slouching(episode), cues)
+            }
+            unchanged => (unchanged, vec![]),
+        }
+    }
 }
 
 pub struct Detector {
     cfg: Config,
-    smoothed: Option<Smoothed>,
-    /// Pitch (relative to calibration) currently taken as upright.
+    /// Pitch relative to calibration, smoothed.
+    smoother: Smoother,
+    /// Pitch (relative to calibration) taken as upright: 0 until re-anchored.
     upright: f64,
-    posture: Posture,
+    state: State,
 }
 
 impl Detector {
@@ -170,93 +255,55 @@ impl Detector {
         );
         Detector {
             cfg,
-            smoothed: None,
+            smoother: Smoother::new(cfg.smoothing),
             upright: 0.0,
-            posture: Posture::Upright(None),
+            state: State::Upright,
         }
     }
 
+    /// Smoothed pitch relative to upright.
     pub fn smoothed(&self) -> Option<f64> {
-        self.smoothed.map(|s| s.pitch)
+        self.smoother.value().map(|s| s - self.upright)
     }
 
     pub fn slouching(&self) -> bool {
-        matches!(self.posture, Posture::Slouching(_))
-    }
-
-    /// After a recovery, wait for the head to settle; if it settles above upright, move upright
-    /// there (once) and return the new upright.
-    fn reanchor(&mut self, t: Duration, pitch: f64) -> Option<f64> {
-        let p = pitch - self.upright;
-        let Posture::Upright(Some(settling)) = &mut self.posture else {
-            return None;
-        };
-        if !settling.settled(t, p) {
-            return None;
-        }
-        self.posture = Posture::Upright(None);
-        if p >= 0.0 {
-            return None;
-        }
-        self.upright += p;
-        if let Some(s) = &mut self.smoothed {
-            s.pitch -= p;
-        }
-        Some(self.upright)
+        matches!(self.state, State::Slouching(_))
     }
 
     /// New pitch sample at time `t`, relative to the calibrated upright pose. Times must not go
     /// backwards.
     pub fn update(&mut self, t: Duration, pitch: f64) -> Update {
-        let reanchored = self.reanchor(t, pitch);
-        let cues = self.classify(t, pitch - self.upright);
+        let smoothed = self.smoother.smooth(t, pitch);
+        let reanchored = self.state.settle(t, pitch - self.upright).map(|p| {
+            self.upright += p;
+            self.upright
+        });
+        let cues = self.transition(t, smoothed - self.upright);
         Update { cues, reanchored }
-    }
-
-    /// Smooth `pitch` (relative to upright) and step the posture state machine.
-    fn classify(&mut self, t: Duration, pitch: f64) -> Vec<Cue> {
-        let s = match self.smoothed {
-            None => pitch,
-            Some(prev) => {
-                let dt = t.checked_sub(prev.t).unwrap_or_else(|| {
-                    panic!("pose times went backwards: {t:?} after {:?}", prev.t)
-                });
-                let weight = 1.0 - (-dt.as_secs_f64() / self.cfg.smoothing.as_secs_f64()).exp();
-                prev.pitch + weight * (pitch - prev.pitch)
-            }
-        };
-        self.smoothed = Some(Smoothed { t, pitch: s });
-        match &self.posture {
-            Posture::Upright(_) if s >= self.cfg.on_deg => {
-                self.posture = Posture::Slouching(Episode::new(t, &self.cfg));
-            }
-            Posture::Slouching(ep) if s < self.cfg.off_deg => {
-                let cued = ep.cued;
-                let settling = self.cfg.reanchor_after_recovery.then(Settling::default);
-                self.posture = Posture::Upright(settling);
-                return if cued { vec![Cue::Recovered] } else { vec![] };
-            }
-            _ => {}
-        }
-        self.tick(t)
     }
 
     /// Advance timers to `t` without a new sample. At (or after) `next_due()` the due reminder
     /// always fires: times are exact.
     pub fn tick(&mut self, t: Duration) -> Vec<Cue> {
-        let Posture::Slouching(ep) = &mut self.posture else {
-            return vec![];
-        };
-        ep.fire(t)
+        match &mut self.state {
+            State::Slouching(episode) => episode.fire(t),
+            _ => vec![],
+        }
     }
 
     /// When the next reminder falls due if the slouch goes on (same clock as `update` and
-    /// `tick`); `None` while upright.
+    /// `tick`); `None` while not slouching.
     pub fn next_due(&self) -> Option<Duration> {
-        let Posture::Slouching(ep) = &self.posture else {
-            return None;
-        };
-        ep.next_due()
+        match &self.state {
+            State::Slouching(episode) => episode.next_due(),
+            _ => None,
+        }
+    }
+
+    fn transition(&mut self, t: Duration, s: f64) -> Vec<Cue> {
+        let (next, cues) = std::mem::replace(&mut self.state, State::Upright).step(t, s, &self.cfg);
+        self.state = next;
+        cues
     }
 }
 

@@ -336,3 +336,14 @@
 - Released v0.2.1: bump commit cd407c0 (signed), CI green on both architectures, signed tag, GitHub release (notes:
   the dropped-connection fix and robustness to stalls/restarts). Release workflow uploaded both tarballs; x86_64
   tarball verified (sha256, `--version` 0.2.1).
+
+## 2026-11-12 05:06 UTC
+- Noted a potential issue: head movement during a re-centre glide (FINDINGS "Head movement during a glide", HANDOFF).
+  Guided runs show cut-short ramps with the reference ending at the glide's start pose; the mid-glide movement case
+  is untested.
+
+## 2026-11-12 14:11 UTC
+- Readability refactor (user approved detector + rebuilder + session): detector `Smoother` + `State` machine;
+  rebuilder `GlideFilter` → `Step`s → `Stitch` with `Hypotheses` and `Arrival`; session `TrackerStatus` and
+  `CalibrationWindow`. Behaviour unchanged: 61 tests pass; clippy, fmt, rustdoc clean. Typestate considered and
+  rejected (runtime-driven state). Staged, not committed.

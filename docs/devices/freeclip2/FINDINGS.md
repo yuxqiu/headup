@@ -442,3 +442,18 @@ identity sample as ground truth for each glide's end.
 - Three large re-centres (glides from 61°, 58°, 48°) between calibration and the next still upright put the rebuilt
   upright 22.6° towards "looking up", in line with ~10° per re-centre (section "Ground truth"); re-anchoring
   corrected it.
+
+## Head movement during a glide: open question (2026-11-12)
+
+- The glides that fit no model in the guided axis runs (headpose_axes*.csv, e.g. `turn_left` → `center` at 35.8 s)
+  are not the head moving mid-glide. The ramp starts late (~48 samples at the held pose), runs at the model's speed
+  (~0.9°/sample from 63°), and is cut short by an early identity sample; the head turns afterwards, measured from
+  the new reference.
+- After them the rebuilt pose is right (the next `center` reads yaw −3.7° / −1.2°), so the earbuds' new reference was
+  the pose where the glide started, and the rebuilder's fallback (drop the 70 samples, reference = pose before them)
+  was correct.
+- Open `[unverified]`: what the earbuds do when the head moves before the identity sample. If they re-centre onto
+  the glide's start pose (as above), headup only misses ≤ 1.3 s of the movement. If onto where the head is when the
+  glide ends, headup keeps the old pose afterwards, off by the whole movement, until recalibration. No recording
+  has this case. Test: hold still ~5 s until a re-centre starts, move during the ~1.3 s glide, hold the new pose,
+  then compare headup's reading with it (`--log`), using `--raw-log` to confirm the move landed mid-glide.

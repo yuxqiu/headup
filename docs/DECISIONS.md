@@ -419,3 +419,21 @@
   too short stays an error. Test `other_device_list_reports_are_not_errors` uses the real frame (fails before).
 - Lesson: ten samples of a message do not define its format. "Fail loudly" applies to frames that break the format
   headup relies on, not to variants of a command it only partly uses.
+
+## 2026-11-12: Readability refactor of detector, rebuilder and session (user)
+- No behaviour change: the 61 tests, including every recording replay, pass unchanged.
+- Detector: `Smoother` (time-based EMA, owns its state) smooths pitch relative to calibration; upright is a plain
+  offset subtracted afterwards, so re-anchoring no longer shifts the smoothed value (EMA is linear: identical
+  results). Posture is one `State` enum {Upright, Settling, Slouching} (no `Upright(Option<Settling>)`), with all
+  threshold transitions in `State::step(self, …) -> (State, cues)` and the settle-and-re-anchor transition in
+  `State::settle`. `update` is three visible steps: smooth, settle, step.
+- Rebuilder: `GlideFilter` (raw samples only: held queue, `Hypotheses`, the last sample; `Arrival` classifies each
+  sample as NewStream / GlideEnd / Sample) emits an ordered list of `Step` {Release, Rebase}; `Stitch` applies them
+  (`absolute = reference × raw`; `Rebase` sets reference = last absolute). The "reference changes only after the held
+  samples are out" rule is now the order of the steps, not the order of three calls.
+- Session: `TrackerStatus` (worn, unavailable-since, and their rules: a pose proves tracking; only worn → removed
+  interrupts; lost after TRACKING_LOST) and `CalibrationWindow` (opens when the prompt ends, counts poses measured
+  inside it, closes when the delivered posture covers CALIBRATION, gives mean and p90).
+- Rejected: typestate (states as types). It fits lifecycles the code controls (open before read, builders); here
+  the state is decided by sensor data at runtime, so it would need a boxed or enum wrapper around every state type
+  anyway. Explicit enums with transition functions say the same thing without that ceremony.

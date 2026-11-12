@@ -106,14 +106,99 @@ impl Timeline {
     }
 }
 
+/// What the tracker has reported about itself.
+struct TrackerStatus {
+    worn: bool,
+    /// When the tracker last became unavailable (`None` while available).
+    unavailable_since: Option<Duration>,
+}
+
+impl TrackerStatus {
+    /// Assume worn and available until told otherwise.
+    fn new() -> Self {
+        TrackerStatus {
+            worn: true,
+            unavailable_since: None,
+        }
+    }
+
+    /// A pose proves tracking works, whether or not an `Available(true)` was announced.
+    fn pose_arrived(&mut self) {
+        self.unavailable_since = None;
+    }
+
+    /// The wear state changed; `true` if the earbuds were just taken off.
+    fn worn_changed(&mut self, worn: bool) -> bool {
+        std::mem::replace(&mut self.worn, worn) && !worn
+    }
+
+    fn availability_changed(&mut self, available: bool, now: Duration) {
+        self.unavailable_since = (!available).then_some(now);
+    }
+
+    /// Unavailable for TRACKING_LOST by `now`.
+    fn lost(&self, now: Duration) -> bool {
+        self.unavailable_since
+            .is_some_and(|since| now - since >= TRACKING_LOST)
+    }
+}
+
+/// One calibration attempt: the poses measured in a window that opens when the prompt ends and
+/// closes once the delivered posture covers CALIBRATION.
+struct CalibrationWindow {
+    start: Duration,
+    samples: Vec<Quat>,
+}
+
+/// What an attempt measured: the mean pose, and the 90th-percentile angle (degrees) of the
+/// samples from it.
+struct CalibrationResult {
+    mean: Quat,
+    p90: f64,
+    samples: usize,
+}
+
+impl CalibrationWindow {
+    fn open(start: Duration) -> Self {
+        CalibrationWindow {
+            start,
+            samples: Vec::new(),
+        }
+    }
+
+    /// The window is complete once the delivered posture reaches this.
+    fn closes_at(&self) -> Duration {
+        self.start + CALIBRATION
+    }
+
+    /// A pose measured at `measured`; poses measured before the window opened (during the
+    /// prompt, delivered late by a backend that holds samples) don't count.
+    fn add(&mut self, measured: Duration, q: Quat) {
+        if measured >= self.start {
+            self.samples.push(q);
+        }
+    }
+
+    /// The result; with no pose in the window the head was still, so `last` counts.
+    fn result(mut self, last: Quat) -> CalibrationResult {
+        if self.samples.is_empty() {
+            self.samples.push(last);
+        }
+        let (mean, p90) = mean_and_p90(&self.samples);
+        CalibrationResult {
+            mean,
+            p90,
+            samples: self.samples.len(),
+        }
+    }
+}
+
 struct Session<'a, T: HeadTracker, C: CueSink> {
     tracker: &'a mut T,
     cues: &'a C,
     rec: &'a mut Recorder,
     time: Timeline,
-    worn: bool,
-    /// When the tracker last became unavailable (`None` while available).
-    unavailable_since: Option<Duration>,
+    status: TrackerStatus,
 }
 
 /// Calibrate, then monitor; pause while the earbuds are off and recalibrate when they are put back
@@ -129,8 +214,7 @@ pub async fn run<T: HeadTracker, C: CueSink>(
         cues,
         rec,
         time: Timeline::new(),
-        worn: true,
-        unavailable_since: None,
+        status: TrackerStatus::new(),
     };
     loop {
         match s.cycle().await {
@@ -173,17 +257,17 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         match self.tracker.next_event(timeout).await? {
             Some(Event::Pose { at, orientation }) => {
                 let measured = self.time.deliver(at)?;
-                // A pose proves tracking works, whether or not an `Available(true)` was announced.
-                self.unavailable_since = None;
+                self.status.pose_arrived();
                 return Ok(Some((measured, orientation)));
             }
             Some(Event::Worn(w)) => {
-                if std::mem::replace(&mut self.worn, w) && !w {
+                if self.status.worn_changed(w) {
                     return Err(Interrupt::Removed);
                 }
             }
             Some(Event::Available(a)) => {
-                self.unavailable_since = (!a).then(|| self.now());
+                let now = self.now();
+                self.status.availability_changed(a, now);
                 self.rec.event(if a {
                     LogEvent::TrackingAvailable
                 } else {
@@ -205,12 +289,12 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     }
 
     async fn wait_until_worn(&mut self) -> Flow<()> {
-        if self.worn {
+        if self.status.worn {
             return Ok(());
         }
         self.rec.event(LogEvent::Paused)?;
         self.rec.note("paused until the earbuds are worn");
-        while !self.worn {
+        while !self.status.worn {
             self.next(POLL).await?;
         }
         Ok(self.rec.event(LogEvent::Resumed)?)
@@ -245,38 +329,28 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         }
     }
 
-    /// Capture the upright pose: CALIBRATION of poses, measured after the prompt ends, whose
-    /// 90th-percentile deviation from their mean is under CALIBRATION_MAX_P90_DEG. `None` if the
-    /// head kept moving on every attempt. Silence means the head is still, so the last pose counts.
+    /// Capture the upright pose: a [`CalibrationWindow`] of poses whose 90th-percentile deviation
+    /// from their mean is under CALIBRATION_MAX_P90_DEG. `None` if the head kept moving on every
+    /// attempt.
     async fn calibrate(&mut self) -> Flow<Option<Quat>> {
         let mut last = self.first_pose().await?;
         self.cues.say(Phrase::SitUpright).await?;
         for attempt in 1..=CALIBRATION_TRIES {
-            // The window opens when the prompt ends: poses measured before then don't count, even
-            // when a backend that holds samples delivers them now. It closes once the delivered
-            // posture covers CALIBRATION.
-            let start = self.now();
-            let end = start + CALIBRATION;
-            let mut samples = Vec::new();
-            while self.time.known_until() < end {
+            let mut window = CalibrationWindow::open(self.now());
+            while self.time.known_until() < window.closes_at() {
                 if let Some((measured, q)) = self.next(Duration::from_millis(200)).await? {
                     last = q;
-                    if measured >= start {
-                        samples.push(q);
-                    }
+                    window.add(measured, q);
                 }
             }
-            if samples.is_empty() {
-                samples.push(last);
-            }
-            let (mean, p90) = mean_and_p90(&samples);
+            let result = window.result(last);
             self.rec.note(&format!(
-                "calibration attempt {attempt}: {} samples, p90 deviation {p90:.1}°",
-                samples.len()
+                "calibration attempt {attempt}: {} samples, p90 deviation {:.1}°",
+                result.samples, result.p90
             ));
-            if p90 < CALIBRATION_MAX_P90_DEG {
+            if result.p90 < CALIBRATION_MAX_P90_DEG {
                 self.cues.say(Phrase::Calibrated).await?;
-                return Ok(Some(mean));
+                return Ok(Some(result.mean));
             }
             self.cues.say(Phrase::Moved).await?;
         }
@@ -296,12 +370,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             let pose = self.next(wait).await?;
             let t = self.now();
             let cues = match pose {
-                None if self
-                    .unavailable_since
-                    .is_some_and(|since| t - since >= TRACKING_LOST) =>
-                {
-                    return Err(Interrupt::TrackingLost);
-                }
+                None if self.status.lost(t) => return Err(Interrupt::TrackingLost),
                 None => det.tick(self.time.known_until()),
                 Some((measured, q)) => {
                     let angles = (baseline.conj() * q).euler();
