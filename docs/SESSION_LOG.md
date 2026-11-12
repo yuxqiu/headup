@@ -357,3 +357,7 @@
 
 ## 2026-11-12 14:36 UTC
 - Bumped to 0.2.2 (Cargo.toml, Cargo.lock); `nix flake check` passes; the built binary reports 0.2.2. Release next.
+
+## 2026-11-12 14:42 UTC
+- Released v0.2.2: bump commit 27b599d (signed), CI green, signed tag, GitHub release (maintenance, no behaviour
+  change). Release workflow uploaded both tarballs; x86_64 tarball verified (sha256, `--version` 0.2.2).
