@@ -4,10 +4,11 @@ use super::cues::{CueSink, Phrase};
 use super::detector::{Config, Detector};
 use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
-use super::tracker::{Event, HeadTracker};
+use super::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::Result;
 use std::convert::Infallible;
 use std::time::Duration;
+use tokio::time::Instant;
 
 const CALIBRATION_S: f64 = 3.0;
 const CALIBRATION_MAX_P90_DEG: f64 = 8.0;
@@ -55,6 +56,8 @@ struct Session<'a, T: HeadTracker, C: CueSink> {
     tracker: &'a mut T,
     cues: &'a C,
     rec: &'a mut Recorder,
+    /// When the session started; timing uses seconds since then (monotonic, unlike log time).
+    start: Instant,
     worn: bool,
     /// When the tracker last became unavailable (`None` while available).
     unavailable_since: Option<f64>,
@@ -72,6 +75,7 @@ pub async fn run<T: HeadTracker, C: CueSink>(
         tracker,
         cues,
         rec,
+        start: Instant::now(),
         worn: true,
         unavailable_since: None,
     };
@@ -92,9 +96,9 @@ pub async fn run<T: HeadTracker, C: CueSink>(
 }
 
 impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
-    /// Seconds on the run's clock.
+    /// Seconds since the session started.
     fn now(&self) -> f64 {
-        self.rec.now()
+        self.start.elapsed().as_secs_f64()
     }
 
     /// The tracker's hint as a message suffix (" (hint)"), or "" if it has none.
@@ -230,7 +234,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
 
     /// Monitor until the earbuds are taken off or head tracking is lost.
     async fn monitor(&mut self, baseline: Quat) -> Result<MonitorEnd> {
-        let mut det = Detector::new(Config::for_traits(self.tracker.traits()));
+        let mut det = Detector::new(detector_config(self.tracker.traits()));
         let mut last_status = f64::NEG_INFINITY;
         loop {
             let step = self.next(POLL).await?;
@@ -261,27 +265,17 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     }
 }
 
+/// Detector settings for a tracker: the defaults, plus corrections for what it declares.
+pub(crate) fn detector_config(traits: TrackerTraits) -> Config {
+    Config {
+        reanchor_after_recovery: traits.pose_drifts_up,
+        ..Config::default()
+    }
+}
+
 /// Mean orientation of `samples` and the 90th-percentile angle (degrees) of samples from it.
 fn mean_and_p90(samples: &[Quat]) -> (Quat, f64) {
-    assert!(!samples.is_empty(), "mean of zero samples");
-    let first = samples[0];
-    let (mut w, mut x, mut y, mut z) = (0.0, 0.0, 0.0, 0.0);
-    for q in samples {
-        // q and -q are the same rotation; align signs before averaging.
-        let s = if first.w * q.w + first.x * q.x + first.y * q.y + first.z * q.z < 0.0 {
-            -1.0
-        } else {
-            1.0
-        };
-        (w, x, y, z) = (w + s * q.w, x + s * q.x, y + s * q.y, z + s * q.z);
-    }
-    let n = (w * w + x * x + y * y + z * z).sqrt();
-    let mean = Quat {
-        w: w / n,
-        x: x / n,
-        y: y / n,
-        z: z / n,
-    };
+    let mean = Quat::mean(samples);
     let mut dev: Vec<f64> = samples.iter().map(|q| q.angle_to(mean)).collect();
     dev.sort_by(f64::total_cmp);
     (mean, dev[(dev.len() * 9 / 10).min(dev.len() - 1)])

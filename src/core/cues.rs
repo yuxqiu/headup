@@ -8,43 +8,42 @@ use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-/// Fixed spoken prompts; the text is in tools/gen_voice.sh.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Phrase {
-    SitUpright,
-    Calibrated,
-    Moved,
-    LiftHead,
+/// Generates [`Phrase`] from `Variant => "clip"` pairs; each clip is embedded from
+/// assets/voice/<clip>.wav.
+macro_rules! phrases {
+    ($($phrase:ident => $clip:literal),+ $(,)?) => {
+        /// Fixed spoken prompts; the text is in tools/gen_voice.sh.
+        #[derive(Debug, Clone, Copy, PartialEq)]
+        pub enum Phrase {
+            $($phrase),+
+        }
+
+        impl Phrase {
+            const ALL: &[Phrase] = &[$(Phrase::$phrase),+];
+
+            /// File name and WAV bytes of the phrase's clip.
+            fn clip(self) -> (&'static str, &'static [u8]) {
+                match self {
+                    $(Phrase::$phrase => (
+                        concat!($clip, ".wav"),
+                        include_bytes!(concat!("../../assets/voice/", $clip, ".wav")),
+                    ),)+
+                }
+            }
+        }
+    };
+}
+
+phrases! {
+    SitUpright => "sit_upright",
+    Calibrated => "calibrated",
+    Moved => "moved",
+    LiftHead => "lift_head",
 }
 
 impl Phrase {
-    const ALL: [Phrase; 4] = [
-        Phrase::SitUpright,
-        Phrase::Calibrated,
-        Phrase::Moved,
-        Phrase::LiftHead,
-    ];
-
-    fn file_name(self) -> &'static str {
-        match self {
-            Phrase::SitUpright => "sit_upright.wav",
-            Phrase::Calibrated => "calibrated.wav",
-            Phrase::Moved => "moved.wav",
-            Phrase::LiftHead => "lift_head.wav",
-        }
-    }
-
     fn pcm(self) -> Result<Pcm> {
-        Pcm::parse(self.wav()).with_context(|| format!("embedded clip for {self:?}"))
-    }
-
-    fn wav(self) -> &'static [u8] {
-        match self {
-            Phrase::SitUpright => include_bytes!("../../assets/voice/sit_upright.wav"),
-            Phrase::Calibrated => include_bytes!("../../assets/voice/calibrated.wav"),
-            Phrase::Moved => include_bytes!("../../assets/voice/moved.wav"),
-            Phrase::LiftHead => include_bytes!("../../assets/voice/lift_head.wav"),
-        }
+        Pcm::parse(self.clip().1).with_context(|| format!("embedded clip for {self:?}"))
     }
 }
 
@@ -82,14 +81,14 @@ impl Cues {
         };
         let tone = write("tone.wav", Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)]))?;
         let tink = write("tink.wav", Pcm::tones(&[(880.0, 0.08), (1318.5, 0.14)]))?;
-        for p in Phrase::ALL {
-            write(p.file_name(), p.pcm()?)?;
+        for &p in Phrase::ALL {
+            write(p.clip().0, p.pcm()?)?;
         }
         Ok(Cues { dir, tone, tink })
     }
 
     fn phrase_path(&self, p: Phrase) -> PathBuf {
-        self.dir.join(p.file_name())
+        self.dir.join(p.clip().0)
     }
 }
 
@@ -152,7 +151,7 @@ mod tests {
 
     #[test]
     fn embedded_clips_are_mono_16_bit_pcm() {
-        for p in Phrase::ALL {
+        for &p in Phrase::ALL {
             let pcm = p.pcm().unwrap();
             assert!(
                 pcm.samples.len() > pcm.rate as usize / 2,

@@ -25,7 +25,7 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
   - Run: `cargo run --release -- [C0:DA:5E:F1:A0:A6] [--log data/session.jsonl]`
   - It needs `pw-play` and `notify-send` on PATH, and the BlueZ D-Bus API. Calibration is spoken at start and after
     re-wearing; stop with Ctrl-C, which disables the stream.
-- Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match `Phrase` in
+- Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match the `phrases!` list in
   `src/core/cues.rs`.
 - Home Manager module: `homeManagerModules.default` in `nix/hm-module.nix`. To verify it evaluates, build a minimal
   `home-manager.lib.homeManagerConfiguration` with `services.headup.enable = true` and read

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Regenerate the spoken prompts in assets/voice/ with Piper and the en_GB "alba" voice (CC BY 4.0).
-# The phrases must match `Phrase` in src/core/cues.rs. Usage: tools/gen_voice.sh
+# The phrases must match the `phrases!` list in src/core/cues.rs. Usage: tools/gen_voice.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
 model=research/voices/en_GB-alba-medium.onnx

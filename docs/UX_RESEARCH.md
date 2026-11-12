@@ -61,7 +61,7 @@ Press coverage: [9to5Mac](https://9to5mac.com/2022/03/17/posture-pal-iphone-app-
    - Optionally measure roll at ≥20°.
 4. **Account for our ±5–10° error.**
    - Default threshold 20° (about 15° plus error margin), turn off 5° below it.
-   - EMA α≈0.15.
+   - EMA α≈0.15 at 50 Hz; implemented as a 0.123 s time constant so it does not depend on the sample rate.
    - A dwell of about 10 s for the first cue.
    - Don't reset the dwell timer on a single noisy sample.
 5. **Earbud-first cues.** The earbuds are the one output the user always has:

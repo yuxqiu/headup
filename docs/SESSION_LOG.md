@@ -252,3 +252,12 @@
 ## 2026-11-12 00:03 UTC
 - Log `t` is now wall-clock Unix time (user). Timing logic stays monotonic. `DeviceLog::new` is back;
   `Recorder::device_log` removed. 41 tests pass; `nix flake check` passes. Staged, not committed; not run live.
+
+## 2026-11-12 00:08 UTC
+- Posture logic redesign (DECISIONS "Posture logic redesign"): time-based smoothing (rate independent, identical at
+  50 Hz), detector free of tracker types, `Quat::mean`, `phrases!` list. 42 tests pass (new rate test proven to
+  fail with the old weight); `nix flake check` passes. Staged, not committed; not run live.
+
+## 2026-11-12 00:12 UTC
+- `Recorder` holds no clock: console lines carry no time; the session owns its monotonic clock again.
+- Drafted `AGENTS.md` (layout, commands, design rules, tests, docs workflow). 42 tests pass. Staged, not committed.

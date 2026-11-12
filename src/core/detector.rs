@@ -3,14 +3,13 @@
 //! Input is forward pitch relative to the calibrated upright pose (degrees, looking down > 0).
 //! Trackers may stop sending while the head is still, so silence means "unchanged": the caller
 //! must also call `tick` periodically and timers keep running on the last smoothed value.
+//! Smoothing is by time, not by sample, so it behaves the same at any sample rate.
 //!
 //! With `reanchor_after_recovery` (for trackers whose pose drifts towards "looking up"), upright is
 //! re-anchored after each recovery: the first time the head holds still after sitting back up, a
 //! pitch above upright (< 0) becomes the new upright. People sit back up to their upright, not
 //! beyond it, so a reading above it after a recovery is accumulated tracker error. Drift the other
 //! way is not corrected.
-
-use super::tracker::TrackerTraits;
 
 use std::collections::VecDeque;
 
@@ -28,7 +27,8 @@ pub enum Cue {
 
 #[derive(Debug, Clone, Copy)]
 pub struct Config {
-    pub ema_alpha: f64,
+    /// Time constant of the exponential smoothing of pitch, seconds.
+    pub smoothing_s: f64,
     pub on_deg: f64,
     pub off_deg: f64,
     pub tone_after_s: f64,
@@ -37,16 +37,6 @@ pub struct Config {
     pub renudge_s: f64,
     /// Re-anchor upright after each recovery (see the module docs).
     pub reanchor_after_recovery: bool,
-}
-
-impl Config {
-    /// The defaults, adjusted for what the tracker declares about itself.
-    pub fn for_traits(traits: TrackerTraits) -> Self {
-        Config {
-            reanchor_after_recovery: traits.pose_drifts_up,
-            ..Config::default()
-        }
-    }
 }
 
 /// What one pose sample produced.
@@ -60,7 +50,8 @@ pub struct Update {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            ema_alpha: 0.15,
+            // Same as a per-sample weight of 0.15 at 50 Hz: -0.02 s / ln(0.85).
+            smoothing_s: 0.123,
             on_deg: 20.0,
             off_deg: 15.0,
             tone_after_s: 10.0,
@@ -100,6 +91,13 @@ impl Settling {
     }
 }
 
+/// The smoothed pitch and when it was last updated.
+#[derive(Clone, Copy)]
+struct Smoothed {
+    t: f64,
+    pitch: f64,
+}
+
 /// One slouch, from crossing `on_deg` until dropping below `off_deg`.
 struct Episode {
     since: f64,
@@ -117,7 +115,7 @@ enum Posture {
 
 pub struct Detector {
     cfg: Config,
-    smoothed: Option<f64>,
+    smoothed: Option<Smoothed>,
     /// Pitch (relative to calibration) currently taken as upright.
     upright: f64,
     posture: Posture,
@@ -138,7 +136,7 @@ impl Detector {
     }
 
     pub fn smoothed(&self) -> Option<f64> {
-        self.smoothed
+        self.smoothed.map(|s| s.pitch)
     }
 
     /// Pitch relative to calibration that currently counts as upright (0 until re-anchored).
@@ -165,7 +163,9 @@ impl Detector {
             return None;
         }
         self.upright += p;
-        self.smoothed = self.smoothed.map(|s| s - p);
+        if let Some(s) = &mut self.smoothed {
+            s.pitch -= p;
+        }
         Some(self.upright)
     }
 
@@ -178,9 +178,14 @@ impl Detector {
 
     /// Smooth `pitch` (relative to upright) and step the posture state machine.
     fn classify(&mut self, t: f64, pitch: f64) -> Vec<Cue> {
-        let a = self.cfg.ema_alpha;
-        let s = self.smoothed.map_or(pitch, |s| s + a * (pitch - s));
-        self.smoothed = Some(s);
+        let s = match self.smoothed {
+            None => pitch,
+            Some(prev) => {
+                let weight = 1.0 - (-(t - prev.t).max(0.0) / self.cfg.smoothing_s).exp();
+                prev.pitch + weight * (pitch - prev.pitch)
+            }
+        };
+        self.smoothed = Some(Smoothed { t, pitch: s });
         match &self.posture {
             Posture::Upright(_) if s >= self.cfg.on_deg => {
                 self.posture = Posture::Slouching(Episode {
@@ -358,6 +363,26 @@ mod tests {
         let t = run(&mut d, 0.0, 15.0, 40.0, &mut vec![]);
         run(&mut d, t, 3.0, -10.0, &mut vec![]);
         assert_eq!(d.upright(), 0.0);
+    }
+
+    // The same head movement smooths the same at any sample rate: 0.24 s after a step from 0° to
+    // 30°, a 25 Hz and a 100 Hz tracker agree.
+    #[test]
+    fn smoothing_is_independent_of_sample_rate() {
+        let after_step = |hz: f64| {
+            let mut d = Detector::new(Config::default());
+            d.update(0.0, 0.0);
+            let steps = (0.24 * hz).round() as u32;
+            for i in 1..=steps {
+                d.update(f64::from(i) / hz, 30.0);
+            }
+            d.smoothed().unwrap()
+        };
+        let (slow, fast) = (after_step(25.0), after_step(100.0));
+        assert!(
+            (slow - fast).abs() < 0.01,
+            "25 Hz {slow:.2} vs 100 Hz {fast:.2}"
+        );
     }
 
     #[test]

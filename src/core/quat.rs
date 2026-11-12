@@ -44,6 +44,25 @@ impl Quat {
         (2.0 * d.acos()).to_degrees()
     }
 
+    /// Mean of nearby orientations: the normalised sum, with each sign aligned to the first (q and
+    /// -q are the same rotation). Panics on an empty slice.
+    pub fn mean(samples: &[Quat]) -> Quat {
+        let first = *samples.first().expect("mean of zero orientations");
+        let (mut w, mut x, mut y, mut z) = (0.0, 0.0, 0.0, 0.0);
+        for q in samples {
+            let dot = first.w * q.w + first.x * q.x + first.y * q.y + first.z * q.z;
+            let s = if dot < 0.0 { -1.0 } else { 1.0 };
+            (w, x, y, z) = (w + s * q.w, x + s * q.x, y + s * q.y, z + s * q.z);
+        }
+        let n = (w * w + x * x + y * y + z * z).sqrt();
+        Quat {
+            w: w / n,
+            x: x / n,
+            y: y / n,
+            z: z / n,
+        }
+    }
+
     /// Euler angles (x-y-z: roll, pitch, yaw) in degrees.
     pub fn euler(self) -> Euler {
         let Quat { w, x, y, z } = self;

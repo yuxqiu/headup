@@ -1,8 +1,8 @@
 //! Everything a run reports: messages and events on the console, an optional JSON-lines session
 //! log ([`Recorder`]), and an optional JSON-lines log of raw device data ([`DeviceLog`]). Every log
 //! line starts with `t`: wall-clock Unix time in seconds, to the millisecond, so lines from both
-//! logs, from different runs and from the journal line up. Timing logic uses a monotonic clock
-//! instead ([`Recorder::now`]), because the wall clock can jump.
+//! logs, from different runs and from the journal line up. Console lines carry no time: the journal
+//! stamps them under systemd.
 //!
 //! The live status line (`\r`-updated) is shown only when stdout is a terminal; under systemd the
 //! journal gets one clean line per message instead.
@@ -14,7 +14,6 @@ use serde::Serialize;
 use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
-use tokio::time::Instant;
 
 /// Append `{"t":<Unix time>, <fields>}` to `file` as one JSON line, in a single write.
 fn write_line(file: &mut File, fields: &impl Serialize) -> Result<()> {
@@ -84,8 +83,6 @@ impl LogEvent {
 }
 
 pub struct Recorder {
-    /// When the run started, for [`Recorder::now`].
-    start: Instant,
     log: Option<File>,
     live: bool,
     /// A status line is on screen without a trailing newline.
@@ -95,16 +92,10 @@ pub struct Recorder {
 impl Recorder {
     pub fn new(log: Option<File>) -> Self {
         Recorder {
-            start: Instant::now(),
             log,
             live: std::io::stdout().is_terminal(),
             status_shown: false,
         }
-    }
-
-    /// Seconds since the run started, on a monotonic clock: for timing, and for console messages.
-    pub fn now(&self) -> f64 {
-        self.start.elapsed().as_secs_f64()
     }
 
     /// End an on-screen status line so the next message starts on its own line.
@@ -135,14 +126,13 @@ impl Recorder {
             #[serde(skip_serializing_if = "Option::is_none")]
             upright: Option<f64>,
         }
-        let t = self.now();
         let name = event.name();
         let upright = match event {
             LogEvent::Reanchored { upright } => Some(upright),
             _ => None,
         };
         let shown = upright.map_or(String::new(), |u| format!(" (upright {u:.1}°)"));
-        self.note(&format!("{t:8.1}s  {name}{shown}"));
+        self.note(&format!("{name}{shown}"));
         if let Some(f) = self.log.as_mut() {
             let fields = Fields {
                 event: name,
@@ -177,10 +167,9 @@ impl Recorder {
         if !self.live {
             return Ok(());
         }
-        let t = self.now();
         let pitch = smoothed_pitch.map_or("  --  ".into(), |p| format!("{p:5.1}°"));
         let state = if slouching { "SLOUCHING" } else { "ok       " };
-        print!("\r{t:8.1}s  pitch {pitch}  {state}   ");
+        print!("\rpitch {pitch}  {state}   ");
         std::io::stdout().flush()?;
         self.status_shown = true;
         Ok(())

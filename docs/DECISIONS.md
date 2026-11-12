@@ -15,7 +15,8 @@
 - Signal: forward pitch of conj(baseline)·orientation. Only looking down counts.
 - Calibration: spoken prompt at every start, then a 3 s capture rejected if p90 wobble ≥ 8° (up to 4 tries).
   The baseline is not persisted, because the stream's frame starts fresh at every enable.
-- Detection: EMA α 0.15. On at 20°, off below 15°.
+- Detection: EMA with a 0.123 s time constant (α 0.15 per sample at 50 Hz; per-sample until 2026-11-12). On at
+  20°, off below 15°.
 - Cues during a slouch: tone at 10 s, speech "Gently lift your head" at 30 s (repeated every 120 s),
   notify-send at 60 s, tink on recovery (only if a cue was given).
 - Silence from the earbuds holds the last state; a 1 s tick keeps timers running. Disconnect or read errors are fatal.
@@ -250,9 +251,8 @@
   (`Rebuilder`).
 
 ## 2026-11-11: One run clock; discovery module; `session::run` cannot return `Ok` (user: redesign freely)
-- `Recorder` owns the run's monotonic clock (`Recorder::now`), used for session timing and console messages, and
-  stamps every log line itself: `event(e)`, `pose(angles)` and `status(..)` no longer take `t`. The session reads
-  time from the recorder. (Log timestamps: superseded by "Wall-clock log time".)
+- `Recorder` stamps every log line itself: `event(e)`, `pose(angles)` and `status(..)` no longer take `t`. (It
+  briefly owned a shared run clock too; superseded by "Wall-clock log time" and "Recorder holds no clock".)
 - `src/devices/discovery.rs` holds all BlueZ lookup: `Found`, `find(session, want)` and `ensure_supported` (moved
   out of main). `src/devices/mod.rs` is only the backend registry.
 - `session::run` returns `Result<Infallible>`, so main has no "session ended without an error" branch.
@@ -261,7 +261,27 @@
 - `t` in `--log` and `--raw-log` is wall-clock Unix time in seconds, rounded to the millisecond, read when the line
   is written. Lines from both logs, from different runs appended to one file, and from the journal line up. This
   stays right across suspend, where a monotonic clock stops.
-- Session timing (detector, calibration, timeouts) stays monotonic (`Recorder::now`), because the wall clock can
-  jump. Console messages keep seconds since start; journald adds the date and time.
+- Session timing (detector, calibration, timeouts) stays monotonic, because the wall clock can jump.
 - `DeviceLog::new(file)` again; it no longer shares a clock with `Recorder`. Unix seconds rather than RFC 3339 text:
   no date crate, and analysis needs only subtraction.
+
+## 2026-11-12: Posture logic redesign (user: same principle as devices)
+- Smoothing is by time: weight `1 - exp(-dt / smoothing_s)` with `smoothing_s` = 0.123 s, which equals the old
+  per-sample α 0.15 at 50 Hz. A tracker at another rate now gets the same smoothing. Test
+  `smoothing_is_independent_of_sample_rate` (25 vs 100 Hz) fails with the per-sample weight (18.7° vs 29.4°).
+  All FreeClip 2 replay tests pass unchanged. Pose bursts that arrive at one instant (a re-centre releasing held
+  samples) now barely move the smoothed value; the next sample after the gap that follows moves it fully.
+- The detector no longer knows about trackers: `Config::for_traits` became `session::detector_config`. The
+  end-to-end test uses it, so it still runs with the device's real traits.
+- `Quat::mean` (sign-aligned normalised sum) moved from the session to quat.rs; the session keeps the p90 check.
+- `phrases!` in cues.rs generates `Phrase`, `Phrase::ALL` and the clip table from one list, with an exhaustive
+  match (no runtime lookup). Adding a prompt takes one line plus its text in tools/gen_voice.sh.
+- Kept: the escalation state (`Posture`, `Episode`), the session's step/calibration/monitor structure, wav.rs, and
+  cue playback through files in XDG_RUNTIME_DIR.
+
+## 2026-11-12: Recorder holds no clock (user)
+- Console lines no longer carry a time (they were `"  12.3s  Tone"`; now `Tone`, and the status line is
+  `pitch 12.3°  ok`). Under systemd the journal stamps each line, and `--log` has wall-clock `t`.
+- With no time to show, `Recorder` has no clock. The session owns its monotonic clock again (`Session::start`).
+- `AGENTS.md` (repo root) collects the project's working rules for coding agents; it points to these docs rather
+  than repeating them.

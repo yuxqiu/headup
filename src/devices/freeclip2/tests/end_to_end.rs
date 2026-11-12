@@ -3,6 +3,7 @@
 
 use super::replay::{Row, phase_at, phases, read_csv, replay};
 use crate::core::detector::{Config, Cue, Detector};
+use crate::core::session::detector_config;
 use crate::devices::freeclip2::FreeClip2;
 
 // Ground truth (guided.py --slouch): five upright → look-down cycles back to the same screen
@@ -12,7 +13,7 @@ use crate::devices::freeclip2::FreeClip2;
 fn repeated_slouches_stay_detectable_end_to_end() {
     let rows = read_csv("slouch_guided.csv");
     let ph = phases(&rows);
-    let mut det = Detector::new(Config::for_traits(FreeClip2::TRAITS));
+    let mut det = Detector::new(detector_config(FreeClip2::TRAITS));
     let mut state = vec![(false, 0.0); ph.len()]; // (slouched, last smoothed) per phase
     for o in replay(&rows) {
         det.update(o.now, o.abs.euler().pitch); // baseline = stream start (upright)

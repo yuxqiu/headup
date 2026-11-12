@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 00:03 UTC
+Last updated: 2026-11-12 00:12 UTC
 
 ## Current state
 - The protocol works.
@@ -19,7 +19,7 @@ Last updated: 2026-11-12 00:03 UTC
     data, `--raw-log`), both JSON lines via serde_json; `t` is wall-clock Unix time (session timing stays
     monotonic). BlueZ lookup is
     in `src/devices/discovery.rs`. Test-only backend modules live in `src/devices/<model>/tests/`.
-  - 34 tests pass, including replays of real recordings (guided axes, long holds, stream restart), end-to-end
+  - 42 tests pass, including replays of real recordings (guided axes, long holds, stream restart), end-to-end
     cue tests, and scripted session tests on a paused clock (core/session.rs).
   - The design was approved by the user (docs/UX_RESEARCH.md); the parameters are in docs/DECISIONS.md.
 - Git: the user makes all commits; changes since their last commit are staged. `data/` and `research/` are
@@ -39,7 +39,11 @@ Last updated: 2026-11-12 00:03 UTC
 0. v0.1.2 released (https://github.com/yuxqiu/headup/releases/tag/v0.1.2, signed tag on b01263b): re-sends the
    stream switch when this computer starts streaming. CI green on x86_64 and aarch64; release workflow uploaded both
    tarballs; x86_64 tarball verified (sha256, `--version` 0.1.2).
-1. Update the installed service: `nix flake update headup` in the user's config, then switch.
+1. Live smoke test of the 2026-11-12 refactors (registry, logging, posture), which no test covers end to end over
+   RFCOMM: stop the service, run with `--log` and `--raw-log` while audio plays, and check calibration, one slouch
+   cue, wall-clock `t` in both files, and raw samples/frames in `--raw-log`. Then release (minor bump: the log format
+   changed) and update the installed service (`nix flake update headup`, then switch). Point `logFile` at a new file
+   first: the old one holds relative `t`.
 2. Watch a normal day's use with `services.headup.logFile` set: count `Reanchored` events and any missed slouch.
 3. Not built: a manual snooze/pause control (no UI chosen). The 43/90-before-43/88 query is still unverified as the
    cure for the 2026-11-11 tracking outage (see Blockers).
