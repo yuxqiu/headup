@@ -756,7 +756,7 @@ mod tests {
     }
 
     // Tracking resumes without an `Available(true)` announcement: the poses themselves prove it,
-    // and a still head afterwards must not count as lost again (this used to loop forever).
+    // and a still head afterwards must not count as lost again.
     #[tokio::test(start_paused = true)]
     async fn poses_end_unavailability_without_announcement() {
         let script = vec![

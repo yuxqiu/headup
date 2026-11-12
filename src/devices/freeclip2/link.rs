@@ -3,7 +3,9 @@
 //! every protocol decision here can be tested without earbuds.
 
 use super::mbb::{Decoder, Frame};
-use super::protocol::{Message, RawFrame, RawSample, capability_query, stream_switch, wear_query};
+use super::protocol::{
+    Message, RawFrame, RawSample, SwitchReply, capability_query, stream_switch, wear_query,
+};
 use super::rebuild::Rebuilder;
 use crate::core::quat::Quat;
 use crate::core::record::DeviceLog;
@@ -21,9 +23,9 @@ pub struct Link {
     epoch: Instant,
     /// This computer's adapter address, to pick its entry out of 43/54 pushes.
     adapter: Address,
-    /// The last reported wear and audio state (`None` until first reported).
-    worn: Option<bool>,
-    streaming: Option<bool>,
+    earbuds: Earbuds,
+    /// What the session has been told so far.
+    told: View,
     log: DeviceLog,
     /// Events for the session, in order.
     events: VecDeque<Event>,
@@ -40,8 +42,8 @@ impl Link {
             rebuild: Rebuilder::default(),
             epoch: now,
             adapter,
-            worn: None,
-            streaming: None,
+            earbuds: Earbuds::default(),
+            told: View::default(),
             log,
             events: VecDeque::new(),
             outbox: vec![wear_query(), capability_query(), stream_switch(true)],
@@ -84,47 +86,48 @@ impl Link {
         self.outbox.push(stream_switch(false));
     }
 
+    /// Log the frame, let the earbuds' state take it in, do what that asks, then tell the session
+    /// what changed.
     fn on_frame(&mut self, now: Instant, f: &Frame) -> Result<()> {
         let msg = Message::parse(f);
         match msg {
             Ok(Message::Sample { seq, raw }) => self.log.record(&RawSample::new(seq, raw))?,
             _ => self.log.record(&RawFrame::from(f))?, // logged even if malformed, for debugging
         }
-        match msg? {
-            Message::Wear { both_worn } => self.on_wear(both_worn),
-            Message::DeviceAudio { address, streaming } => self.on_audio(address, streaming),
+        let request = match msg? {
+            Message::Wear { both_worn } => self.earbuds.on_wear(both_worn),
+            Message::DeviceAudio { address, streaming } => {
+                self.earbuds.on_audio(address == self.adapter, streaming)
+            }
+            Message::StreamSwitch(reply) => self.earbuds.on_reply(reply),
             Message::Sample { seq, raw } => {
                 let released = self.rebuild.push(self.since_epoch(now), seq, raw);
                 self.queue_poses(released);
+                None
             }
-            Message::Other => {}
+            Message::Other => None,
+        };
+        match request {
+            Some(Request::SwitchOn) => self.outbox.push(stream_switch(true)),
+            Some(Request::Restart) => {
+                self.rebuild = Rebuilder::default();
+                self.outbox.push(stream_switch(true));
+            }
+            None => {}
         }
+        self.report();
         Ok(())
     }
 
-    fn on_wear(&mut self, worn: bool) {
-        let was = self.worn.replace(worn);
-        if was == Some(worn) {
-            return;
+    /// Tell the session each part of the earbuds' view that changed since it was last told.
+    fn report(&mut self) {
+        let view = self.earbuds.view();
+        if let Some(worn) = changed(&mut self.told.worn, view.worn) {
+            self.events.push_back(Event::Worn(worn));
         }
-        if worn && was == Some(false) {
-            // Back on the ear: start a fresh orientation frame and switch the stream on again.
-            self.rebuild = Rebuilder::default();
-            self.outbox.push(stream_switch(true));
+        if let Some(available) = changed(&mut self.told.available, view.available) {
+            self.events.push_back(Event::Available(available));
         }
-        self.events.push_back(Event::Worn(worn));
-    }
-
-    fn on_audio(&mut self, address: Address, streaming: bool) {
-        if address != self.adapter || self.streaming.replace(streaming) == Some(streaming) {
-            return;
-        }
-        if streaming {
-            // A 43/88 sent while this computer was idle once left tracking off after audio began
-            // (FINDINGS "Stream switch sent while idle"), so switch the stream on again now.
-            self.outbox.push(stream_switch(true));
-        }
-        self.events.push_back(Event::Available(streaming));
     }
 
     fn queue_poses(&mut self, released: Vec<(Duration, Quat)>) {
@@ -140,6 +143,133 @@ impl Link {
     }
 }
 
+/// `now` if it is known and differs from what `told` holds, which then becomes `now`.
+fn changed(told: &mut Option<bool>, now: Option<bool>) -> Option<bool> {
+    let now = now?;
+    (told.replace(now) != Some(now)).then_some(now)
+}
+
+/// What the session sees of the earbuds; `None` while unknown.
+#[derive(Default)]
+struct View {
+    /// Both earbuds are in the ears.
+    worn: Option<bool>,
+    /// Poses can flow to this computer.
+    available: Option<bool>,
+}
+
+/// What the earbuds' state asks the link to send.
+#[derive(Debug, PartialEq)]
+enum Request {
+    /// Switch the pose stream on.
+    SwitchOn,
+    /// Start a fresh orientation frame and switch the pose stream on.
+    Restart,
+}
+
+/// What the earbuds have said about themselves, and what became of the last "stream on" sent.
+/// Each message updates it and may ask for a frame to be sent ([`Request`]); a request it makes
+/// is sent, so the switch it records as sent always was.
+#[derive(Default)]
+struct Earbuds {
+    /// 43/37: both earbuds are in the ears (`None` until reported).
+    worn: Option<bool>,
+    /// 43/54: this computer streams audio to the earbuds, which makes it their current device
+    /// (`None` until reported).
+    streaming: Option<bool>,
+    switch: Switch,
+}
+
+/// What became of the last "stream on" (43/88 TLV 1 = 1).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+enum Switch {
+    /// Not known to stand: sent and not answered yet, or accepted and then cancelled by the earbuds.
+    /// Taking an earbud off cancels it (no samples after re-wearing until a new 43/88;
+    /// data/grounding_test.log "rewear"), and so does another device becoming current (no samples
+    /// after this computer streams again until a new 43/88; data/grounding_test3.log
+    /// "phone_takeover"). Both cases get the same rule: send again when this computer starts streaming. For an
+    /// unanswered switch that covers a refusal still in transit: one sent while another device was
+    /// current is refused, and the 43/54 push saying this computer streams can arrive before that
+    /// refusal does. The earbuds answer every well-formed 43/88 (firmware `0x7039c018`; 13 of 13
+    /// live, within 80 ms), so no retry timer is needed.
+    #[default]
+    Unconfirmed,
+    /// Accepted, and nothing has cancelled it since. It survives audio gaps: the earbuds resume
+    /// the stream by themselves when this computer streams again (FINDINGS "Grounding of headup's
+    /// device logic"), so it is not sent again then.
+    Accepted,
+    /// Refused (43/88 reply 1 or 2): the stream stays off, so silence no longer means a still head.
+    Refused,
+}
+
+impl Earbuds {
+    /// 43/37. Taking an earbud off cancels the switch; putting the earbuds back on needs a fresh
+    /// orientation frame and the switch again.
+    fn on_wear(&mut self, worn: bool) -> Option<Request> {
+        let was = self.worn.replace(worn);
+        if !worn {
+            self.cancel_switch();
+            return None;
+        }
+        (was == Some(false)).then(|| self.send(Request::Restart))
+    }
+
+    /// 43/54 for one device. Another device streaming may cancel the switch. For this computer:
+    /// switch on again unless the switch stands. An accepted switch is not re-sent: it would restart
+    /// the stream, and every new stream adds a re-centre. An unconfirmed one is re-sent when
+    /// streaming starts (see [`Switch::Unconfirmed`]), not on every push; a refused one on any push
+    /// that says this computer streams.
+    fn on_audio(&mut self, this_computer: bool, streaming: bool) -> Option<Request> {
+        if !this_computer {
+            if streaming {
+                self.cancel_switch();
+            }
+            return None;
+        }
+        let started = streaming && self.streaming != Some(true);
+        self.streaming = Some(streaming);
+        let resend = match self.switch {
+            Switch::Accepted => false,
+            Switch::Refused => streaming,
+            Switch::Unconfirmed => started,
+        };
+        resend.then(|| self.send(Request::SwitchOn))
+    }
+
+    /// 43/88 reply. A refusal is undone by [`Earbuds::on_audio`] when this computer streams, or by
+    /// [`Earbuds::on_wear`] when the earbuds go back on.
+    fn on_reply(&mut self, reply: SwitchReply) -> Option<Request> {
+        self.switch = match reply {
+            SwitchReply::Accepted => Switch::Accepted,
+            SwitchReply::PeerLinkDown | SwitchReply::NotCurrentDevice => Switch::Refused,
+        };
+        None
+    }
+
+    fn view(&self) -> View {
+        View {
+            worn: self.worn,
+            // Poses flow to this computer while it streams, unless the switch was refused.
+            available: match self.switch {
+                Switch::Refused => Some(false),
+                Switch::Unconfirmed | Switch::Accepted => self.streaming,
+            },
+        }
+    }
+
+    fn send(&mut self, request: Request) -> Request {
+        self.switch = Switch::Unconfirmed;
+        request
+    }
+
+    /// The earbuds cancelled an accepted switch.
+    fn cancel_switch(&mut self) {
+        if self.switch == Switch::Accepted {
+            self.switch = Switch::Unconfirmed;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::protocol::sample_frame;
@@ -147,6 +277,10 @@ mod tests {
 
     fn pc() -> Address {
         "D4:94:A9:22:86:6F".parse().unwrap()
+    }
+
+    fn phone() -> Address {
+        "EC:81:50:6E:86:B5".parse().unwrap()
     }
 
     fn link(now: Instant) -> Link {
@@ -164,6 +298,11 @@ mod tests {
         let mut v = address.0;
         v.reverse();
         Frame::new(43, 54, &[(5, &[&v[..], &[state]].concat())]).encode()
+    }
+
+    /// A 43/88 reply with result `v`.
+    fn reply(v: u8) -> Vec<u8> {
+        Frame::new(43, 88, &[(2, &[v])]).encode()
     }
 
     fn events(link: &mut Link) -> Vec<Event> {
@@ -200,13 +339,12 @@ mod tests {
         assert_eq!(link.take_outbox(), [stream_switch(true)]);
     }
 
-    // The v0.1.2 fix (c7e0bda): when this computer starts streaming, switch the stream on again.
+    // When this computer starts streaming, switch the stream on again.
     #[test]
     fn this_computer_starting_audio_rearms_the_stream() {
         let now = Instant::now();
         let mut link = link(now);
-        let phone: Address = "EC:81:50:6E:86:B5".parse().unwrap();
-        link.on_bytes(now, &audio(phone, 0x09)).unwrap();
+        link.on_bytes(now, &audio(phone(), 0x09)).unwrap();
         assert_eq!(events(&mut link), []);
         link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
         assert_eq!(events(&mut link), [Event::Available(true)]);
@@ -216,6 +354,107 @@ mod tests {
         link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
         assert_eq!(events(&mut link), [Event::Available(false)]);
         assert_eq!(link.take_outbox(), []);
+    }
+
+    // headup connected while the phone was the earbuds' current device: the 43/88 is refused with
+    // `02`, tracking is unavailable, and the stream is switched on again once this computer
+    // streams (data/live2_raw.jsonl: `2=02`, 43/54 `…09`, re-sent 43/88 `2=00`, then samples).
+    #[test]
+    fn refused_stream_switch_waits_for_this_computer_to_stream() {
+        let now = Instant::now();
+        let mut link = link(now);
+        link.on_bytes(now, &reply(2)).unwrap();
+        assert_eq!(events(&mut link), [Event::Available(false)]);
+        link.on_bytes(now, &reply(2)).unwrap();
+        assert_eq!(events(&mut link), []);
+        assert_eq!(link.take_outbox(), []);
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        assert_eq!(events(&mut link), [Event::Available(true)]);
+        assert_eq!(link.take_outbox(), [stream_switch(true)]);
+        link.on_bytes(now, &reply(0)).unwrap();
+        assert_eq!(events(&mut link), []);
+    }
+
+    // An accepted switch survives an audio gap: the earbuds resume the stream by themselves when this
+    // computer streams again (data/grounding_test.log, "audio_gap": samples 0.3 s after 43/54 `…09`
+    // with no 43/88). Switching on again would restart the stream, and each new stream adds a
+    // re-centre, so it is not sent.
+    #[test]
+    fn audio_resuming_after_an_accepted_switch_keeps_the_stream() {
+        let now = Instant::now();
+        let mut link = link(now);
+        link.on_bytes(now, &reply(0)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        assert_eq!(
+            events(&mut link),
+            [
+                Event::Available(true),
+                Event::Available(false),
+                Event::Available(true)
+            ]
+        );
+        assert_eq!(link.take_outbox(), []);
+    }
+
+    // Until the earbuds accept a switch, this computer starting to stream switches the stream on
+    // again (the reply may not have arrived yet).
+    #[test]
+    fn audio_starting_before_any_reply_switches_on_again() {
+        let now = Instant::now();
+        let mut link = link(now);
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        assert_eq!(link.take_outbox(), [stream_switch(true)]);
+    }
+
+    // Another device (the phone) started streaming after the switch was accepted: whether the switch
+    // survives the earbuds changing their current device is not observed, so it is sent again when
+    // this computer streams again.
+    #[test]
+    fn switch_is_resent_after_another_device_streamed() {
+        let now = Instant::now();
+        let mut link = link(now);
+        link.on_bytes(now, &reply(0)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
+        link.on_bytes(now, &audio(phone(), 0x09)).unwrap();
+        assert_eq!(link.take_outbox(), []);
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        assert_eq!(link.take_outbox(), [stream_switch(true)]);
+    }
+
+    // Refused while this computer streams (the earbud-to-earbud link was down): putting the earbuds
+    // back on sends the switch again, so tracking is available again.
+    #[test]
+    fn rewearing_after_a_refusal_makes_tracking_available_again() {
+        let now = Instant::now();
+        let mut link = link(now);
+        link.on_bytes(now, &wear(1, 1)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        link.on_bytes(now, &reply(1)).unwrap();
+        assert_eq!(
+            events(&mut link),
+            [
+                Event::Worn(true),
+                Event::Available(true),
+                Event::Available(false)
+            ]
+        );
+        link.take_outbox();
+        link.on_bytes(now, &wear(0, 1)).unwrap();
+        link.on_bytes(now, &wear(1, 1)).unwrap();
+        assert_eq!(
+            events(&mut link),
+            [
+                Event::Worn(false),
+                Event::Worn(true),
+                Event::Available(true)
+            ]
+        );
+        assert_eq!(link.take_outbox(), [stream_switch(true)]);
+        link.on_bytes(now, &reply(0)).unwrap();
+        assert_eq!(events(&mut link), []);
     }
 
     // The timer fired exactly when `next_wake` asked: it must release something. When the

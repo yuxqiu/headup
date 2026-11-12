@@ -25,10 +25,15 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   I/O), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (the socket). Its test-only modules are in
   `src/devices/<model>/tests/`.
 - `src/testing.rs`: test support shared across modules (run the real session on any tracker).
-- Per model, outside `src/`: `docs/devices/<model>/`, `tools/<model>/` (Python research scripts) and
-  `tests/fixtures/<model>/` (recordings the tests replay).
+- Per model, outside `src/`: `docs/devices/<model>/`, `tools/<model>/` (Python research scripts: `firmware/`,
+  `device/` for the earbuds, `recordings/` for recorded data, `app/` for the vendor app) and
+  `tests/fixtures/<model>/` (recordings the tests replay). FreeClip 2 shared modules: `device/mbb.py` (framing,
+  connection, prompts), `device/runner.py` (scripted phase tests), `firmware/listing.py` (listing rows),
+  `quat.py` (quaternions and the glide).
 - `assets/voice/`: embedded voice clips. `tools/gen_voice.sh` generates them.
 - `nix/hm-module.nix`: the Home Manager service.
+- `.claude/skills/freeclip2-firmware/`: the procedure to re-check the FreeClip 2 logic on new firmware (tools
+  `tools/freeclip2/firmware/`, `grounding_test.py`; baseline `docs/devices/freeclip2/firmware/`).
 - `data/` and `research/` are gitignored: local recordings, logs, the vendor APK and decompiled code.
 
 ## Commands
@@ -55,6 +60,10 @@ Run everything inside `nix develop`.
 - **Protocol logic without I/O.** Keep a backend's decisions in a synchronous type that takes bytes and time and
   returns events and frames to send (FreeClip 2: `Link`). The `HeadTracker` impl only moves bytes, so every
   decision can be unit-tested without earbuds.
+- **Device state, derived view, reported changes.** Inside that type, keep what the device said in one struct
+  whose message handlers update it and return what to send. Compute what the session sees from it (a view), and
+  emit an event only when a view field changes. Do not store derived values next to the facts. Rules for sending
+  stay in the handler of the message that triggers them (FreeClip 2: `Earbuds`, `View`, `Link::report`).
 - **One list per registry.** `backends!` (devices) and `phrases!` (voice prompts) generate their enums and dispatch.
   Extend the list instead of adding a lookup that can miss at runtime.
 - **Independent of sample rate.** Detection and session logic use seconds: timers, windows, and a smoothing time
@@ -70,6 +79,9 @@ Run everything inside `nix develop`.
 - **Make illegal states unrepresentable.** Fields that are valid only together, or that exclude each other, go into
   one enum or struct (for example `Posture`, `Episode`).
 - **Fail loudly.** A malformed frame or a broken precondition is an error, not a silent fallback.
+- **Comments describe the current code.** Say what the code does and why, when the reason is useful. Do not
+  narrate history ("it used to…", the old value of a constant, old-versus-new results, release or commit
+  references). History goes in `docs/DECISIONS.md` and `docs/SESSION_LOG.md`.
 - **Keep changes small.** Change only what the task needs. Mention unrelated problems instead of fixing them.
   Before you add a new abstraction, propose it to the user in 2–3 sentences.
 
@@ -82,6 +94,20 @@ Run everything inside `nix develop`.
   `FakeTracker` and `testing::run_session` on tokio's paused clock.
 - Test-only modules go in a `tests/` directory next to the module. Declare them from its inline `mod tests`, not in
   the production module list.
+- A refactor leaves every test unchanged. If a test has to change, the change alters behaviour: say so and record it.
+- A changed test tolerance or threshold is a decision. Record it in `docs/DECISIONS.md` with the measured values.
+- Measure a behaviour change through the real code (replay recordings through the real rebuilder and session),
+  not through a simplified model in a script.
+
+## Working habits
+
+- Check a claim at its source before acting on it: a firmware reading in the disassembly, a statistic by rerunning
+  its script, a reviewer's or subagent's finding in the code. Tell the user what you checked.
+- Research tools check their own invariants and exit non-zero on failure; do not leave checks to the reader.
+  After changing a firmware tool, rerun it on the 7.0.0.526 package and diff against
+  `docs/devices/freeclip2/firmware/anchors-526.txt`.
+- Live tests print and speak every prompt and show it as a desktop notification: the user may not hear it.
+- Do not delete files with `rm`. Use `git rm` for a tracked file you replace; otherwise leave the file and say so.
 
 ## Docs and workflow
 

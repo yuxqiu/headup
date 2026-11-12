@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 14:42 UTC
+Last updated: 2026-11-12 22:30 UTC
 
 ## Current state
 - The protocol works.
@@ -33,6 +33,17 @@ Last updated: 2026-11-12 14:42 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- 2026-11-12 21:30: Link restructured as state + view (DECISIONS "Link as state, view and reported changes");
+  firmware re-centre fully read (reference = current pose, silent re-centres while paused explain the ~10° error);
+  Stitch order fixed to `raw × reference` (DECISIONS "Stitch composes on the right"). 70 tests pass; staged. The
+  live test should include turning the head and then slouching (the fix changes readings after turns).
+- 2026-11-12 22:30: live tests passed (DECISIONS "Live grounding test 3", "Live headup run 4"). Next: the user
+  commits, bumps the version (0.2.3 or 0.3.0: readings after head turns changed), releases, updates the service.
+- Link state refactor and thermo review fixes done (DECISIONS "Link state: one switch enum, derived availability",
+  "Research tools: shared modules, checks in code"); 69 tests, clippy, fmt, flake check pass; firmware tools
+  re-verified on 526 (anchors output = baseline, all checks ok); device scripts verified offline only. Staged, not
+  committed. Next: the user's live test (skill freeclip2-firmware, `grounding_test.py`, then a
+  normal headup run), then release 0.2.3 and update the service.
 - v0.2.2 released (https://github.com/yuxqiu/headup/releases/tag/v0.2.2, signed tag on 27b599d): maintenance
   release, no behaviour change. CI green on both architectures; tarballs uploaded; x86_64 tarball verified (sha256,
   `--version` 0.2.2). Optional for the installed service (`nix flake update headup`, then switch).
@@ -66,7 +77,7 @@ Last updated: 2026-11-12 14:42 UTC
    cure for the 2026-11-11 tracking outage (see Blockers).
 
 - Resolved 2026-11-12: moving the head during a re-centre glide is not an issue. The earbuds cut the glide short and
-  re-centre roughly onto its start pose; headup reads the new posture afterwards (FINDINGS "Head movement during a
+  keep as reference the head pose two samples before the cut (firmware `0x600fa53c`); headup reads the new posture afterwards (FINDINGS "Head movement during a
   glide", test `moving_during_a_glide_is_not_lost`).
 
 Older open items:
@@ -89,6 +100,8 @@ Confirmed live so far:
   (session6) measured the drift that led to re-anchoring.
 
 ## Blockers
+- 2026-11-11 outage (see FINDINGS): the firmware rules out the probe as the cure (none of its queries reaches the start logic;
+  FINDINGS "Tracking outage"); the failed condition is sensor-side and not visible over MBB.
 - 2026-11-11: tracking stopped completely for ~2 h (no 43/89 while the earbuds listed pc as playing, both worn,
   43/88 acked, spatial mode follow). Ruled out: PipeWire 1.6.11 (old generation 636 also failed), codec, reboot,
   case reset, firmware change, headup code (the Python tool failed too). It started working at 12:53 local right after
@@ -98,5 +111,33 @@ Confirmed live so far:
   fails: send only `43/90:1=` and see whether tracking returns.
   - Since then `FreeClip2::connect` sends 43/90 before 43/88 (DECISIONS). The installed service still runs the
     old build until the user rebuilds Home Manager. If an outage recurs with it in place, 43/90 is ruled out.
-  - Firmware .526 downloaded via the OTA check (user approved sending the SN). The main sections are encrypted or
-    compressed; only the bootloader is readable (FINDINGS "Firmware image"). The firmware does not explain 43/88 yet.
+  - Firmware .526 downloaded via the OTA check (user approved sending the SN). It is not encrypted: the sections are
+    LZMA (`hwcompress10`) and unpack with `tools/freeclip2/firmware/unpack.py`, all SHA-256s verified (FINDINGS "Firmware
+    image"). Image 5 disassembled (FINDINGS "Firmware head-tracking logic"). Grounded: the 43/88 reply TLV2 is
+    0 = accepted, 2 = refused because the requester is not the current (last-streaming) device (matches live2/live3),
+    1 = refused while the earbud-to-earbud link is down `[inferred]`. 43/89 goes to the current device; the 43/90
+    list does not gate it (earlier eviction idea retracted). Start also needs a per-device value `R`; live test showed it is
+    not the 43/180 spatial mode (stream runs with mode off; data/mode_gate_live.jsonl). headup now parses the 43/88
+    reply and reports tracking unavailable on a refusal (DECISIONS); 64 tests pass; refusal path verified live
+    (data/refusal_live*.jsonl). Not yet released.
+  - Grounding complete for 7.0.0.526 (the earbuds' version): FINDINGS "Grounding of headup's device logic" lists
+    every device fact headup uses with its evidence; guided live test data/grounding_test.log confirmed one-earbud
+    stop, re-wear needs 43/88, audio-gap auto resume, stillness pause, seq counting. headup's logic matches.
+  - Firmware re-check skill: .claude/skills/freeclip2-firmware/ (tools tools/freeclip2/firmware/{fetch,unpack,disasm,anchors}.py,
+    grounding_test.py; baseline docs/devices/freeclip2/firmware/anchors-526.txt). Dry run on 526: anchors identical.
+  - The head-tracking computation is in image 5's RAM code (module `robin_gesture`, library ~0x600f9b30; FINDINGS
+    "Where the head-tracking computation is"). Not yet read: reading it would ground the glide and stillness rules
+    from code (today: recordings only).
+  - tools/freeclip2/ grouped into firmware/, device/, app/.
+  - Code improved from the groundings: an accepted 43/88 is no longer re-sent when this computer resumes audio
+    (each needless re-send restarted the stream and added a re-centre); refused/unconfirmed switches still are;
+    another device streaming clears the accepted switch. Reply 1 = `PeerLinkDown` (grounded in firmware: message 0x8406).
+    Live-verified (data/gap_live*.jsonl, data/grounding_test2.log). 67 tests, `nix flake check` pass.
+  - Firmware: gp = 0x20007c48, the startup stub's copies (incl. code to 0x201c0) and the RAM code are decoded by
+    tools/freeclip2/firmware/disasm.py with gp-relative values annotated; nothing the app calls is missing ROM.
+  - Grounded in firmware code and recordings (FINDINGS "Re-centre and stillness", "43/54 state byte", "After a
+    device change", reply 1): glide = nlerp over N = 69 steps, stillness = 208 samples within 10°, 43/54 state =
+    connected | audio<<1, reply 1 = earbud link down. Code now uses the exact glide formula and 43/54 decoding.
+    The phone-takeover return headup relies on (re-sent 43/88 accepted once this computer streams) is grounded
+    live (refusal_live, live2, live3); the firmware's own re-enable on that path is code-only.
+  - Next: release 0.2.3 (43/88 reply handling), then update the installed service.

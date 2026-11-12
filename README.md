@@ -13,7 +13,7 @@ your posture while you listen to something on the computer.
 
 | Earbuds | Status | Head tracking | Pauses when taken off | Tested firmware |
 |---|---|---|---|---|
-| HUAWEI FreeClip 2 | Supported | While the computer plays audio, both earbuds worn | Yes | HarmonyOS 7.0.0.516 |
+| HUAWEI FreeClip 2 | Supported | While the computer plays audio, both earbuds worn | Yes | HarmonyOS 7.0.0.526 |
 
 ## Requirements
 

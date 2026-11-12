@@ -4,8 +4,10 @@
 //!   re-centre themselves and restart with each new stream (`rebuild` makes them continuous).
 //! - 43/37 reports per-earbud wear state, pushed on change and answered when queried. Tracking
 //!   stops when either earbud is off, so [`Event::Worn`] means both are worn.
-//! - 43/54 reports each connected source device's audio state; head tracking only flows while
-//!   this computer is streaming audio, which becomes [`Event::Available`].
+//! - 43/54 reports each connected source device's audio state. Head tracking only flows to the
+//!   earbuds' current device, the last one to start streaming audio: that becomes
+//!   [`Event::Available`]. headup's 43/88 is refused while another device is current; headup
+//!   sends it again once this computer streams.
 //! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts_up`]).
 
 mod link;

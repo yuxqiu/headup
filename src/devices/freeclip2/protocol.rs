@@ -15,14 +15,17 @@ const CMD_DEVICE_STATE: u8 = 54;
 const CMD_STREAM_SWITCH: u8 = 88;
 const CMD_STREAM_DATA: u8 = 89;
 const CMD_SPATIAL_CAPABILITY: u8 = 90;
+/// The current device's audio state while it streams. The 43/54 state byte is `connected | audio << 1`.
+const AUDIO_STREAMING: u8 = 4;
 
 /// 43/37 query: report the wear state of both earbuds.
 pub fn wear_query() -> Frame {
     Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])])
 }
 
-/// 43/90 query: spatial-audio capability. Possibly needed to arm the stream: tracking came back
-/// right after this query once (FINDINGS "Tracking outage") `[unverified]`. Its reply is ignored.
+/// 43/90 query: spatial-audio capability. The firmware records the asking device in a list that
+/// the 43/89 path does not check (FINDINGS "Firmware head-tracking logic"); sent because tracking
+/// once came back right after it (FINDINGS "Tracking outage"). Its reply is ignored.
 pub fn capability_query() -> Frame {
     Frame::new(SVC, CMD_SPATIAL_CAPABILITY, &[(1, &[])])
 }
@@ -36,11 +39,13 @@ pub fn stream_switch(on: bool) -> Frame {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Message {
     /// 43/37: whether both earbuds are worn. Head tracking stops as soon as either comes off
-    /// (tools/freeclip2/single_bud_test.py), so one worn earbud counts as not worn.
+    /// (tools/freeclip2/device/single_bud_test.py), so one worn earbud counts as not worn.
     Wear { both_worn: bool },
     /// 43/54 (TLV 5 form): one connected source device's audio state. Head tracking only flows
-    /// to the device that is streaming audio.
+    /// to the earbuds' current device, the one that last started streaming audio.
     DeviceAudio { address: Address, streaming: bool },
+    /// 43/88 reply: whether the earbuds accepted a stream switch.
+    StreamSwitch(SwitchReply),
     /// 43/89: one pose sample, relative to the earbuds' current reference.
     Sample { seq: u32, raw: Quat },
     /// Acks and pushes headup does not use.
@@ -54,6 +59,7 @@ impl Message {
             (SVC, CMD_WEAR_STATE) => wear(f),
             (SVC, CMD_DEVICE_STATE) => device_audio(f),
             (SVC, CMD_STREAM_DATA) => sample(f),
+            (SVC, CMD_STREAM_SWITCH) => switch_reply(f),
             _ => return Ok(Message::Other),
         };
         parsed.with_context(|| format!("malformed {}/{}: {f:?}", f.svc, f.cmd))
@@ -72,9 +78,11 @@ fn wear(f: &Frame) -> Result<Message> {
 }
 
 /// 43/54, the paired-device-list change report. Its TLV 5 form carries one device's audio state:
-/// the device's Bluetooth address (little-endian), then a state byte. Observed: 0x09 when it starts
-/// streaming audio, 0x03 when it goes idle, 0x01 on connection; bit 0x08 is read as "streaming"
-/// `[inferred from those values]`. Other forms (e.g. TLV 1 = `01 00`) are other list reports.
+/// the device's Bluetooth address (little-endian), then a state byte. The firmware builds that byte
+/// as `connected | audio << 1`, where `audio` is the audio state of the earbuds' current device
+/// (0 for any other device); 4 is streaming (FINDINGS "43/54 state byte"). Recordings show 0x01,
+/// 0x03 and 0x09; any other `audio` value is read as not streaming, a variant rather than a broken
+/// frame. Other forms (e.g. TLV 1 = `01 00`) are other list reports.
 fn device_audio(f: &Frame) -> Result<Message> {
     let Some(v) = f.tlv(5) else {
         return Ok(Message::Other);
@@ -86,8 +94,32 @@ fn device_audio(f: &Frame) -> Result<Message> {
     be.reverse();
     Ok(Message::DeviceAudio {
         address: Address::new(be),
-        streaming: state & 0x08 != 0,
+        streaming: state >> 1 == AUDIO_STREAMING,
     })
+}
+
+/// The earbuds' answer to a 43/88 stream switch (TLV 2 of the reply), from the firmware's 43/88
+/// handler (FINDINGS "43/88 (switch the data report on or off)").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SwitchReply {
+    /// 0: switched. The stream also needs the earbuds' own conditions (worn, audio).
+    Accepted,
+    /// 1: refused while the link between the two earbuds is down (FINDINGS "Reply value 1").
+    PeerLinkDown,
+    /// 2: refused, this computer is not the earbuds' current device (the last one to start
+    /// streaming audio). Seen when headup connects while the phone was last active.
+    NotCurrentDevice,
+}
+
+/// 43/88 reply: TLV 2 = one result byte.
+fn switch_reply(f: &Frame) -> Result<Message> {
+    let reply = match f.tlv(2) {
+        Some([0]) => SwitchReply::Accepted,
+        Some([1]) => SwitchReply::PeerLinkDown,
+        Some([2]) => SwitchReply::NotCurrentDevice,
+        other => bail!("unknown stream switch result {other:?}"),
+    };
+    Ok(Message::StreamSwitch(reply))
 }
 
 /// 43/89: TLV 1 = u32 LE sequence number, TLV 2 = 4 x f32 LE (w, x, y, z).
@@ -166,7 +198,7 @@ mod tests {
             .collect()
     }
 
-    // Frames as pushed by a real FreeClip 2 during tools/freeclip2/single_bud_test.py: head
+    // Frames as pushed by a real FreeClip 2 during tools/freeclip2/device/single_bud_test.py: head
     // tracking only runs while both earbuds are worn.
     #[test]
     fn wear_state_needs_both_earbuds() {
@@ -182,7 +214,7 @@ mod tests {
         assert!(Message::parse(&Frame::new(43, 37, &[(3, &[0])])).is_err());
     }
 
-    // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/single_bud_test.py, data/reclaim_test.log):
+    // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/device/single_bud_test.py, data/reclaim_test.log):
     // this computer is D4:94:A9:22:86:6F, sent little-endian.
     #[test]
     fn device_audio_state() {
@@ -207,6 +239,19 @@ mod tests {
     fn other_device_list_reports_are_not_errors() {
         let f = Frame::new(43, 54, &[(1, &[0x01, 0x00])]);
         assert_eq!(Message::parse(&f).unwrap(), Message::Other);
+    }
+
+    // 43/88 replies from a real FreeClip 2: `02` while the phone was the current device, `00` once
+    // this computer streamed (data/live2_raw.jsonl, data/live3_raw.jsonl).
+    #[test]
+    fn stream_switch_replies() {
+        let parse = |v: &[u8]| Message::parse(&Frame::new(43, 88, &[(2, v)]));
+        let reply = Message::StreamSwitch;
+        assert_eq!(parse(&[0]).unwrap(), reply(SwitchReply::Accepted));
+        assert_eq!(parse(&[2]).unwrap(), reply(SwitchReply::NotCurrentDevice));
+        assert_eq!(parse(&[1]).unwrap(), reply(SwitchReply::PeerLinkDown));
+        assert!(parse(&[3]).is_err());
+        assert!(Message::parse(&Frame::new(43, 88, &[])).is_err());
     }
 
     #[test]

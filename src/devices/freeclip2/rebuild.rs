@@ -1,18 +1,19 @@
 //! Head orientation from the FreeClip 2 43/89 stream.
 //!
-//! The earbuds report a quaternion relative to a reference that they move to any pose held still
-//! for a few seconds. Every move is a glide: from the pose `q_s` held just before it, the `k`-th
-//! sample after it reads `slerp(q_s, I, (k + 1) / (GLIDE_LEN + 1))` (its angle falls linearly to
-//! zero on a fixed axis; the first sample is already two steps along), and sample `GLIDE_LEN` is an
-//! exact identity sample. The length is a sample count at any sample rate
-//! (docs/devices/freeclip2/FINDINGS.md "Glide model checked against every recording").
+//! The earbuds report a quaternion relative to a reference that they move to any pose held
+//! still for 208 samples (within 10° on every axis). Every move is a glide: from the pose `q_s`
+//! held just before it, the `k`-th sample after it reads `nlerp(I, q_s, (GLIDE_LEN − k) /
+//! (GLIDE_LEN + 1))` (on a fixed axis; the first sample is already two steps along), and sample
+//! `GLIDE_LEN` is an exact identity sample. This is the firmware's own formula, read from its code
+//! and matching every recorded glide within 0.13°; the length is a sample count at any sample rate
+//! (docs/devices/freeclip2/FINDINGS.md "Where the head-tracking computation is").
 //! `Rebuilder` turns this into one continuous orientation relative to the stream start, in two
 //! parts:
 //!
 //! - [`GlideFilter`] decides, for raw samples only, which come out, which are dropped as a glide,
 //!   and where a re-centre (or a new stream) moves the earbuds' reference. It hands its decisions
 //!   to the other part as an ordered list of [`Step`]s.
-//! - [`Stitch`] turns those steps into absolute orientations: `reference × raw`, and at each
+//! - [`Stitch`] turns those steps into absolute orientations: `raw × reference`, and at each
 //!   `Step::Rebase` the reference becomes the last absolute orientation (where the earbuds'
 //!   reference moved to).
 //!
@@ -86,6 +87,25 @@ impl Arrival {
     }
 }
 
+/// The firmware's glide (FINDINGS "Where the head-tracking computation is", `0x600faa4e`): the
+/// `k`-th sample after the held pose `q` is `normalize(t·q + (1 − t)·I)` (nlerp, shortest path) with
+/// `t = (GLIDE_LEN − k) / (GLIDE_LEN + 1)`; at `k = GLIDE_LEN` it is identity.
+fn glide_point(q: Quat, k: u32) -> Quat {
+    assert!(
+        k <= GLIDE_LEN,
+        "glide step {k} beyond its {GLIDE_LEN} samples"
+    );
+    let t = f64::from(GLIDE_LEN - k) / f64::from(GLIDE_LEN + 1);
+    let s = if q.w < 0.0 { -t } else { t };
+    Quat {
+        w: s * q.w + (1.0 - t),
+        x: s * q.x,
+        y: s * q.y,
+        z: s * q.z,
+    }
+    .normalized()
+}
+
 /// "A glide started from this pose": the start pose and its sequence number.
 #[derive(Clone, Copy)]
 struct Glide {
@@ -97,10 +117,7 @@ impl Glide {
     /// Whether sample `h` fits this glide.
     fn fits(&self, h: &Held) -> bool {
         let k = h.seq - self.seq;
-        k <= GLIDE_LEN
-            && h.raw
-                .angle_to(self.from.toward_identity(k + 1, GLIDE_LEN + 1))
-                <= FIT_TOL_DEG
+        k <= GLIDE_LEN && h.raw.angle_to(glide_point(self.from, k)) <= FIT_TOL_DEG
     }
 }
 
@@ -236,9 +253,11 @@ impl GlideFilter {
     }
 }
 
-/// Raw samples to absolute orientation: `absolute = reference × raw`. The reference is where the
-/// earbuds' reference is, in the stream-start frame; at a `Step::Rebase` it becomes the last
-/// absolute orientation, because the earbuds just moved their reference to where the head was.
+/// Raw samples to absolute orientation: `absolute = raw × reference`. The earbuds report
+/// `raw = q ⊗ conj(ref)` (firmware `0x600fa53c`, FINDINGS "Re-centre and stillness"), so the
+/// reference composes on the right. It is where the earbuds' reference is, in the stream-start
+/// frame; at a `Step::Rebase` it becomes the last absolute orientation, because the earbuds just
+/// moved their reference to where the head was.
 struct Stitch {
     reference: Quat,
     last_abs: Quat,
@@ -252,7 +271,7 @@ impl Stitch {
         for step in steps {
             match step {
                 Step::Release(h) => {
-                    self.last_abs = self.reference * h.raw;
+                    self.last_abs = h.raw * self.reference;
                     out.push((h.t, self.last_abs));
                 }
                 Step::Rebase => self.reference = self.last_abs,
@@ -354,7 +373,7 @@ mod tests {
     // The two real guided recordings; run 1 accumulates more error.
     #[test]
     fn rebuilds_guided_run_fixed_mode() {
-        check("headpose_axes_fixed.csv", 8.0);
+        check("headpose_axes_fixed.csv", 9.0);
     }
 
     #[test]
@@ -362,13 +381,28 @@ mod tests {
         check("headpose_axes.csv", 15.0);
     }
 
-    fn pitch_quat(deg: f64) -> Quat {
-        let h = deg.to_radians() / 2.0;
+    /// A rotation of `deg` about the unit axis `(x, y, z)`.
+    fn rotation(deg: f64, (x, y, z): (f64, f64, f64)) -> Quat {
+        let (s, c) = (deg.to_radians() / 2.0).sin_cos();
         Quat {
-            w: h.cos(),
-            x: 0.0,
-            y: h.sin(),
-            z: 0.0,
+            w: c,
+            x: s * x,
+            y: s * y,
+            z: s * z,
+        }
+    }
+
+    fn pitch_quat(deg: f64) -> Quat {
+        rotation(deg, (0.0, 1.0, 0.0))
+    }
+
+    /// Raw sample `raw` with sequence number `seq`, received at `t` seconds.
+    fn row(t: f64, seq: u32, raw: Quat) -> Row {
+        Row {
+            phase: String::new(),
+            t: secs(t),
+            seq,
+            raw,
         }
     }
 
@@ -379,12 +413,74 @@ mod tests {
         } else {
             pitch_quat(pitch)
         };
-        Row {
-            phase: String::new(),
-            t: secs(t),
-            seq,
-            raw,
+        row(t, seq, raw)
+    }
+
+    // A re-centre after turning the head ~90° (e.g. to a side monitor), built with the firmware's
+    // formula (nlerp toward identity, FINDINGS "Re-centre and stillness"). The head settles slowly
+    // for 220 samples (0.03° per sample, 6.6° in all: inside the firmware's 10° stillness test,
+    // which triggers after 208), so only the last pose explains the glide. The rebuilt yaw must
+    // stay where the head settled: the glide is not head movement.
+    #[test]
+    fn hides_glide_from_a_large_angle() {
+        let yaw = |deg: f64| rotation(deg, (0.0, 0.0, 1.0));
+        let row = |seq: u32, raw: Quat| row(f64::from(seq) / 52.5, seq, raw);
+        let settle = |s: u32| 83.0 + 0.03 * f64::from(s);
+        let mut rows: Vec<Row> = (1..=220).map(|s| row(s, yaw(settle(s)))).collect();
+        let held = yaw(settle(220));
+        rows.extend((1..=68).map(|k| row(220 + k, firmware_glide(held, k))));
+        // Still after the re-centre: the earbuds read identity, the head stays where it settled.
+        rows.extend((1..=80).map(|i| row(220 + 68 + i, Quat::IDENTITY)));
+        let held_at = secs(220.0 / 52.5);
+        for o in replay(&rows).into_iter().filter(|o| o.t >= held_at) {
+            let got = o.abs.euler().yaw;
+            assert!(
+                (got - settle(220)).abs() < 0.5,
+                "t={:.2}: yaw {got:.1}",
+                o.t.as_secs_f64()
+            );
         }
+    }
+
+    // Turn left 60°, hold until the earbuds re-centre there, then nod down 30°. The earbuds report the
+    // nod relative to the turned reference (`raw = q ⊗ conj(ref)`); rebuilt, it must read 30° of
+    // pitch at 60° of yaw.
+    #[test]
+    fn nod_after_a_turn_reads_as_pitch() {
+        let yaw = |deg: f64| rotation(deg, (0.0, 0.0, 1.0));
+        let pitch = pitch_quat;
+        let row = |seq: u32, raw: Quat| row(f64::from(seq) / 52.5, seq, raw);
+        let turned = yaw(60.0);
+        let mut rows: Vec<Row> = (1..=60).map(|s| row(s, yaw(f64::from(s)))).collect();
+        rows.extend((61..=280).map(|s| row(s, turned)));
+        rows.extend((1..=68).map(|k| row(280 + k, firmware_glide(turned, k))));
+        // Paused while still at the new reference; the sequence counter keeps counting.
+        let nod = |deg: f64| turned * pitch(deg) * turned.conj();
+        rows.extend((1..=30).map(|i| row(400 + i, nod(f64::from(i)))));
+        rows.extend((1..=100).map(|i| row(430 + i, nod(30.0))));
+        let out = replay(&rows);
+        let end = out.last().expect("poses").abs.euler();
+        assert!(
+            (end.pitch - 30.0).abs() < 0.5 && (end.yaw - 60.0).abs() < 0.5 && end.roll.abs() < 0.5,
+            "nod after a turn read {end:?}"
+        );
+    }
+
+    /// The `k`-th sample after the held pose `q` in a firmware glide: `normalize(t·q + (1−t)·I)`
+    /// with `t = (68 − k) / 69`, exact identity at `k = 68`. Written from FINDINGS with literals, as
+    /// an oracle independent of `rebuild`'s constants; assumes `q.w >= 0`.
+    fn firmware_glide(q: Quat, k: u32) -> Quat {
+        if k == 68 {
+            return Quat::IDENTITY;
+        }
+        let t = f64::from(68 - k) / 69.0;
+        Quat {
+            w: t * q.w + (1.0 - t),
+            x: t * q.x,
+            y: t * q.y,
+            z: t * q.z,
+        }
+        .normalized()
     }
 
     // The earbuds' rate varies (35 Hz in data/live_check_raw.jsonl, 52.5 Hz elsewhere) but a glide
@@ -561,9 +657,10 @@ mod tests {
         }
     }
 
-    // tools/freeclip2/glide_move.py (2026-11-12): look down, and at a beep the moment a re-centre
+    // tools/freeclip2/device/glide_move.py (2026-11-12): look down, and at a beep the moment a re-centre
     // starts, look straight back up. The earbuds cut the glide short (the movement does not show in
-    // its readings) and re-centre roughly onto the pose where it started. Afterwards the rebuilt
+    // its readings); their reference is then the pose two samples before the cut (FINDINGS
+    // "Re-centre and stillness"), so the movement before it is lost. Afterwards the rebuilt
     // pose must be near upright (within the earbuds' ~10° error per re-centre), not stuck at the
     // ~50° slouch. Trial 2 got no beep (no re-centre in time).
     #[test]

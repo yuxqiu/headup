@@ -1,0 +1,25 @@
+# load base 0x70280300; size 0x193040
+MBB send function (most 43/x call sites): 0x703942e6
+43/37 (wear) sent from functions: none
+43/54 (device list / audio state) sent from functions: none
+43/88 (stream switch) sent from functions: 0x7039bed8, 0x7039c018
+43/89 (sample) sent from functions: 0x7039bb80
+43/90 (spatial capability) sent from functions: 0x7039c82e
+43/167 (peer state sync) sent from functions: 0x7039be0c, 0x7039c36a, 0x7039c4b4
+43/180 (spatial mode) sent from functions: 0x7038f430, 0x70398cbe, 0x70398dfc, 0x70398f0a, 0x7039a700, 0x7039f138, 0x7039f1e2, 0x7039f5e2, 0x7039f8b8, 0x7039fa8a, 0x703a061c, 0x703a0790, 0x703a0b20, 0x703a133c, 0x703a5efa, 0x703a677c, 0x703a69a4, 0x703a7108
+host 43/x dispatch table at 0x7030e0d4: 88 entries
+  43/37 (wear) handler: 0x703924b2, 0x703a3710
+  43/54 (device list / audio state) handler: 0x703795aa
+  43/88 (stream switch) handler: 0x7039c018
+  43/89 (sample) handler: none
+  43/90 (spatial capability) handler: 0x7039c82e
+  43/167 (peer state sync) handler: 0x7039c36a
+  43/180 (spatial mode) handler: 0x7039fce2
+43/88 reply codes (TLV 2) in its handler: [0, 1, 2]
+head-tracking algorithm module (ops global 6012de58, 2 op calls): 'robin_gesture'
+internal message table at 0x7030db08: 61 entries; 0x8402->0x70370498, 0x8406->0x70370b62, 0x841a->0x70370d10, 0x8424->0x70370e6c
+check: 43/89 has exactly one sender: ok
+check: every watched command but 43/89 has a host handler, 43/89 none: ok
+check: 43/88 reply codes are [0, 1, 2]: ok
+check: exactly one named head-tracking module: ok
+check: internal messages 0x8402, 0x8406, 0x841a, 0x8424 have handlers: ok

@@ -1,15 +1,17 @@
 """Guided head-motion recording for FreeClip 2 with spoken prompts (espeak-ng).
 
-usage (inside `nix develop`): python3 -I tools/freeclip2/guided.py MAC OUT.csv [--still SECONDS] [--hold | --slouch]
+usage (inside `nix develop`): python3 -I tools/freeclip2/device/guided.py MAC OUT.csv [--still SECONDS] [--hold | --slouch]
 --hold: long-hold schedule (look down 30 s, center 15 s, twice) to study device re-centring.
 --slouch: ground truth for reference drift: upright (screen centre) 20 s, then a 30 s look down (some turned
 left/right), five times, ending upright.
 Every sample is labelled with the phase that was active when it arrived.
 """
-import argparse, os, shutil, socket, struct, subprocess, sys, threading, time
+import argparse, os, struct, sys, threading, time
 
-sys.path.insert(0, os.path.dirname(__file__))
-from headpose import build, euler, frames, tlv  # noqa: E402
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from mbb import STREAM_OFF, STREAM_ON, connect, frames, require, say, tlv  # noqa: E402
+from quat import euler  # noqa: E402
 
 HOLD = 6.0  # seconds per phase (prompt takes ~1 s of it)
 MOVES = [
@@ -28,11 +30,6 @@ MOVES = [
 ]
 
 
-def say(text):
-    subprocess.run(["espeak-ng", "-s", "150", text], check=True,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("mac")
@@ -41,8 +38,7 @@ def main():
     ap.add_argument("--hold", action="store_true")
     ap.add_argument("--slouch", action="store_true")
     a = ap.parse_args()
-    if shutil.which("espeak-ng") is None:
-        sys.exit("espeak-ng not on PATH; run inside `nix develop`")
+    require("espeak-ng")
 
     schedule = [("upright", "Sit upright and look straight ahead. Recording starts now.", HOLD)]
     if a.slouch:
@@ -80,10 +76,9 @@ def main():
         say("Done. Thank you.")
         done.set()
 
-    sock = socket.socket(socket.AF_BLUETOOTH, socket.SOCK_STREAM, socket.BTPROTO_RFCOMM)
-    sock.connect((a.mac, 1))
+    sock = connect(a.mac)
     sock.settimeout(1)
-    sock.send(build(43, 88, [(1, b"\x01")]))  # reference pose = pose at this moment
+    sock.send(STREAM_ON)  # reference pose = pose at this moment
     t0, n = time.time(), 0
     threading.Thread(target=prompter, daemon=True).start()
     try:
@@ -97,11 +92,11 @@ def main():
                 p = tlv(f)
                 seq = struct.unpack("<I", p[1])[0]
                 w, x, y, z = struct.unpack("<4f", p[2])
-                r, pi, ya = euler(w, x, y, z)
+                r, pi, ya = euler((w, x, y, z))
                 csv.write(f"{time.time() - t0:.4f},{seq},{phase['name']},{w:.6f},{x:.6f},{y:.6f},{z:.6f},{r:.2f},{pi:.2f},{ya:.2f}\n")
                 n += 1
     finally:
-        sock.send(build(43, 88, [(1, b"\x00")]))
+        sock.send(STREAM_OFF)
         time.sleep(0.3)
         sock.close()
         print(f"samples={n} rate={n / max(1e-9, time.time() - t0):.1f}Hz -> {a.out}")

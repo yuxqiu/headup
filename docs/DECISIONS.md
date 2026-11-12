@@ -221,6 +221,7 @@
 - `FreeClip2` sends 43/88=1 again on every 43/54 transition of this computer to streaming. A 43/88 sent while idle
   left tracking off for an hour after audio started (FINDINGS "Stream switch sent while idle"). The extra 43/88 is
   harmless during playback: earlier restarts of the stream were acked and the rebuilder handles stream restarts.
+- Superseded 2026-11-12 ("Re-send the stream switch only if it was not accepted"): the idle 43/88 had been refused.
 
 ## 2026-11-11: Backend registry generated from one list (user approved)
 - Each backend implements `devices::Backend` (`recognises(bluetooth_name)`, `connect(&Found, raw_log)`) on top of
@@ -429,7 +430,8 @@
   `State::settle`. `update` is three visible steps: smooth, settle, step.
 - Rebuilder: `GlideFilter` (raw samples only: held queue, `Hypotheses`, the last sample; `Arrival` classifies each
   sample as NewStream / GlideEnd / Sample) emits an ordered list of `Step` {Release, Rebase}; `Stitch` applies them
-  (`absolute = reference × raw`; `Rebase` sets reference = last absolute). The "reference changes only after the held
+  (`absolute = reference × raw`, reversed to `raw × reference` on 2026-11-12, see "Stitch composes on the right";
+  `Rebase` sets reference = last absolute). The "reference changes only after the held
   samples are out" rule is now the order of the steps, not the order of three calls.
 - Session: `TrackerStatus` (worn, unavailable-since, and their rules: a pose proves tracking; only worn → removed
   interrupts; lost after TRACKING_LOST) and `CalibrationWindow` (opens when the prompt ends, counts poses measured
@@ -437,3 +439,198 @@
 - Rejected: typestate (states as types). It fits lifecycles the code controls (open before read, builders); here
   the state is decided by sensor data at runtime, so it would need a boxed or enum wrapper around every state type
   anyway. Explicit enums with transition functions say the same thing without that ceremony.
+
+## 2026-11-12: Read the 43/88 reply; a refusal makes tracking unavailable
+- The firmware's 43/88 handler answers TLV 2 = 0 (accepted), 2 (refused: this computer is not the earbuds' current
+  device, the last one to start streaming) or 1 (refused while the earbud-to-earbud link is down). A
+  refusal leaves the stream off (FINDINGS "43/88 (switch the data report on or off)"). Seen live: `2=02` at connect
+  while the phone was last active, then `2=00` after 43/54 reported this computer streaming (data/live2_raw.jsonl).
+- headup parsed no reply before, so after a refusal the session took the silence for a still head. Now
+  `Message::StreamSwitch(SwitchReply)` parses it; any other value is a malformed frame. A refusal marks this computer
+  as not streaming and reports `Available(false)`, so the session says tracking stopped. The existing 43/54 path
+  switches the stream on again (and reports `Available(true)`) when this computer starts streaming, and re-wearing
+  does too. `Accepted` reports nothing: the stream still needs the earbuds' own conditions.
+- Test `refused_stream_switch_waits_for_this_computer_to_stream` (fails without the change) uses the reply values from
+  the recording.
+- Rejected: retrying 43/88 on a timer after a refusal. The firmware would refuse it again until this computer
+  streams, and the 43/54 push already marks that moment.
+
+## 2026-11-12: Firmware re-check is a skill with tools, gated by a live test
+- New firmware can change the protocol under headup. The re-check is `.claude/skills/freeclip2-firmware/`:
+  fetch (`tools/freeclip2/firmware/fetch.py`, after asking the user), unpack (`tools/freeclip2/firmware/unpack.py`), disassemble (`tools/freeclip2/firmware/disasm.py`), diff anchors
+  (`tools/freeclip2/firmware/anchors.py`, baseline `docs/devices/freeclip2/firmware/anchors-526.txt`), then the guided live test
+  (`grounding_test.py`) against FINDINGS "Grounding of headup's device logic".
+- Each tool fails loudly on a layout it does not recognise (hashes, load base, one dispatch table), so a changed
+  firmware stops the procedure instead of producing a wrong reading.
+- The live test is required, not optional: the code reading alone produced a wrong conclusion ("R = spatial mode",
+  refuted by `data/mode_gate_live.jsonl`), and the re-centre math has not been read from the firmware (it is in
+  image 5's RAM code; FINDINGS "Where the head-tracking computation is"), so recordings remain its only evidence.
+- Rejected: a Ghidra processor module for this custom-instruction variant. objdump plus `tools/freeclip2/firmware/xlinx.py` was enough
+  to read the needed functions, and the module would be a large unverified artefact.
+
+## 2026-11-12: Research tools grouped by purpose
+- `tools/freeclip2/` mixed firmware analysis with scripts that talk to the earbuds. Now: `firmware/` (fetch, unpack,
+  disasm, anchors, xlinx; the `fw_` prefix dropped), `device/` (probe and the live tests; they share `device/mbb.py`,
+  so they stay in one directory), `app/` (vendor app analysis). All current references were updated; SESSION_LOG
+  keeps the old paths as history.
+
+## 2026-11-12: Re-send the stream switch only if it was not accepted
+- Replaces "always re-send on 43/54 streaming" (2026-11-11). The firmware answers a 43/88 from a device that is
+  not its current one with `02` and keeps its switch off; an accepted switch survives audio gaps (the earbuds
+  resume the stream by themselves on 43/54 `…09`; data/grounding_test.log "audio_gap", firmware `0x7039b5ae`).
+  A 43/88 "on" always restarts the stream (seq from 1), and every new stream brings an extra re-centre (~10° of
+  error each, FINDINGS "Re-centre model"), so the unconditional re-send cost accuracy for nothing.
+- `Link` now keeps whether the switch is accepted (`accepted`): 43/54 streaming re-sends only when not accepted;
+  putting the earbuds back on always re-sends (re-wearing cancels the switch: data/grounding_test.log "rewear").
+- Live check (data/gap_live*.jsonl, second run from 84 s): audio stopped → `TrackingUnavailable`; audio back →
+  `TrackingAvailable`, samples 0.03 s later, no 43/88 sent. Tests `audio_resuming_after_an_accepted_switch_keeps_the_stream`
+  (fails before) and `audio_starting_before_any_reply_switches_on_again`.
+- 43/88 reply value 1 was briefly renamed `OtherRefusal`; the firmware later showed it is the earbud-to-earbud link
+  being down, so it is `PeerLinkDown` again ("Firmware-exact glide model, 43/54 decoding, reply 1" below).
+- Rejected: dropping the re-send entirely. A refused switch needs it (data/refusal_live*.jsonl).
+- When another device starts streaming, an accepted switch becomes `Unconfirmed` and is re-sent once this computer
+  streams again: whether it survives a phone takeover could not be observed (data/grounding_test2.log), so this case
+  keeps the earlier behaviour. Test `switch_is_resent_after_another_device_streamed`.
+
+## 2026-11-12: Firmware-exact glide model, 43/54 decoding, reply 1
+- Glide model: the firmware's re-centre (`0x600faa4e`) outputs `normalize(t·q + (1−t)·I)` with `t = (n−1)/69`
+  (nlerp), not slerp. `rebuild.rs` now uses that exact formula (`glide_point`); on 50 clean recorded glides it fits
+  within 0.126° (slerp: 0.50°, right at `FIT_TOL_DEG`), so the 0.5° tolerance has 4× margin. Tolerance and
+  `GLIDE_LEN` unchanged (both grounded). The FreeClip-specific `Quat::toward_identity` left `src/core/` (core names
+  no device behaviour). Test `hides_glide_from_a_large_angle` builds a 90° glide from the firmware formula; it
+  also passes with the slerp model (other hypotheses absorb the gap), so it guards behaviour, not the change.
+- 43/54: the firmware builds the state byte as `connected | audio << 1` (audio of the current device; the
+  Bluetooth core folds 5 and 6 into 3, other values pass through). `protocol.rs` reads `streaming = audio == 4`
+  instead of "bit 0x08", and any other value as not streaming (a variant, not a broken frame); same
+  result on every reachable value, but it states the encoding.
+- Reply value 1 is `SwitchReply::PeerLinkDown` again: the firmware answers 1 while message 0x8406 reports the link
+  to the stored peer-earbud address disconnected.
+- Kept: re-sending 43/88 when this computer streams after another device took over. The code suggested the
+  firmware re-derives `enable` itself on a device change; live, it does not resume the stream, so the re-send is
+  required (data/grounding_test3.log; "Live grounding test 3" below).
+- Rejected: tightening `FIT_TOL_DEG` to match the new fit. No recording shows a false glide at 0.5°, and the
+  tolerance also absorbs f32 rounding of real samples.
+
+## 2026-11-12: Review of the switch and glide code (independent code-quality review)
+- (Superseded by "Link state: one switch enum, derived availability" below.) `Link`: the three-state switch had a
+  `Refused` variant that changed nothing; it is now `accepted: bool`, cleared
+  when an earbud comes off (where the earbuds cancel it) as well as when another device streams. `current` became
+  `available` (the last reported availability), since a `PeerLinkDown` refusal says nothing about which device is
+  current. Reply handling is an exhaustive `match`.
+- `SwitchReply::NotCurrentSource` → `NotCurrentDevice` (one term throughout); variants in wire order; firmware
+  internals moved out of the variant docs into FINDINGS.
+- `glide_point` asserts `k ≤ GLIDE_LEN` instead of saturating (an impossible case fails loudly).
+- `hides_glide_from_a_large_angle` now holds the pose for 220 samples with 6.6° of drift (inside the firmware's
+  208-sample, 10° stillness rule) and selects outputs by time; its oracle uses literals only.
+- Not taken: erroring on 43/54 `audio` values other than those seen. The firmware passes them through, so they are
+  valid variants; erroring would turn an unseen state into a session reset.
+
+## 2026-11-12: Link state: one switch enum, derived availability (user: same strategy as session, detector, rebuilder)
+- `Link` kept `available: Option<bool>` with two jobs: the last reported `Event::Available` and a fact that a 43/88
+  refusal overwrote. Each handler compared and pushed its own event. Now the facts are separate: `streaming` (this
+  computer, per 43/54) and `switch: Switch` {`Unconfirmed`, `Accepted`, `Refused`}. Availability is derived
+  (`Refused` → false, otherwise `streaming`), and one step after each frame (`report_availability`) emits the event
+  when it changes. Handlers only update facts and send frames.
+- Transitions: sending "on" → `Unconfirmed`; reply 0 → `Accepted`; reply 1 or 2 → `Refused`; an earbud off or another
+  device streaming → `Accepted` becomes `Unconfirmed` (a refusal stands). 43/54 for this computer re-sends when
+  `Refused` and streaming, or `Unconfirmed` and streaming just started; never when `Accepted`. Same as before on every
+  existing test.
+- Behaviour fix the old fields hid: after a refusal while this computer streams (reply 1, earbud-to-earbud link down),
+  putting the earbuds back on re-sent the switch, but availability stayed false even after it was accepted, until
+  this computer's audio stopped and restarted. Now it becomes available when the switch is re-sent, as on the 43/54
+  path. Test `rewearing_after_a_refusal_makes_tracking_available_again` (fails on the old code). The session's
+  "a pose proves tracking" rule already recovered once poses flowed, so the user-visible effect was limited to the
+  status. [inferred: reply 1 has not been seen live.]
+- Rejected: a separate status type returning actions (like the session's `TrackerStatus`). `Link` is already the
+  I/O-free type; a second layer would only forward its fields.
+- Review follow-up: kept three switch states. A split of `Unconfirmed` into `Pending` (sent, unanswered) and
+  `Lapsed` (accepted, then cancelled) was proposed so the "streaming just started" check could go. Rejected: a
+  pending switch must still be re-sent when this computer starts streaming, because a refusal can be in transit
+  (sent while another device was current; the 43/54 push can arrive first), and a lapsed one is re-sent at the same
+  moment in practice, so the split changes nothing reachable and keeps the check. No retry timer: the firmware's
+  43/88 handler (`0x7039c018`) answers every well-formed request (silent only on internal copy/store or allocation
+  failures), and 13 of 13 live requests were answered within 80 ms (data/grounding_test*.log).
+- Also from the review: `Link::new` sends its first switch through `switch_on`; `Quat::normalized` (generic, in
+  core) replaces three copies of the normalise step.
+
+## 2026-11-12: Research tools: shared modules, checks in code
+- The FreeClip 2 Python tools had copies where one answer belongs, and several clean exits that hid a failure. Now:
+  - `device/mbb.py` holds framing (one CRC-checking frame reader that raises on desync or a bad CRC), connection,
+    `say()` and tool checks; probe, headpose, guided, glide_move and the phase tests import it. Before, five
+    scripts carried their own reader, three of which skipped the CRC and dropped bytes on desync.
+  - `device/runner.py` runs a scripted phase test. `grounding_test.py`, `single_bud_test.py` and `wear_test.py` are
+    schedules of it, with their CLIs and log line format unchanged so old `data/` logs still compare. Every test
+    stops with a non-zero exit when the link drops; unknown action names fail before connecting; grounding_test
+    checks that its silence player still runs.
+  - `quat.py` holds `GLIDE_LEN` and the firmware's nlerp glide for both glide scripts. `glide_move.py` used slerp
+    before; on every recording both detect the same 31 glides.
+  - `firmware/listing.py` is the one parser of disasm listings (address, raw word, mnemonic, operands, objdump's
+    resolved address, our annotation), used by disasm.py and anchors.py. `xlinx.py` exposes `annotate()`;
+    disasm.py imports it instead of running it as a subprocess and keeps its temporary ELF files out of OUT_DIR.
+  - `anchors.py` reads the load base from `body.asm` (a wrong base given by hand produced a plausible report and
+    exit 0) and checks the invariants the skill listed for the operator to read off the diff; it exits non-zero
+    after the report if one breaks. The baseline `anchors-526.txt` gained the `check:` lines and says "none"
+    instead of "NOT FOUND"/"NONE", which had meant "fine" on some lines and "broken" on others.
+  - `fetch.py` fails if the file list does not name the zip; `unpack.py` reads the LZMA dictionary size from the
+    header and fails unless it is 0x2000 (FINDINGS); `glide_check.py` fails instead of omitting a line when no
+    glide fits.
+- Checked on 7.0.0.526: the disassembly is byte-identical apart from objdump's header line (the ELF path), the
+  anchors report differs only in the format changes above, and glide_check prints the same numbers. The load-base
+  vote count moved from 1160 to 1165: the old regex skipped the line after every instruction without operands.
+- Rejected: one register-constant tracker for the whole image. The load-base vote counts a lui at its first addi;
+  tracking registers through the image changed the counts (1160 → 1178), so straight-line code (startup stub and
+  copy loops) uses `listing.constants` and the vote keeps its own rule.
+- Rejected: a `--schedule` flag on one test script. Separate scripts keep the commands in FINDINGS and old notes
+  valid.
+
+## 2026-11-12: Link as state, view and reported changes (user: Link was hard to read)
+- `Link` mixed three jobs in one set of fields: what the earbuds said (`worn`, `streaming`, `switch`), what the
+  session had been told (`reported`, and `worn` again for deduplication), and when to send. Each handler updated
+  facts, sent frames and pushed events in its own way.
+- Now: `Earbuds` holds only what the earbuds said and the switch's fate. Each message handler updates it and may
+  return a `Request` (`SwitchOn`, or `Restart` = fresh orientation frame + switch on); `Earbuds::view` derives what
+  the session sees (`View { worn, available }`). `Link::on_frame` is three steps: the earbuds take the message, the
+  link carries out the request, `report` tells the session each view field that changed (`changed`, one rule for
+  both events). No test changed; all 69 pass.
+- The pattern is a reducer with a derived view (as in the Elm architecture): state transitions in one place, outputs
+  computed from state rather than stored, events as differences between views.
+- Rejected: level-triggered sending (send whenever the view says the stream should be on and is not). A refusal
+  while this computer streams (reply 1) would be re-sent at once and refused again in a loop; the send rules need the
+  message that triggered them, so they stay edge-triggered in the handlers.
+- Rejected: one enum for the whole link state. Wear, audio and the switch change independently; their product
+  (3 × 3 × 3 states) would be harder to read than three fields.
+
+
+## 2026-11-12: Stitch composes on the right (firmware)
+- The earbuds report `raw = q ⊗ conj(ref)` (re-centre stage `0x600fa53c` calls `0x600ff6b0` with the input first
+  and the reference at `S+40` second; `0x600ff626` computes `a ⊗ conj(b)`). So `q = raw ⊗ ref`, and the rebuild is
+  `absolute = raw × reference`; `Rebase` (reference = last absolute) is unchanged. headup had `reference × raw`,
+  which equals it only for rotations about one axis: a nod after a turn read about the wrong axis.
+- Effect, through the real `Rebuilder`: guided run 1 (headpose_axes.csv) upright pitch after the turns and tilts
+  8.5–9.3° → 0.9–4.4°; run 2 about the same. Test `nod_after_a_turn_reads_as_pitch` (60° turn, re-centre, 30° nod:
+  old order 14.5° pitch and −26.6° roll; new 30°). `rebuilds_guided_run_fixed_mode` tolerance 8° → 9°: its last
+  center phase reads roll −8.3° (was −7.6°), pitch −1.3° (was −2.4°).
+- Not fixed by this: the ~10° per re-centre "toward looking up". It is movement the earbuds absorb into their
+  reference without sending it (silent re-centres every 209 samples while paused, slow drift during a countdown;
+  FINDINGS "Re-centre and stillness", "Ground truth"), so it is not in the stream. Re-anchoring after recoveries
+  stays.
+
+## 2026-11-12: Live grounding test 3 (refactored tools, phone takeover returned)
+- data/grounding_test3.log, the first run of the refactored device tools (runner.py, mbb.py): exit 0, every phase
+  matches the 526 baseline run (data/grounding_test.log) in pose flow and replies.
+- New: the phone took over and then paused, and this computer became current again (43/54 `…09`). The earbuds did
+  not resume the stream for 9 s, until a new 43/88 (accepted, seq from 1). So an accepted switch does not survive a
+  takeover; `Link` cancels it when another device streams and re-sends when this computer streams, which is now
+  grounded. This overrides the code reading of the device-change path (`0x7039be0c`).
+- Still not seen live: 43/88 reply 1 (a closed case with one earbud in it still gave `00`).
+
+## 2026-11-12: Live headup run 4 (Link restructure, stitch order)
+- data/live4*.jsonl, release build with the restructured `Link` and `raw × reference`: calibration first try
+  (p90 0.4°); look down → tone, recovery, re-anchor −4.8°; turned ~50° left then looked down → tone, recovery,
+  re-anchor −5.2°; an earbud off → Paused, on → Resumed and recalibration; clean Ctrl-C (exit 0).
+- Turned left and looking down, the rebuilt pose read pitch 31.9°, yaw 49.0°, roll 2.2°. The same samples stitched
+  in the old order read roll −25.2°, pitch 27.8°, yaw 36.9° (a tilt that did not happen).
+- Phone takeover: this computer's audio restarted while the phone still played, so when the phone paused the
+  earbuds did not make this computer current (no `…09` for it); headup stayed unavailable, correctly. Getting
+  tracking back then needs audio started on this computer after the phone stops (device rule: the last device to
+  start streaming is current).

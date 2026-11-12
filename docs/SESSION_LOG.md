@@ -361,3 +361,136 @@
 ## 2026-11-12 14:42 UTC
 - Released v0.2.2: bump commit 27b599d (signed), CI green, signed tag, GitHub release (maintenance, no behaviour
   change). Release workflow uploaded both tarballs; x86_64 tarball verified (sha256, `--version` 0.2.2).
+
+## 2026-11-12 15:17 UTC
+- Firmware .526 analysed: not encrypted. Sections are LZMA in a `hwcompress10` block container (64 KiB raw LZMA1
+  blocks), or plain (bootloader, SBC prompts, case package with LZMA-alone images). Decoded the package table; every
+  section SHA-256 matches. New `tools/freeclip2/fw_unpack.py`; FINDINGS "Firmware image" corrected. Head-tracking
+  code is probably in RISC-V image 5 (`rotation_perdict_task`); disassembly not started. Staged, not committed.
+
+## 2026-11-12 15:36 UTC
+- Disassembled firmware image 5 (load base 0x70280300; RV32IMFC + HiSilicon xlinx custom ISA, BS25 variant of the
+  push/pop and branch-immediate encodings). New `tools/freeclip2/fw_xlinx.py` annotates objdump output. Ghidra
+  (stock and the Ghidra_RISCV31 module) could not decode this variant.
+- Found the 43/88 set/report, 43/89 sender and 43/90 handlers, the start conditions (enable, status flags from
+  internal messages, mode byte, boot-time hardware gate) and that 43/90 records the host in a persisted 3-slot
+  list that the head-tracking paths check (FINDINGS "Firmware head-tracking logic"). Staged, not committed.
+
+## 2026-11-12 15:59 UTC
+- Grounded the firmware reading. Fixed the method: objdump had decoded the image as RV64 (missing ~4,800 `c.jal`
+  calls), now RV32 through an ELF wrapper. Decoded opcode 0x7b (long gp-relative load/store) and 0x2b (`shf`).
+  Found the host service-43 dispatch table, which corrected the handler mapping: 43/88 → `0x7039c018`, and the
+  earlier "43/88" handler is 43/167.
+- 43/88 reply TLV2: 0 accepted, 2 = requester is not the current (last-streaming) device. Matches `2=02` then `2=00`
+  in live2/live3. 1 = earbud-to-earbud link down `[inferred]`. 43/89 goes to the current device; retracted the claim
+  that the 43/90 list gates it. Start needs a per-device mode R (probably the 43/180 spatial mode, `[inferred]`).
+- FINDINGS, HANDOFF and RUNBOOK updated; the RUNBOOK pipeline reproduces the analysis listing exactly.
+  Staged, not committed.
+
+## 2026-11-12 17:41 UTC
+- Live test (service stopped, then restarted; data/mode_gate_live.jsonl): the stream runs in spatial mode off,
+  follow and fixed (138–139 samples per 4 s, 43/88 always `2=00`). The "R = spatial mode" inference is refuted. The
+  mode was restored to follow.
+- Code: 43/88 reply parsed (`SwitchReply`); a refusal reports `Available(false)` and waits for this computer to
+  stream (DECISIONS). New tests `stream_switch_replies` and `refused_stream_switch_waits_for_this_computer_to_stream`
+  (the second fails without the change). 64 tests, clippy and fmt pass. Staged, not committed.
+- Live smoke run of the new build (25 s, service stopped then restarted; data/smoke_reply*.jsonl): 43/88 `2=00`
+  parsed, calibration on the first attempt, 281 samples, clean Ctrl-C stop.
+- Live check of the refusal path (phone last active; data/refusal_live*.jsonl): 43/88 `2=02` at 0.09 s →
+  TrackingUnavailable and the "play audio on this computer" hint. Audio started at 15 s → 43/54 `…09` →
+  TrackingAvailable, re-sent 43/88 `2=00` at 15.53 s, first sample at 15.53 s, calibration on the first attempt,
+  280 samples, clean stop. Service restarted.
+
+## 2026-11-12 17:59 UTC
+- Earbuds report 7.0.0.526 (MBB 1/7), the disassembled version. Guided live test (tools/freeclip2/grounding_test.py,
+  prompts spoken + printed + notifications; data/grounding_test.log): one earbud stops samples and 43/88 does not
+  revive them; earbud in closed case still `2=00` (43/37 TLV4 = in case); re-wear needs 43/88; audio gap resumes by
+  itself on 43/54 `…09`; stillness pause and seq counting confirmed; 43/88 on restarts seq at 1.
+- FINDINGS: grounding table for every device fact headup relies on; stale "unverified"/"re-test" notes resolved.
+  README tested firmware → 526.
+- Tools: fw_fetch.py (offline-tested against saved 526 files, rejects a corrupt zip), fw_unpack.py reads the zip,
+  fw_disasm.py (finds base 0x70280300, listing identical to the analysis), fw_anchors.py (baseline
+  docs/devices/freeclip2/firmware/anchors-526.txt). Skill .claude/skills/freeclip2-firmware/ dry-run on 526 passed.
+  Staged, not committed.
+
+## 2026-11-12 18:08 UTC
+- Grouped tools/freeclip2/ into firmware/ (fw_ prefix dropped), device/ and app/; updated every current reference
+  (docs, skill, AGENTS, flake.nix comment, Rust comments). Firmware pipeline re-run: anchors identical.
+- Corrected two earlier claims: the 0x600xxxxx code is image 5's RAM-run code (startup copies flash 0x702abf38 to
+  0x600d0000), not missing ROM; and the head-tracking computation is in it: task 40 ← 0x600e1be0 ← 0x600e1844 ←
+  ops of module `robin_gesture` (tail table 0x7041332c) → library ~0x600f9b30. disasm.py now disassembles the RAM
+  regions; anchors.py reports the module (baseline updated). Glide code not yet read.
+
+## 2026-11-12 18:27 UTC
+- Firmware: gp = 0x20007c48 (startup stub run at 0x20000; its copies chain), confirmed by 380/388 gp-relative
+  float loads landing on sensible constants. Stub also copies code to 0x201c0, so 0x46b90 (log), 0x45d12 (memcpy)
+  etc. are in the image, not ROM. disasm.py annotates gp-relative loads with initial values and disassembles all
+  copied regions; anchors.py made region-agnostic (baseline unchanged). Glide code located, not read.
+- Code: Switch {Unconfirmed, Accepted, Refused} in Link; 43/54 streaming re-sends 43/88 only when not accepted;
+  another device streaming unconfirms; Link.streaming → current; reply 1 → OtherRefusal; 43/54 doc states the
+  evidence. Tests: audio_resuming_after_an_accepted_switch_keeps_the_stream (fails before),
+  audio_starting_before_any_reply_switches_on_again, another_device_streaming_unconfirms_the_switch. 67 pass.
+- Live: data/gap_live*.jsonl (no re-send after an audio gap; samples resume 0.03 s after 43/54 …09);
+  data/grounding_test2.log with a phone-takeover phase (phone takes over, this computer's audio does not preempt,
+  43/88 → 02). Docs updated (FINDINGS grounding table, DECISIONS, skill, HANDOFF). Staged, not committed.
+
+## 2026-11-12 18:46 UTC
+- User away (no live tests). Firmware grounding completed:
+  - Glide/stillness read from code (`0x600fa53c`, `0x600faa4e`, setter `0x600fa29e`): still = every Euler axis within
+    10° of the run's start, trigger after 208 samples, glide = nlerp over N = 69 ending in exact identity, cut short
+    when an angle exceeds 2.4°. Recordings agree (new tools/freeclip2/recordings/glide_check.py: 138 re-centres,
+    length 68, nlerp misfit ≤ 0.126°, median still run 213.5).
+  - 43/54 state byte = connected | audio<<1 (`0x7037a828`; audio from message 0x8400, Bluetooth core folds 5/6 → 3).
+  - Reply 1 = earbud-to-earbud link down (message 0x8406 from the Bluetooth core's peer-address link events).
+  - Device change re-derives enable (`0x7039be0c`); headup's re-send there kept (grounded live in refusal_live/live2/live3).
+- Tools: xlinx.py decodes load/store-multiple, muliadd-imm and 16-bit zero stores; disasm.py gets --no-stub (image 3).
+- Code: rebuild.rs uses the firmware's nlerp glide (`glide_point`; Quat::toward_identity removed from core);
+  protocol.rs decodes 43/54 audio == 4; SwitchReply::PeerLinkDown restored. Test hides_glide_from_a_large_angle.
+  68 tests pass. FINDINGS grounding table: every row grounded. Staged, not committed.
+
+## 2026-11-12 18:51 UTC
+- Outage re-examined with the firmware: none of the probe's queries (43/90, 43/44 with an empty value, 43/180) can
+  reach the start/stop logic (empty TLV values are dropped by the parser), so the probe did not cause the recovery;
+  with `2=00` the failed condition was sensor-side and not observable over MBB.
+- Replayed all data/*_raw.jsonl through Rebuilder (temporary test, removed): 67 full re-centres, rebuilt orientation
+  moves ≤ 3.0° (one, boundary) and ≤ 0.33° in the other 66; slerp vs nlerp give identical outcomes. First re-centre at
+  seq ~279 explained (208 + 69). FINDINGS updated. 68 tests pass.
+
+## 2026-11-12 18:55 UTC
+- Independent code-quality review of the src changes; applied: Switch enum → accepted bool (cleared on earbud
+  removal), current → available, exhaustive match on replies, NotCurrentDevice, assert in glide_point, test fixed to
+  the firmware's stillness rule (220 samples, 6.6°) with time-based selection and a literal oracle, docs reworded.
+  Kept 43/54 unseen values as variants (firmware passes them through). 68 tests, clippy, fmt pass.
+
+## 2026-11-12 19:10 UTC
+- Refactored `Link` state (user): `Switch` enum {Unconfirmed, Accepted, Refused} plus `streaming`; availability derived
+  and reported in one step after each frame. Fixes availability staying false after a refusal followed by re-wearing
+  (new test fails on the old code). Rebuilder, detector and session checked: no correlated loose fields left.
+  69 tests, clippy, fmt pass. Staged, not committed.
+
+## 2026-11-12 19:55 UTC
+- Thermo code-quality review (two reviewers; report in the session scratchpad) and all fixes applied:
+  - Rust: `Quat::normalized` in core; `Link::new` via `switch_on`; `reported` doc and let-chain; test helpers
+    (`phone()`, `rotation`, `row`); `AUDIO_STREAMING` doc. Kept three `Switch` states (DECISIONS): the firmware
+    answers every well-formed 43/88 (`0x7039c018`; 13/13 live within 80 ms), and the pending re-send covers a refusal
+    in transit.
+  - Tools: shared `tools/freeclip2/quat.py`, `device/mbb.py` (CRC-checking reader), `device/runner.py` (schedules;
+    single_bud_test and wear_test are schedules now), `firmware/listing.py` (one listing parser); anchors.py reads the
+    base itself and asserts five invariants; clean-exit fixes in fetch, unpack, glide_check, grounding_test;
+    glide_move uses nlerp. Same anchors/disasm/glide_check results on 526 and data/; device scripts offline only.
+
+## 2026-11-12 21:30 UTC
+- Link restructured: `Earbuds` (facts + switch, handlers return a `Request`), `View` derived, `report` emits changed
+  view fields. No test changed.
+- Firmware re-centre read (agent, key points re-checked by hand): reference = current pose (two samples behind
+  during a countdown; at a cut, the pose two samples before it); while paused the stage keeps running and re-centres
+  silently every 209 samples (25/26 identity resumes in the predicted window; all 121 normal resumes at >= 4.00°).
+  The ~10° error is absorbed movement, not a computational bias. Fusion is Mahony; latency compensation predicts 27
+  samples ahead weighted by yaw rate. FINDINGS updated.
+- Stitch order fixed (`raw × reference`, firmware `0x600ff6b0`/`0x600ff626`); new test fails on the old order.
+
+## 2026-11-12 22:30 UTC
+- Live grounding test 3 (data/grounding_test3.log): refactored tools work; all phases match 526; after a phone
+  takeover the stream does not resume until a new 43/88 (re-send grounded; FINDINGS, DECISIONS updated).
+- Live headup run 4 (data/live4*.jsonl): all steps behaved; the turned slouch read pitch 31.9° roll 2.2° (old order
+  would give roll −25.2°). Service restarted.

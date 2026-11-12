@@ -84,7 +84,7 @@
             pkgs.rustfmt
             pkgs.rust-analyzer
             pkgs.python3 # tools/*.py (stdlib only)
-            pkgs.espeak-ng # spoken prompts in tools/freeclip2/guided.py and tools/freeclip2/wear_test.py
+            pkgs.espeak-ng # spoken prompts in tools/freeclip2/device/guided.py and tools/freeclip2/device/wear_test.py
           ]
           ++ runtimeDeps pkgs;
         };

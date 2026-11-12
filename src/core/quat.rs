@@ -55,29 +55,17 @@ impl Quat {
             let s = if first.dot(*q) < 0.0 { -1.0 } else { 1.0 };
             (w, x, y, z) = (w + s * q.w, x + s * q.x, y + s * q.y, z + s * q.z);
         }
-        let n = (w * w + x * x + y * y + z * z).sqrt();
-        Quat {
-            w: w / n,
-            x: x / n,
-            y: y / n,
-            z: z / n,
-        }
+        Quat { w, x, y, z }.normalized()
     }
 
-    /// The rotation `step` of `steps` of the way from `self` to identity along the shortest path
-    /// (slerp towards identity): same axis, angle scaled by `1 - step / steps`.
-    pub fn toward_identity(self, step: u32, steps: u32) -> Quat {
-        let s = (1.0 - self.w * self.w).max(0.0).sqrt();
-        if s < 1e-12 {
-            return Quat::IDENTITY;
-        }
-        let half = self.w.clamp(-1.0, 1.0).acos() * (1.0 - f64::from(step) / f64::from(steps));
-        let k = half.sin() / s;
+    /// The unit quaternion in the direction of `self`.
+    pub fn normalized(self) -> Quat {
+        let n = self.dot(self).sqrt();
         Quat {
-            w: half.cos(),
-            x: self.x * k,
-            y: self.y * k,
-            z: self.z * k,
+            w: self.w / n,
+            x: self.x / n,
+            y: self.y / n,
+            z: self.z / n,
         }
     }
 
