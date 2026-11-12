@@ -19,8 +19,8 @@
 //! The filter's rules:
 //!
 //! - Every sample is held until a sample `GLIDE_SAMPLES` newer arrives: by then no identity sample
-//!   can make it part of a glide. This also covers glides during which the head moved, which
-//!   don't fit the model.
+//!   can make it part of a glide. This also covers glides the earbuds cut short because the head
+//!   moved, which don't fit the model.
 //! - [`Hypotheses`]: for each recent sample, "a glide started from this pose", alive while every
 //!   later sample fits the model within `FIT_TOL_DEG`.
 //! - On an identity sample, the samples of the hypothesis that fits it are dropped (the head was
@@ -169,7 +169,7 @@ impl GlideFilter {
                 steps.push(Step::Rebase);
             }
             Some(Arrival::GlideEnd) => {
-                // A glide during which the head moved fits no hypothesis, and a small one may have
+                // A glide cut short because the head moved fits no hypothesis, and a small one may have
                 // none: then the `GLIDE_SAMPLES` before the identity sample are dropped.
                 let start = self
                     .glides
@@ -559,6 +559,36 @@ mod tests {
                 o.t.as_secs_f64()
             );
         }
+    }
+
+    // tools/freeclip2/glide_move.py (2026-11-12): look down, and at a beep the moment a re-centre
+    // starts, look straight back up. The earbuds cut the glide short (the movement does not show in
+    // its readings) and re-centre roughly onto the pose where it started. Afterwards the rebuilt
+    // pose must be near upright (within the earbuds' ~10° error per re-centre), not stuck at the
+    // ~50° slouch. Trial 2 got no beep (no re-centre in time).
+    #[test]
+    fn moving_during_a_glide_is_not_lost() {
+        let rows = read_csv("glide_move.csv");
+        let ph = phases(&rows);
+        let mut after: Vec<Vec<f64>> = vec![Vec::new(); ph.len()];
+        for o in replay(&rows) {
+            after[phase_at(&ph, o.t)].push(o.abs.euler().pitch);
+        }
+        let mut checked = 0;
+        for ((name, start), pitches) in ph.iter().zip(&after) {
+            if name != "after" {
+                continue;
+            }
+            let end = &pitches[pitches.len().saturating_sub(40)..];
+            let mean = end.iter().sum::<f64>() / end.len() as f64;
+            assert!(
+                (-25.0..5.0).contains(&mean),
+                "after the move at {:.1} s: pitch {mean:.1}°",
+                start.as_secs_f64()
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 2, "two trials moved during a glide");
     }
 
     // data/hold_test.csv: look down 30 s / center 15 s, twice. While held still the earbuds glide the

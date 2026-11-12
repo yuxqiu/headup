@@ -18,6 +18,8 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
 - Stream head pose: `python3 -I tools/freeclip2/headpose.py C0:DA:5E:F1:A0:A6 SECONDS [data/out.csv]`
 - Guided axis/drift test (spoken prompts through the buds, ~4 min; run in `nix develop`):
   `python3 -I tools/freeclip2/guided.py C0:DA:5E:F1:A0:A6 tests/fixtures/freeclip2/headpose_axes.csv`
+- Move during a re-centre (beeps when a glide starts; look straight up at the beep; audio playing, headup stopped):
+  `python3 -I tools/freeclip2/glide_move.py C0:DA:5E:F1:A0:A6 data/glide_move.csv [--trials 3]`
 - Spatial mode query/set: `python3 -I tools/freeclip2/probe.py MAC '43/180:1=18,2=,3='` / `'43/180:1=18,2=01'`
   (0 off, 1 follow, 2 fixed).
 - Rust detector (inside `nix develop`):

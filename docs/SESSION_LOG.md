@@ -347,3 +347,10 @@
   rebuilder `GlideFilter` → `Step`s → `Stitch` with `Hypotheses` and `Arrival`; session `TrackerStatus` and
   `CalibrationWindow`. Behaviour unchanged: 61 tests pass; clippy, fmt, rustdoc clean. Typestate considered and
   rejected (runtime-driven state). Staged, not committed.
+
+## 2026-11-12 14:32 UTC
+- Live test of moving during a re-centre (new tool `tools/freeclip2/glide_move.py`, fixture `glide_move.csv`): the
+  earbuds cut the glide short, the movement does not show in its readings, and they re-centre roughly onto its start
+  pose; headup reads the new posture afterwards (within the known ~10° per re-centre). Potential issue resolved;
+  corrected the FINDINGS explanation of non-fitting glides. Test `moving_during_a_glide_is_not_lost`; 62 tests pass.
+  Service stopped for the test and restarted.

@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 14:11 UTC
+Last updated: 2026-11-12 14:32 UTC
 
 ## Current state
 - The protocol works.
@@ -62,10 +62,9 @@ Last updated: 2026-11-12 14:11 UTC
 3. Not built: a manual snooze/pause control (no UI chosen). The 43/90-before-43/88 query is still unverified as the
    cure for the 2026-11-11 tracking outage (see Blockers).
 
-- Potential issue (not confirmed): moving the head during a re-centre glide might leave the rebuilt pose off by
-  the whole movement, if the earbuds re-centre onto the end pose rather than the glide's start. The guided runs
-  suggest the start pose (no error), but no recording has movement before the identity sample. Live test plan in
-  FINDINGS "Head movement during a glide".
+- Resolved 2026-11-12: moving the head during a re-centre glide is not an issue. The earbuds cut the glide short and
+  re-centre roughly onto its start pose; headup reads the new posture afterwards (FINDINGS "Head movement during a
+  glide", test `moving_during_a_glide_is_not_lost`).
 
 Older open items:
 0. FreeClip 2 tracking needs this computer to stream audio, and goes silent ~5 s into any still hold, even

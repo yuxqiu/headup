@@ -420,9 +420,10 @@ identity sample as ground truth for each glide's end.
   from `P` to the first glide sample is 1.78–2.07 steps (typically 1.95), and `P` itself was still. (A first version
   of this entry fitted a 67-step ramp from the first glide sample and called that `q_s`; that start was one sample
   late.) From `P`, 145 of 170 glides fit within 0.5° (median 0.23° for glides from ≥ 10°, 0.11° below).
-- **28 glides (16%) do not fit:** the head moved during the blend. With the head still, the two possible device
-  behaviours (moving the reference vs fading the reported rotation) give identical readings, so this data cannot
-  tell them apart.
+- **28 glides (16%) do not fit:** they are cut short (section "Head movement during a glide": the earbuds end a
+  glide early when the head moves, and the movement does not show in its readings). With the head still, the two
+  possible device behaviours (moving the reference vs fading the reported rotation) give identical readings, so this
+  data cannot tell them apart.
 - **The head barely moves during clean glides:** inverting 37 of them (fading model) gives at most 0.8° of head
   movement. So head movement during glides does not explain the ~10° per re-centre error (section "Ground truth").
 - **Every stream's first re-centre ends at seq 279–280** (all 16 recordings), about 5.3 s after the stream starts
@@ -443,17 +444,18 @@ identity sample as ground truth for each glide's end.
   upright 22.6° towards "looking up", in line with ~10° per re-centre (section "Ground truth"); re-anchoring
   corrected it.
 
-## Head movement during a glide: open question (2026-11-12)
+## Head movement during a glide (2026-11-12, tests/fixtures/freeclip2/glide_move.csv)
 
-- The glides that fit no model in the guided axis runs (headpose_axes*.csv, e.g. `turn_left` → `center` at 35.8 s)
-  are not the head moving mid-glide. The ramp starts late (~48 samples at the held pose), runs at the model's speed
-  (~0.9°/sample from 63°), and is cut short by an early identity sample; the head turns afterwards, measured from
-  the new reference.
-- After them the rebuilt pose is right (the next `center` reads yaw −3.7° / −1.2°), so the earbuds' new reference was
-  the pose where the glide started, and the rebuilder's fallback (drop the 70 samples, reference = pose before them)
-  was correct.
-- Open `[unverified]`: what the earbuds do when the head moves before the identity sample. If they re-centre onto
-  the glide's start pose (as above), headup only misses ≤ 1.3 s of the movement. If onto where the head is when the
-  glide ends, headup keeps the old pose afterwards, off by the whole movement, until recalibration. No recording
-  has this case. Test: hold still ~5 s until a re-centre starts, move during the ~1.3 s glide, hold the new pose,
-  then compare headup's reading with it (`--log`), using `--raw-log` to confirm the move landed mid-glide.
+- Test: `tools/freeclip2/glide_move.py` beeps the moment a glide starts (offline: catches 35 of 38 glides from ≥ 10°
+  in the fixtures, no false alarms), and the user looks straight back up. Two of three trials beeped (35 Hz).
+- **The earbuds cut the glide short:** the identity sample came ~34 samples into the ramp (~0.4 s after the move
+  began) instead of 68. **The movement does not show in the readings before it:** they keep following the still-head
+  ramp (0.78°/sample from 52.6°). Those glides fit no full-length model (misfit 28° and 33°); the four still-head
+  glides in the same session fit within 0.5°.
+- **They re-centre roughly onto the glide's start pose:** after the identity sample, the upright head reads −63.6°
+  raw (the start pose was 52.6° down), and the rebuilt pose after each move is −11.5° and −19.0° (true: ~0°), the
+  usual ~10° per re-centre towards "looking up" (trial 2, with no move, drifted the same way). The rebuilder's
+  fallback (drop the 70 samples before the identity sample, reference = pose before them) handles it; nothing stays
+  at the slouch angle. Test `moving_during_a_glide_is_not_lost`.
+- The guided axis runs' glides with a late start and an early end (headpose_axes*.csv, e.g. `turn_left` → `center`
+  at 35.8 s) are most likely the same thing: the head started turning at the prompt.
