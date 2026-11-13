@@ -104,7 +104,7 @@
   No silent keep-alive stream: it would cost battery and break switching audio to the phone.
 - When tracking resumes after a pause: short gaps (under ~30 s, e.g. skipping tracks) carry the last posture over;
   after a longer gap headup recalibrates (spoken prompt over the music), because a new stream measures from the
-  head pose at its start.
+  head pose at its start. (Superseded 2026-11-12: "Recalibrate after every unavailability".)
 - Implemented:
   - `Event::Available(bool)` in the HeadTracker interface. FreeClip 2 derives it from 43/54 pushes for this
     computer's adapter address (`Found.adapter`, little-endian in the frame); bit 0x08 = streaming.
@@ -634,3 +634,67 @@
   earbuds did not make this computer current (no `…09` for it); headup stayed unavailable, correctly. Getting
   tracking back then needs audio started on this computer after the phone stops (device rule: the last device to
   start streaming is current).
+
+## 2026-11-12: Recalibrate after every unavailability (user; fixes a missed tracking loss)
+- Bug (user report; service log 22:24:57–22:29:49, ~5 min unavailable, and data/live4.jsonl, ~75 s): no
+  `TrackingLost` and no recalibration after a long phone takeover. Cause: every pose cleared the session's
+  unavailability ("a pose proves tracking works"), and poses still arrive after `Available(false)`: the rebuilder
+  releases samples it was holding, and the earbuds can send a few more (5 after this computer's `…03` in
+  data/grounding_test3.log). Once they stopped, the silence was taken for a still head indefinitely.
+- The 30 s grace itself was a judgement call with no data behind it, and it rests on an assumption nothing checks:
+  every resumed stream measures from the head pose at its start, so carrying the posture over assumes the head did
+  not move during the gap. Using the phone usually breaks that, whatever the gap's length.
+- Now (user's choice): `Available(false)` ends the cycle at once (`Interrupt::Unavailable`): the slouch state is
+  dropped and headup calibrates again once tracking resumes. The calibration waits for `Available(true)`; poses
+  that arrive while unavailable do not start it. `TRACKING_LOST`, the unavailability timer and the `TrackingLost`
+  log event are gone (`TrackingUnavailable` now means it).
+- Track skips do not trigger it: the earbuds report this computer's audio stop ~5 s after it stops
+  (data/grounding_test3.log, two cases at 5.07 s); the shortest such gap in all recordings is 6.6 s.
+- Tests changed (behaviour change): `unavailability_drops_the_slouch_and_recalibrates` (fails on v0.3.0: a tone from
+  stale posture, no recalibration) replaces the short/long unavailability tests;
+  `poses_after_unavailability_do_not_start_calibration` (fails without the wait for `Available(true)`);
+  `poses_end_unavailability_without_announcement` removed: a tracker must announce `Available(true)`.
+- Rejected: decide by what happened during the gap (recalibrate after another device took over, carry over short
+  laptop pauses). Re-starting playback after stopping a video usually takes longer than a short limit anyway, so it
+  would behave like this rule with an extra tracker event.
+- Rejected: keeping 30 s and only fixing the timer (an intermediate fix this session): it keeps the unchecked
+  assumption.
+- Live check (data/live6*.jsonl, silence played by the test, gaps made by stopping it): gaps of 0.5, 1, 2, 3 and 4 s
+  gave no 43/54 for this computer; 7 s and 15 s gave `…03` at +4.90 s and +4.93 s, then `…09` on resume. So a stop
+  is reported only after ~4.9 s without audio, and short gaps such as a track skip never interrupt. The head was
+  still, so whether a short gap restarts the pose stream was not observable (the 15 s gap did: seq 279 → 227).
+- Found in that run: after an interruption, the restarted cycle waited for a first pose before prompting, and a
+  still head sends none, so no prompt came until the user moved (v0.3.0 had the same wait after a 30 s loss: service
+  log 22:31:22 available → prompt ~33 s later). Fixed by "Calibration asks a still head to move" below.
+
+## 2026-11-12: Calibration asks a still head to move (user)
+- A calibration must measure the head after the prompt. A briefly tried fix calibrated from the latest pose when
+  none arrived; the user rejected it: it defeats the purpose of recalibrating. Relying on the tracker to send poses
+  by itself (FreeClip 2's burst at a new stream) is a device habit, not a guarantee.
+- Now: once tracking has started (a pose or `Available(true)`), a calibration prompts as soon as it is available (after a
+  pause, after re-wearing, after a failed calibration's back-off). Only poses measured after the prompt count. With
+  none 5 s after it, a new prompt asks "Move your head a little, then hold still, looking straight ahead."
+  (`Phrase::MoveHead`), repeated every 15 s while none arrive.
+- `CalibrationAttempt` replaces the fixed 3 s window: it succeeds as soon as the delivered posture shows the head
+  steady for 3 s (the latest pose measured at least 3 s before the known end, and every pose after it, p90 under
+  8°; silence after a pose counts as holding it). So moving when asked, then holding still, calibrates without
+  "You moved". An attempt fails 5 s after its first pose without a steady 3 s; four attempts (~20 s), then the 60 s
+  back-off as before. The empty-window fallback (use the last pose) is gone.
+- At startup, before any pose or `Available(true)`, headup still waits silently ("waiting for head tracking…"
+  note): silence may mean tracking has not started (no audio), so asking the user to move would be wrong.
+- The tracker's state is one enum in `TrackerStatus` (user: it does not belong loose in the session):
+  `Tracking { Starting, Available, Unavailable }`. A pose ends `Starting`; `Available(true)`/`(false)` set the
+  other two; a pose during `Unavailable` changes nothing; only leaving `Available` interrupts a cycle. It replaces
+  `available: bool` plus `tracking_seen: bool`, which encoded the same three states with two flags.
+- Tests: `still_head_is_asked_to_move_when_tracking_resumes`, `still_head_is_asked_to_move_after_rewearing`,
+  `nudge_repeats_while_no_pose_arrives` (fail on the previous code); `startup_waits_silently_for_tracking` (fails if
+  the session prompts before the first pose). Changed: `failed_calibration_retries_later` (the head now moves for 30 s
+  to fail four 5 s attempts; the retry is nudged because the scripted head is still).
+- Voice: `assets/voice/move_head.wav` generated alone with the `tools/gen_voice.sh` command and voice, so the other
+  clips are unchanged.
+- Rejected: re-sending 43/88 to force a burst of poses (device-specific, adds a re-centre error each time).
+- Live check (data/live7*.jsonl, automated, silence played by the test): after an 8 s audio pause with a still head,
+  tracking was available again at 43.0 s; the prompt ran to 45.5 s; no pose came, so the nudge played from ~50.5 s
+  (4.2 s clip); the first poses arrived at 54.9 s and calibration succeeded (39 samples, p90 7.2°, no "You moved").
+  Re-wearing calibrated on the new stream's poses (93 samples, p90 0.2°) without a nudge. The 8 s pause kept the
+  same stream (seq continued at 2866), so not every gap restarts it.

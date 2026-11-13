@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-12 22:15 UTC
+Last updated: 2026-11-13 00:05 UTC
 
 ## Current state
 - The protocol works.
@@ -33,6 +33,13 @@ Last updated: 2026-11-12 22:15 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- After v0.3.0: any tracking unavailability now ends monitoring and headup recalibrates when tracking resumes
+  (DECISIONS "Recalibrate after every unavailability"; also fixes long phone takeovers keeping the old reference).
+  Calibration asks a still head to move (new voice prompt) and only uses poses measured after the prompt
+  (DECISIONS "Calibration asks a still head to move"); live-checked (data/live7*). 73 tests pass; staged. Next:
+  the user commits and releases 0.3.1.
+  Live: gaps up to 4 s never interrupt; 7 s and 15 s do (data/live6*). Next: optional 1-minute nodding run to see
+  whether short gaps restart the stream; then the user commits and releases 0.3.1.
 - 2026-11-12 21:30: Link restructured as state + view (DECISIONS "Link as state, view and reported changes");
   firmware re-centre fully read (reference = current pose, silent re-centres while paused explain the ~10° error);
   Stitch order fixed to `raw × reference` (DECISIONS "Stitch composes on the right"). 70 tests pass; staged. The
@@ -84,9 +91,9 @@ Last updated: 2026-11-12 22:15 UTC
 
 Older open items:
 0. FreeClip 2 tracking needs this computer to stream audio, and goes silent ~5 s into any still hold, even
-   during playback (FINDINGS). Implemented `Event::Available` from 43/54; TrackingLost only after 30 s
+   during playback (FINDINGS). Implemented `Event::Available` from 43/54; monitoring ends when tracking is
    unavailable; lookup robustness. 28 tests pass. Live: calibration while audio played, unsupported-address
-   check. Still live-untested: audio stop > 30 s, then resume (expect TrackingLost and recalibration).
+   check. Audio stop then resume: recalibration expected (see Next actions).
 1. Live checks still owed by the user:
    - Wear pause: take one or both earbuds off, then put both back on. Expect "Paused", then recalibration.
      With only one earbud on, headup stays paused: FreeClip 2 tracking needs both (FINDINGS "Single earbud").

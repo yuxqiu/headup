@@ -12,6 +12,7 @@ declare -A phrases=(
   [sit_upright]="Sit upright and look straight ahead."
   [calibrated]="Calibrated. Monitoring your posture."
   [moved]="You moved. Hold still, looking straight ahead."
+  [move_head]="Move your head a little, then hold still, looking straight ahead."
   [lift_head]="Gently lift your head."
 )
 for name in "${!phrases[@]}"; do

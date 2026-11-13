@@ -498,3 +498,24 @@
 ## 2026-11-12 22:15 UTC
 - v0.3.0 released by the user (tag on 027d65d). CI green (main and tag, x86_64 and aarch64); Release workflow
   uploaded both tarballs; x86_64 sha256 OK and `--version` prints 0.3.0. Next: update the service.
+
+## 2026-11-12 22:50 UTC
+- User noticed no recalibration after using the phone for 30 s or more. The service log confirmed it (unavailable
+  ~5 min, no TrackingLost), as did data/live4.jsonl. Cause: poses released or sent after `Available(false)` cleared
+  the session's unavailability. First fixed in `TrackerStatus`; then, by the user's choice, replaced by "recalibrate
+  after every unavailability" (no 30 s grace). 69 tests pass. Staged.
+
+## 2026-11-12 23:20 UTC
+- Automated gap test (data/live6*): stop reported only after ~4.9 s without audio; gaps <= 4 s never interrupt.
+  Found and fixed: after an interruption the session waited for a pose a still head never sends; it now calibrates
+  from the last pose. 70 tests pass. Service restarted. Staged.
+
+## 2026-11-12 23:45 UTC
+- User rejected calibrating from the last pose. Calibration now prompts as soon as tracking is available, asks a
+  still head to move ("Move your head a little, then hold still…", new clip), and succeeds on 3 s of steady posture
+  measured after the prompt (sliding). Startup still waits silently for the first pose. 73 tests pass. Staged.
+
+## 2026-11-13 00:05 UTC
+- `Tracking { Starting, Available, Unavailable }` in `TrackerStatus` replaces `available` + `tracking_seen` (user).
+- Live nudge test (data/live7*): still head after a pause got the nudge, moved, calibrated; re-wear calibrated on the
+  new stream. Service restarted. Staged.

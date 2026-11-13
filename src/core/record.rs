@@ -63,10 +63,9 @@ pub enum LogEvent {
     CalibrationFailed,
     /// The device can deliver head tracking again.
     TrackingAvailable,
-    /// The device stopped being able to deliver head tracking.
+    /// The device stopped being able to deliver head tracking: the posture reference is dropped,
+    /// and headup recalibrates when tracking resumes.
     TrackingUnavailable,
-    /// Unavailable for long enough that the posture reference is dropped; recalibrates on resume.
-    TrackingLost,
     /// Upright was re-anchored after a recovery to this pitch (relative to calibration), because the
     /// head settled above the old upright.
     Reanchored { upright: f64 },
@@ -83,7 +82,6 @@ impl LogEvent {
             LogEvent::CalibrationFailed => "CalibrationFailed",
             LogEvent::TrackingAvailable => "TrackingAvailable",
             LogEvent::TrackingUnavailable => "TrackingUnavailable",
-            LogEvent::TrackingLost => "TrackingLost",
             LogEvent::Reanchored { upright } => return ("Reanchored", Some(upright)),
             LogEvent::Cue(Cue::Tone) => "Tone",
             LogEvent::Cue(Cue::Speak) => "Speak",

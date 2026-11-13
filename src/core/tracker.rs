@@ -10,7 +10,7 @@ pub enum Event {
     /// Head orientation. Absolute within one wear period (relative to an arbitrary but fixed frame
     /// chosen by the backend), in the convention of [`Quat::euler`]: pitch > 0 = looking down,
     /// yaw > 0 = turned left, roll > 0 = tilted right. The frame may change after `Worn(true)`, or
-    /// when tracking resumes after a long `Available(false)`; the session recalibrates in both cases.
+    /// when tracking resumes after `Available(false)`; the session recalibrates in both cases.
     /// `at` is when the backend received the sample the pose comes from (the best available
     /// measure of when it was measured), which is earlier than delivery if the backend holds
     /// samples back; smoothing and slouch timing run on it. It must not go backwards, nor be
@@ -21,7 +21,8 @@ pub enum Event {
     Worn(bool),
     /// Whether the device can deliver head tracking right now, beyond being worn (a device
     /// precondition; see [`TrackerTraits::tracking_hint`]). Sent on change; assume available until told otherwise.
-    /// While available, silence means the head is still.
+    /// While available, silence means the head is still. Poses may still arrive after
+    /// `Available(false)` (held or trailing data); they do not end it, `Available(true)` does.
     Available(bool),
 }
 

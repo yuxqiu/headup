@@ -38,6 +38,7 @@ phrases! {
     SitUpright => "sit_upright",
     Calibrated => "calibrated",
     Moved => "moved",
+    MoveHead => "move_head",
     LiftHead => "lift_head",
 }
 

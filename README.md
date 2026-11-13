@@ -72,7 +72,8 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
 ## What to expect
 
 1. **Calibration.** Once audio is playing, a voice asks you to sit upright and look straight ahead. Hold still for about
-   3 seconds. If you move, it asks again.
+   3 seconds. If you move, it asks again. If it hears nothing from the earbuds, it asks you to move your head a
+   little and then hold still.
 2. **Monitoring.** Looking down counts. Looking up, or turning your head to another screen, does not.
    Short glances down are fine.
 3. **Reminders.** If you keep looking down (more than about 20°):
@@ -86,9 +87,9 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
 
 4. **Taking an earbud off** pauses monitoring, because head tracking needs both earbuds. When both are
    back on, headup calibrates again, because the earbuds sit slightly differently each time.
-5. **Pausing your audio** for more than about 30 seconds pauses monitoring too. When you play
-   something again, headup asks you to sit upright once more. Shorter pauses, like skipping a track,
-   don't interrupt.
+5. **Pausing your audio**, or playing something on another device, pauses monitoring too: your head
+   may move while headup cannot see it. When you play something on this computer again, headup asks
+   you to sit upright once more. Skipping a track doesn't interrupt.
 
 ## License
 

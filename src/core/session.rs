@@ -6,23 +6,26 @@ use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
 use super::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::{Context, Result, ensure};
+use std::collections::VecDeque;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::time::Instant;
 
+/// How long the head must hold steady, after the prompt, to calibrate.
 const CALIBRATION: Duration = Duration::from_secs(3);
 const CALIBRATION_MAX_P90_DEG: f64 = 8.0;
+/// An attempt fails ("you moved") if the head is not steady for CALIBRATION this long after the
+/// attempt's first pose.
+const CALIBRATION_ATTEMPT: Duration = Duration::from_secs(5);
 const CALIBRATION_TRIES: usize = 4;
+/// A still head may send nothing. With no pose since the prompt after this long, ask the user to
+/// move a little, and again every NUDGE_EVERY.
+const NUDGE_AFTER: Duration = Duration::from_secs(5);
+const NUDGE_EVERY: Duration = Duration::from_secs(15);
 /// After a failed calibration (head kept moving), wait this long before asking again.
 const CALIBRATION_RETRY: Duration = Duration::from_secs(60);
 /// Say that headup is waiting if head tracking has not started after this long.
 const TRACKING_WAIT_NOTE: Duration = Duration::from_secs(5);
-/// Tracker unavailable this long counts as tracking lost. Shorter gaps carry the posture over;
-/// after a longer gap the head may have moved unseen and resumed tracking may measure from a new
-/// pose, so headup drops its slouch state (no reminders from stale data) and recalibrates when
-/// tracking resumes. Silence while available just means the head is still and never ends
-/// monitoring.
-const TRACKING_LOST: Duration = Duration::from_secs(30);
 /// How often the live status line is refreshed.
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 /// How long to wait for a tracker event before re-checking timers.
@@ -33,8 +36,11 @@ const POLL: Duration = Duration::from_secs(1);
 enum Interrupt {
     /// The earbuds were taken off.
     Removed,
-    /// The tracker was unavailable for TRACKING_LOST: the posture reference can't be trusted.
-    TrackingLost,
+    /// The tracker became unavailable. The head may move unseen until it resumes, and resumed
+    /// tracking may measure from a new pose, so the posture reference can't be trusted: drop the
+    /// slouch state (no reminders from stale data) and recalibrate once tracking resumes.
+    /// Silence while available just means the head is still and never ends a cycle.
+    Unavailable,
     /// A tracker or output error: ends the session.
     Fatal(anyhow::Error),
 }
@@ -106,25 +112,31 @@ impl Timeline {
     }
 }
 
+/// Whether head tracking flows, as the tracker has shown it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Tracking {
+    /// Nothing heard yet: silence may mean tracking has not started, not a still head.
+    Starting,
+    /// A pose or `Available(true)`: silence means the head is still.
+    Available,
+    /// `Available(false)`: the head may move unseen. Poses still arriving (data measured
+    /// before, or trailing data) do not end it; only `Available(true)` does.
+    Unavailable,
+}
+
 /// What the tracker has reported about itself.
 struct TrackerStatus {
     worn: bool,
-    /// When the tracker last became unavailable (`None` while available).
-    unavailable_since: Option<Duration>,
+    tracking: Tracking,
 }
 
 impl TrackerStatus {
-    /// Assume worn and available until told otherwise.
+    /// Assume worn until told otherwise.
     fn new() -> Self {
         TrackerStatus {
             worn: true,
-            unavailable_since: None,
+            tracking: Tracking::Starting,
         }
-    }
-
-    /// A pose proves tracking works, whether or not an `Available(true)` was announced.
-    fn pose_arrived(&mut self) {
-        self.unavailable_since = None;
     }
 
     /// The wear state changed; `true` if the earbuds were just taken off.
@@ -132,64 +144,76 @@ impl TrackerStatus {
         std::mem::replace(&mut self.worn, worn) && !worn
     }
 
-    fn availability_changed(&mut self, available: bool, now: Duration) {
-        self.unavailable_since = (!available).then_some(now);
+    /// A pose arrived: tracking has started.
+    fn pose_arrived(&mut self) {
+        if self.tracking == Tracking::Starting {
+            self.tracking = Tracking::Available;
+        }
     }
 
-    /// Unavailable for TRACKING_LOST by `now`.
-    fn lost(&self, now: Duration) -> bool {
-        self.unavailable_since
-            .is_some_and(|since| now - since >= TRACKING_LOST)
+    /// The tracker reported its availability; `true` if tracking that was available just stopped.
+    fn availability_changed(&mut self, available: bool) -> bool {
+        let next = if available {
+            Tracking::Available
+        } else {
+            Tracking::Unavailable
+        };
+        std::mem::replace(&mut self.tracking, next) == Tracking::Available && !available
     }
 }
 
-/// One calibration attempt: the poses measured in a window that opens when the prompt ends and
-/// closes once the delivered posture covers CALIBRATION.
-struct CalibrationWindow {
+/// One calibration attempt: the poses measured since it started. It succeeds once the delivered
+/// posture shows the head steady for CALIBRATION: the latest pose measured at least CALIBRATION
+/// before the known end and every pose after it are within CALIBRATION_MAX_P90_DEG (90th
+/// percentile) of their mean. Silence after a pose means the head stayed there. Only poses
+/// measured after the attempt started count, so data from before the prompt never calibrates.
+struct CalibrationAttempt {
     start: Duration,
-    samples: Vec<Quat>,
+    /// Poses (measurement time, orientation) from the latest one that can still begin a steady
+    /// span, oldest first.
+    poses: VecDeque<(Duration, Quat)>,
+    /// When the attempt's first pose was measured.
+    first: Option<Duration>,
 }
 
-/// What an attempt measured: the mean pose, and the 90th-percentile angle (degrees) of the
-/// samples from it.
+/// A steady span: the mean pose, and the 90th-percentile angle (degrees) of the poses from it.
 struct CalibrationResult {
     mean: Quat,
     p90: f64,
     samples: usize,
 }
 
-impl CalibrationWindow {
-    fn open(start: Duration) -> Self {
-        CalibrationWindow {
+impl CalibrationAttempt {
+    fn start(start: Duration) -> Self {
+        CalibrationAttempt {
             start,
-            samples: Vec::new(),
+            poses: VecDeque::new(),
+            first: None,
         }
     }
 
-    /// The window is complete once the delivered posture reaches this.
-    fn closes_at(&self) -> Duration {
-        self.start + CALIBRATION
-    }
-
-    /// A pose measured at `measured`; poses measured before the window opened (during the
+    /// A pose measured at `measured`; poses measured before the attempt started (during the
     /// prompt, delivered late by a backend that holds samples) don't count.
     fn add(&mut self, measured: Duration, q: Quat) {
         if measured >= self.start {
-            self.samples.push(q);
+            self.first.get_or_insert(measured);
+            self.poses.push_back((measured, q));
         }
     }
 
-    /// The result; with no pose in the window the head was still, so `last` counts.
-    fn result(mut self, last: Quat) -> CalibrationResult {
-        if self.samples.is_empty() {
-            self.samples.push(last);
-        }
-        let (mean, p90) = mean_and_p90(&self.samples);
-        CalibrationResult {
+    /// The span of CALIBRATION ending at `known` (how far the delivered posture reaches), if
+    /// poses cover it.
+    fn span(&mut self, known: Duration) -> Option<CalibrationResult> {
+        let from = known.checked_sub(CALIBRATION)?;
+        let begin = self.poses.iter().rposition(|&(m, _)| m <= from)?;
+        self.poses.drain(..begin);
+        let samples: Vec<Quat> = self.poses.iter().map(|&(_, q)| q).collect();
+        let (mean, p90) = mean_and_p90(&samples);
+        Some(CalibrationResult {
             mean,
             p90,
-            samples: self.samples.len(),
-        }
+            samples: samples.len(),
+        })
     }
 }
 
@@ -202,7 +226,7 @@ struct Session<'a, T: HeadTracker, C: CueSink> {
 }
 
 /// Calibrate, then monitor; pause while the earbuds are off and recalibrate when they are put back
-/// on (reseating changes how the earbud sits) or after tracking was lost. Returns only with a
+/// on (reseating changes how the earbud sits) or after tracking was unavailable. Returns only with a
 /// tracker error; the caller handles Ctrl-C.
 pub async fn run<T: HeadTracker, C: CueSink>(
     tracker: &mut T,
@@ -219,7 +243,7 @@ pub async fn run<T: HeadTracker, C: CueSink>(
     loop {
         match s.cycle().await {
             Ok(()) | Err(Interrupt::Removed) => {}
-            Err(Interrupt::TrackingLost) => s.on_tracking_lost()?,
+            Err(Interrupt::Unavailable) => s.on_unavailable(),
             Err(Interrupt::Fatal(e)) => return Err(e),
         }
     }
@@ -266,26 +290,25 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 }
             }
             Some(Event::Available(a)) => {
-                let now = self.now();
-                self.status.availability_changed(a, now);
                 self.rec.event(if a {
                     LogEvent::TrackingAvailable
                 } else {
                     LogEvent::TrackingUnavailable
                 })?;
+                if self.status.availability_changed(a) {
+                    return Err(Interrupt::Unavailable);
+                }
             }
             None => {}
         }
         Ok(None)
     }
 
-    fn on_tracking_lost(&mut self) -> Result<()> {
-        self.rec.event(LogEvent::TrackingLost)?;
+    fn on_unavailable(&mut self) {
         let hint = self.tracking_hint_suffix();
         self.rec.note(&format!(
-            "head tracking stopped; will recalibrate when it resumes{hint}"
+            "head tracking is unavailable; will calibrate when it resumes{hint}"
         ));
-        Ok(())
     }
 
     async fn wait_until_worn(&mut self) -> Flow<()> {
@@ -310,15 +333,13 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         Ok(())
     }
 
-    /// Wait for the first head pose. Tracking can take a while to start (until the device's
-    /// precondition is met; see `TrackerTraits`), so this waits without a deadline.
-    async fn first_pose(&mut self) -> Flow<Quat> {
+    /// Wait until tracking is available (see [`Tracking`]). It can take a while to start (until the
+    /// device's precondition is met; see `TrackerTraits`), so this waits without a deadline.
+    async fn wait_for_tracking(&mut self) -> Flow<()> {
         let start = self.now();
         let mut noted = false;
-        loop {
-            if let Some((_, q)) = self.next(POLL).await? {
-                return Ok(q);
-            }
+        while self.status.tracking != Tracking::Available {
+            self.next(POLL).await?;
             if !noted && self.now() - start >= TRACKING_WAIT_NOTE {
                 let hint = self.tracking_hint_suffix();
                 self.rec.note(&format!(
@@ -327,37 +348,52 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 noted = true;
             }
         }
+        Ok(())
     }
 
-    /// Capture the upright pose: a [`CalibrationWindow`] of poses whose 90th-percentile deviation
-    /// from their mean is under CALIBRATION_MAX_P90_DEG. `None` if the head kept moving on every
-    /// attempt.
+    /// Capture the upright pose: the head held steady for CALIBRATION after the prompt (see
+    /// [`CalibrationAttempt`]). A still head may send nothing, so with no pose yet the user is
+    /// asked to move a little. `None` if the head kept moving on every attempt.
     async fn calibrate(&mut self) -> Flow<Option<Quat>> {
-        let mut last = self.first_pose().await?;
+        self.wait_for_tracking().await?;
         self.cues.say(Phrase::SitUpright).await?;
         for attempt in 1..=CALIBRATION_TRIES {
-            let mut window = CalibrationWindow::open(self.now());
-            while self.time.known_until() < window.closes_at() {
+            let mut cal = CalibrationAttempt::start(self.now());
+            let mut nudge_at = cal.start + NUDGE_AFTER;
+            let result = loop {
                 if let Some((measured, q)) = self.next(Duration::from_millis(200)).await? {
-                    last = q;
-                    window.add(measured, q);
+                    cal.add(measured, q);
                 }
-            }
-            let result = window.result(last);
+                let known = self.time.known_until();
+                let span = cal.span(known);
+                match (span, cal.first) {
+                    (Some(span), _) if span.p90 < CALIBRATION_MAX_P90_DEG => break Some(span),
+                    (span, Some(first)) if known >= first + CALIBRATION_ATTEMPT => break span,
+                    (_, None) if self.now() >= nudge_at => {
+                        self.cues.say(Phrase::MoveHead).await?;
+                        nudge_at = self.now() + NUDGE_EVERY;
+                    }
+                    _ => {}
+                }
+            };
+            let (samples, p90) = result
+                .as_ref()
+                .map_or((0, f64::NAN), |r| (r.samples, r.p90));
             self.rec.note(&format!(
-                "calibration attempt {attempt}: {} samples, p90 deviation {:.1}°",
-                result.samples, result.p90
+                "calibration attempt {attempt}: {samples} samples, p90 deviation {p90:.1}°"
             ));
-            if result.p90 < CALIBRATION_MAX_P90_DEG {
+            if let Some(span) = result
+                && span.p90 < CALIBRATION_MAX_P90_DEG
+            {
                 self.cues.say(Phrase::Calibrated).await?;
-                return Ok(Some(result.mean));
+                return Ok(Some(span.mean));
             }
             self.cues.say(Phrase::Moved).await?;
         }
         Ok(None)
     }
 
-    /// Monitor until interrupted: earbuds off, tracking lost, or an error.
+    /// Monitor until interrupted: earbuds off, tracking unavailable, or an error.
     async fn monitor(&mut self, baseline: Quat) -> Flow<()> {
         let mut det = Detector::new(detector_config(self.tracker.traits()));
         let mut last_status: Option<Duration> = None;
@@ -370,7 +406,6 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             let pose = self.next(wait).await?;
             let t = self.now();
             let cues = match pose {
-                None if self.status.lost(t) => return Err(Interrupt::TrackingLost),
                 None => det.tick(self.time.known_until()),
                 Some((measured, q)) => {
                     let angles = (baseline.conj() * q).euler();
@@ -708,72 +743,112 @@ mod tests {
         assert_eq!(run.count("say SitUpright"), 2, "{:?}", run.names());
     }
 
+    // Slouch from ~4 s; tracking becomes unavailable at 6 s, before the tone (~14 s) is due. No
+    // reminder may fire from that stale posture, and tracking that resumes is calibrated again,
+    // however short the gap.
     #[tokio::test(start_paused = true)]
-    async fn short_unavailability_carries_posture_over() {
-        let script = vec![
-            Poses(0.0, secs(4.0)),
-            Ev(Event::Available(false)),
-            Quiet(secs(20.0)),
-            Ev(Event::Available(true)),
-            Quiet(secs(20.0)),
-        ];
-        let run = simulate(script, Sim::default()).await;
-        assert_eq!(run.events, ["TrackingUnavailable", "TrackingAvailable"]);
-        assert_eq!(
-            run.names(),
-            ["say SitUpright", "say Calibrated"],
-            "no recalibration"
-        );
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn long_unavailability_drops_posture_and_recalibrates() {
-        // Slouch from ~4 s; tracking becomes unavailable at 6 s. Tone (~14 s) and Speak (~34 s)
-        // still fire within the 30 s grace, but tracking is lost at 36 s, so the 60 s notification
-        // (~64 s) must not fire from that stale data.
+    async fn unavailability_drops_the_slouch_and_recalibrates() {
         let script = vec![
             Poses(0.0, secs(4.0)),
             Poses(40.0, secs(2.0)),
             Ev(Event::Available(false)),
-            Quiet(secs(70.0)),
+            Quiet(secs(20.0)),
             Ev(Event::Available(true)),
             Poses(0.0, secs(4.0)),
         ];
         let run = simulate(script, Sim::default()).await;
-        assert_eq!(
-            run.events,
-            [
-                "TrackingUnavailable",
-                "Tone",
-                "Speak",
-                "TrackingLost",
-                "TrackingAvailable"
-            ]
-        );
-        assert_eq!(run.count("Notify"), 0, "{:?}", run.names());
+        assert_eq!(run.events, ["TrackingUnavailable", "TrackingAvailable"]);
         let prompts = run.count("say SitUpright");
         assert_eq!(prompts, 2, "recalibrates after resuming: {:?}", run.names());
     }
 
-    // Tracking resumes without an `Available(true)` announcement: the poses themselves prove it,
-    // and a still head afterwards must not count as lost again.
+    // A still head sends no poses. When tracking resumes, headup asks the user to sit upright at
+    // once; with no pose 5 s later it asks them to move a little, and calibrates on the poses that
+    // follow: moving, then holding still, does not count as "you moved".
     #[tokio::test(start_paused = true)]
-    async fn poses_end_unavailability_without_announcement() {
+    async fn still_head_is_asked_to_move_when_tracking_resumes() {
         let script = vec![
             Poses(0.0, secs(4.0)),
             Ev(Event::Available(false)),
-            Quiet(secs(35.0)),
+            Quiet(secs(10.0)),
+            Ev(Event::Available(true)),
+            Quiet(secs(6.0)),
+            Wobble(0.0, 20.0, secs(1.0)),
             Poses(0.0, secs(4.0)),
-            Quiet(secs(60.0)),
         ];
         let run = simulate(script, Sim::default()).await;
-        assert_eq!(run.events, ["TrackingUnavailable", "TrackingLost"]);
+        assert_eq!(
+            run.names(),
+            [
+                "say SitUpright",
+                "say Calibrated",
+                "say SitUpright",
+                "say MoveHead",
+                "say Calibrated"
+            ]
+        );
+    }
+
+    // The same after putting the earbuds back on: the calibration does not depend on the tracker
+    // sending poses by itself.
+    #[tokio::test(start_paused = true)]
+    async fn still_head_is_asked_to_move_after_rewearing() {
+        let script = vec![
+            Poses(0.0, secs(4.0)),
+            Ev(Event::Worn(false)),
+            Quiet(secs(5.0)),
+            Ev(Event::Worn(true)),
+            Quiet(secs(6.0)),
+            Poses(0.0, secs(4.0)),
+        ];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(run.count("say MoveHead"), 1, "{:?}", run.names());
+        assert_eq!(run.count("say Calibrated"), 2, "{:?}", run.names());
+    }
+
+    // The nudge repeats while nothing arrives.
+    #[tokio::test(start_paused = true)]
+    async fn nudge_repeats_while_no_pose_arrives() {
+        let script = vec![
+            Poses(0.0, secs(4.0)),
+            Ev(Event::Available(false)),
+            Ev(Event::Available(true)),
+            Quiet(secs(36.0)),
+            Poses(0.0, secs(4.0)),
+        ];
+        let run = simulate(script, Sim::default()).await;
+        // Nudges at 5, 20 and 35 s after the prompt.
+        assert_eq!(run.count("say MoveHead"), 3, "{:?}", run.names());
+    }
+
+    // At startup no pose has arrived yet, so silence may mean tracking has not started (no audio):
+    // headup waits without prompting or nudging.
+    #[tokio::test(start_paused = true)]
+    async fn startup_waits_silently_for_tracking() {
+        let script = vec![Quiet(secs(30.0)), Poses(0.0, secs(4.0))];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
+    }
+
+    // Poses can still arrive after the tracker becomes unavailable (data measured before it, or
+    // trailing data). They do not start a calibration: that waits for `Available(true)`.
+    #[tokio::test(start_paused = true)]
+    async fn poses_after_unavailability_do_not_start_calibration() {
+        let script = vec![
+            Poses(0.0, secs(4.0)),
+            Ev(Event::Available(false)),
+            Poses(0.0, secs(1.0)),
+            Quiet(secs(40.0)),
+        ];
+        let run = simulate(script, Sim::default()).await;
+        assert_eq!(run.events, ["TrackingUnavailable"]);
+        assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
     }
 
     #[tokio::test(start_paused = true)]
     async fn failed_calibration_retries_later() {
         let script = vec![
-            Wobble(0.0, 30.0, secs(14.0)), // keeps moving through all 4 attempts
+            Wobble(0.0, 30.0, secs(30.0)), // keeps moving through all 4 attempts
             Quiet(CALIBRATION_RETRY + secs(1.0)),
             Poses(0.0, secs(4.0)),
         ];
@@ -782,7 +857,8 @@ mod tests {
         let expected: Vec<&str> = ["say SitUpright"]
             .into_iter()
             .chain(["say Moved"; CALIBRATION_TRIES])
-            .chain(["say SitUpright", "say Calibrated"])
+            // The retry prompts at once; the head is still and silent, so it is asked to move.
+            .chain(["say SitUpright", "say MoveHead", "say Calibrated"])
             .collect();
         assert_eq!(run.names(), expected);
     }

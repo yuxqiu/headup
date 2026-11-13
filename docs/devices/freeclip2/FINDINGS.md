@@ -243,7 +243,10 @@ Evidence: `data/reclaim_test.log` (controlled) and session 4's raw log (`--raw-l
   2. During playback, a still head produces the glide and then silence.
   The glide suppression and the "silence = still" rule stay.
 - Consequence: silence cannot signal "audio stopped". The backend reports 43/54 for this computer's address as
-  `Event::Available`, and headup ends monitoring only after 30 s of *unavailability*.
+  `Event::Available`, and headup ends monitoring when tracking becomes unavailable (DECISIONS "Recalibrate after
+  every unavailability"). The earbuds report this computer's audio stop ~5 s after it stops
+  (data/grounding_test3.log: audio off 75.11 s → `…03` 80.18 s; 116.79 → 121.86 s), so a track skip does not
+  show as one.
 
 ## Tracking outage (2026-11-11, cause not observable over MBB)
 
