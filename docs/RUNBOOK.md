@@ -12,7 +12,9 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
 
 - Probe an MBB command: `python3 -I tools/freeclip2/device/probe.py C0:DA:5E:F1:A0:A6 '43/90:1='`
 - Troubleshoot a device backend: `headup --raw-log FILE` appends every raw sample (time, seq, quaternion as sent)
-  and every other frame as JSON lines. Rebuilt orientations are in `--log` (pitch/yaw/roll).
+  and every other frame as JSON lines. Rebuilt orientations are in `--log` (pitch/yaw/roll). A FreeClip 2
+  re-centre the rebuilder's glide model did not follow is logged as `{"missed_glide":SEQ}` and printed as a warning
+  on stderr (the journal for the service).
 - Log lines in both files start with `t`, wall-clock Unix time in seconds (ms precision). Convert in Python with
   `datetime.fromtimestamp(t)`; subtract the first `t` for seconds since start.
 - Stream head pose: `python3 -I tools/freeclip2/device/headpose.py C0:DA:5E:F1:A0:A6 SECONDS [data/out.csv]`
@@ -49,6 +51,9 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
   - Other images (e.g. image 3, the Bluetooth core): add `--no-stub` to `disasm.py`.
   - Check recorded re-centres against the firmware's glide and stillness rules (exits non-zero if no glide fits):
     `python3 -I tools/freeclip2/recordings/glide_check.py data/*_raw.jsonl`
+- Turn a raw log into a publishable test fixture (samples only, time since the first sample; no addresses, serial
+  or wall-clock time): `python3 -I tools/freeclip2/recordings/to_fixture.py data/X_raw.jsonl tests/fixtures/freeclip2/X.csv`.
+  Add the name to `RECORDINGS` in `src/devices/freeclip2/rebuild.rs`.
   - Guided live test (headup stopped; prompts are spoken, printed and shown as notifications; run in `nix develop`):
     `python3 -I tools/freeclip2/device/grounding_test.py C0:DA:5E:F1:A0:A6 bluez_output.C0_DA_5E_F1_A0_A6.1 data/grounding_test.log`
     (stops with a non-zero exit if the RFCOMM link drops or the silence player dies)

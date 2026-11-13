@@ -65,8 +65,7 @@ pub fn read_csv(name: &str) -> Vec<Row> {
 }
 
 /// Feeds a recording to a [`Link`] as the socket would: each sample as a 43/89 frame at its
-/// recorded time, and the link's timer whenever that falls due first. All times are exact
-/// `Instant`s.
+/// recorded time. All times are exact `Instant`s.
 pub struct Replay {
     link: Link,
     rows: VecDeque<(Instant, Vec<u8>)>,
@@ -90,30 +89,16 @@ impl Replay {
         }
     }
 
-    /// The next event and when it is handed out; `None` once the recording and everything the
-    /// link held are out.
+    /// The next event and when it is handed out. `None` once the recording is used up; samples
+    /// held for a glide that has not ended stay held.
     pub fn next(&mut self) -> Option<(Instant, Event)> {
         loop {
             if let Some(event) = self.link.next_event() {
                 return Some((self.now, event));
             }
-            let wake = self.link.next_wake();
-            let row = self.rows.front().map(|&(at, _)| at);
-            let feed_row = match (row, wake) {
-                (Some(at), Some(w)) => at <= w,
-                (Some(_), None) => true,
-                (None, Some(_)) => false,
-                (None, None) => return None,
-            };
-            if feed_row {
-                let (at, bytes) = self.rows.pop_front().unwrap();
-                self.now = at;
-                self.link.on_bytes(at, &bytes).unwrap();
-            } else {
-                let w = wake.unwrap();
-                self.now = w;
-                self.link.on_timer(w);
-            }
+            let (at, bytes) = self.rows.pop_front()?;
+            self.now = at;
+            self.link.on_bytes(at, &bytes).unwrap();
         }
     }
 }

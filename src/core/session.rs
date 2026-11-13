@@ -18,8 +18,8 @@ const CALIBRATION_MAX_P90_DEG: f64 = 8.0;
 /// attempt's first pose.
 const CALIBRATION_ATTEMPT: Duration = Duration::from_secs(5);
 const CALIBRATION_TRIES: usize = 4;
-/// A still head may send nothing. With no pose since the prompt after this long, ask the user to
-/// move a little, and again every NUDGE_EVERY.
+/// Some trackers send nothing while the head is still. With no pose since the prompt after this
+/// long, ask the user to move a little, and again every NUDGE_EVERY.
 const NUDGE_AFTER: Duration = Duration::from_secs(5);
 const NUDGE_EVERY: Duration = Duration::from_secs(15);
 /// After a failed calibration (head kept moving), wait this long before asking again.
@@ -821,8 +821,8 @@ mod tests {
         assert_eq!(run.count("say MoveHead"), 3, "{:?}", run.names());
     }
 
-    // At startup no pose has arrived yet, so silence may mean tracking has not started (no audio):
-    // headup waits without prompting or nudging.
+    // At startup no pose has arrived yet, so silence may mean tracking has not started (e.g. a
+    // device precondition is not met). headup waits without prompting or nudging.
     #[tokio::test(start_paused = true)]
     async fn startup_waits_silently_for_tracking() {
         let script = vec![Quiet(secs(30.0)), Poses(0.0, secs(4.0))];

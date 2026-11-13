@@ -364,7 +364,7 @@
 - Smaller: `LogEvent::parts` (one match), `Quat::dot`, `STATUS_EVERY_S`, documented cue stderr and discovery soft
   fail. The notification text no longer says "for a minute" ("for a while"): the duration is the detector's setting.
 
-## 2026-11-12: Model-based glide release (user)
+## 2026-11-12: Model-based glide release (user) — release, tolerance and the 70-sample hold superseded by "Exact glide model, immediate release" (2026-11-13)
 - The rebuilder now uses the measured glide model (FINDINGS "Glide model checked against every recording"): from the
   pose `P` held before a glide, sample `k` reads `slerp(P, I, (k+1)/69)` and sample 68 is the identity sample
   (`GLIDE_LEN` = 68). It keeps glide hypotheses ("a glide started from this pose"), each alive while every later
@@ -509,7 +509,8 @@
   firmware re-derives `enable` itself on a device change; live, it does not resume the stream, so the re-send is
   required (data/grounding_test3.log; "Live grounding test 3" below).
 - Rejected: tightening `FIT_TOL_DEG` to match the new fit. No recording shows a false glide at 0.5°, and the
-  tolerance also absorbs f32 rounding of real samples.
+  tolerance also absorbs f32 rounding of real samples. (Reversed 2026-11-13: the measured misfit was an `acos` artifact;
+  see "Exact glide model, immediate release".)
 
 ## 2026-11-12: Review of the switch and glide code (independent code-quality review)
 - (Superseded by "Link state: one switch enum, derived availability" below.) `Link`: the three-state switch had a
@@ -698,3 +699,65 @@
   (4.2 s clip); the first poses arrived at 54.9 s and calibration succeeded (39 samples, p90 7.2°, no "You moved").
   Re-wearing calibrated on the new stream's poses (93 samples, p90 0.2°) without a nudge. The 8 s pause kept the
   same stream (seq continued at 2866), so not every gap restarts it.
+
+## 2026-11-13: Exact glide model, immediate release (user)
+- What: the rebuilder releases each raw sample as soon as no live glide hypothesis covers it (about one sample
+  after it arrives), instead of holding every sample until one 70 samples newer arrives and releasing the rest after
+  `QUIET` = 0.2 s of silence. The timer path is gone (`Rebuilder::next_release`/`release`, `Link::on_timer`/
+  `next_wake`, the socket loop's timer branch). This is safe because the glide model is now exact:
+  - `Quat::angle_to` computes `2·atan2(|vec(a·b̄)|, |scalar(a·b̄)|)` on normalised inputs. The old `2·acos(|a·b|)`
+    read ~0.05° (f32 input) to ~0.12° (6-decimal logs) for identical rotations; that artifact was the whole
+    "0.126° worst misfit" (FINDINGS "Re-centre and stillness"). Measured correctly, every recorded glide fits the
+    firmware formula within 0.00015°, and the firmware's glide routine is exact f32 nlerp (read in the listing).
+  - `FIT_TOL_DEG` = 0.001° (was 0.5°): about 7× the worst rounding of the 6-decimal fixtures. Glides from as little
+    as 0.001° are tracked, and a hypothesis started from a moving pose dies at the next sample.
+  - A sample after samples the earbuds did not send (a jump in sequence numbers, or a stream first seen past seq 1)
+    also starts hypotheses "step `k` of a glide whose start was not sent", for `k` up to the number of unsent
+    samples (`Glide::through`, closed form). The earbuds can start sending in the middle of a stream's first
+    re-centre (data/live6_raw.jsonl, stream_restart.csv). A glide whose start did arrive has its own hypothesis.
+  - An identity sample that no hypothesis predicts, with nothing held (the glide's samples already came out), is
+    reported (`Rebuilt::MissedGlide`: stderr warning, `{"missed_glide":SEQ}` in `--raw-log`). It does not trigger
+    recalibration (user).
+- Why (user): the 0.2 s and the 70-sample hold were delays for samples known not to be part of a glide. Rejected
+  first: the 70-sample hold with exact hypotheses (user preferred hiding all errors, then chose this once the model
+  was shown exact): it hides glides outside the model too, but delays every pose and cue by 1.3–2.0 s.
+- Found by the review of the first version (`QUIET` = 0 with the 0.5° tolerance): glides from within 0.5° lost the
+  pose before them (a slow slouch of 0.45° per re-centre read 0.07° after ten), an off-model glide wiped the pose
+  with the miss report blind below ~37°, and a stream resuming mid-glide leaked. All three are fixed and tested.
+- Measured through the real `Rebuilder` on all 17 `data/*_raw.jsonl` against the previous release: no released sample
+  lies inside an exact glide; 561 more real samples come out (the 70-sample fallback used to drop real data before
+  28 glides cut short, e.g. session6 seq 71552: 25 samples at ~53°); one glide sample the old code released (live6,
+  1.25°) is now hidden. At a glide cut short the reference now comes from the glide's start pose instead of the
+  sample 70 before the identity (differences up to 25.7° in session6; the firmware's own reference there is a pose it
+  never sends). One report: data/live4_raw.jsonl seq 34, an identity sample with no glide before it (FINDINGS).
+  End-to-end replays (hold_test, live_35hz, stream_restart): tones 0.2 s earlier, recovery 1.3–2.0 s earlier,
+  calibration 0.2–2.5 s earlier.
+- Remaining risk: firmware glide behaviour outside the model leaks as movement until its identity sample; it is
+  reported, and the freeclip2-firmware skill checks the formula on new firmware (pass: misfit below 0.001°).
+- Tests:
+  - New: `still_pose_comes_out_at_once`, `noisy_still_pose_comes_out_at_once`, `sitting_up_comes_out_at_once` (replace
+    the three "when the stream goes quiet" tests); `cut_short_glide_keeps_the_pose_before_it`;
+    `glide_off_the_model_is_reported` (10–40°); `real_glides_are_not_reported_as_missed`;
+    `glide_with_an_unseen_start_is_hidden`; `small_recentres_keep_the_pose`. Each fails without the part it covers.
+  - Changed: the synthetic glides in `hides_slow_glide_at_any_sample_rate` and `held_then_glide` use the firmware
+    formula (straight-line ramps fitted only the 0.5° tolerance); `live_35hz_session_end_to_end` drops 4 × 67 (the
+    extra sample the 0.5° tolerance dropped is real data). Removed: `timer_at_next_wake_makes_progress` (no timer).
+- Tools: `tools/freeclip2/quat.py` `angle`/`between` use the same atan2 form; `glide_check.py` now reports a max
+  misfit of 0.00014° on `data/`.
+
+## 2026-11-13: Publish selected recordings as fixtures (user: "you pick")
+- What: six raw logs from `data/` became fixtures in `tests/fixtures/freeclip2/` (1.7 MB): `session6.csv` (30 min of
+  normal work, 85 re-centres, glides cut short), `session7.csv`, `session4.csv` (glides cut short), `live4.csv`
+  (turn then slouch, three streams, the identity sample without a glide), `live6.csv` (a stream starting mid-glide)
+  and `gap_live.csv` (audio gaps). Every fixture runs in `real_glides_are_not_reported_as_missed` and the new
+  `no_recorded_glide_comes_out` (no sample of a glide found by the literal firmware formula comes out).
+- Why: `data/` is gitignored but holds the best test material; the review findings and the exact-model change were
+  all measured on it.
+- Privacy: `data/` itself is not published. It holds the earbuds' serial number (data/probe_01_sanity.log, 1/7
+  TLV 9), the phone's Bluetooth address (43/54 TLV 5 in several raw logs) and wall-clock times. The fixtures keep
+  only `t` since the first sample, `seq` and the quaternion (`tools/freeclip2/recordings/to_fixture.py`); a scan for
+  addresses, the serial and Unix times found none. The earbuds' and this computer's addresses were already public
+  (RUNBOOK, a `protocol.rs` test).
+- Rejected: the other raw logs (live2/3/5/7, refusal, smoke, outage2, session2/8): their glides are covered by the
+  selection. Kept out entirely: `research/` (vendor APK, decompiled code, firmware: not ours to publish).
+

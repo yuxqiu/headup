@@ -95,13 +95,8 @@ async fn stream_restart_end_to_end() {
 #[tokio::test(start_paused = true)]
 async fn live_35hz_session_end_to_end() {
     let rows = read_csv("live_35hz.csv");
-    // Each glide's 67 samples, plus the old stream's last sample at the restart near the start
-    // (within the fit tolerance of a glide from the pose before it, so dropped as one).
-    assert_eq!(
-        rows.len() - replay(&rows).len(),
-        4 * 67 + 1,
-        "glides dropped"
-    );
+    // Exactly each glide's 67 samples.
+    assert_eq!(rows.len() - replay(&rows).len(), 4 * 67, "glides dropped");
     let cues = session_cues("live_35hz.csv").await;
     assert_eq!(kinds(&cues), ["Tone", "Recovered"], "cues: {cues:?}");
 }

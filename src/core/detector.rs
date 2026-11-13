@@ -55,7 +55,7 @@ pub struct Update {
 impl Default for Config {
     fn default() -> Self {
         Config {
-            // Same as a per-sample weight of 0.15 at 50 Hz: -0.02 s / ln(0.85).
+            // Time constant of the smoothing (DECISIONS "Posture logic redesign").
             smoothing: Duration::from_millis(123),
             on_deg: 20.0,
             off_deg: 15.0,

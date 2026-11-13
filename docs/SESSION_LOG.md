@@ -519,3 +519,17 @@
 - `Tracking { Starting, Available, Unavailable }` in `TrackerStatus` replaces `available` + `tracking_seen` (user).
 - Live nudge test (data/live7*): still head after a pause got the nudge, moved, calibrated; re-wear calibrated on the
   new stream. Service restarted. Staged.
+
+## 2026-11-13 16:00 UTC
+- Rebuilder: dropped the `QUIET` timer and the 70-sample hold; each sample comes out as soon as no glide hypothesis
+  covers it. A thermo review of the first version (0.5° tolerance) found three regressions (small glides lost the
+  pose, off-model glides wiped it with a blind miss report, a stream resuming mid-glide leaked).
+- Research: the "0.126° glide misfit" was an `acos` precision artifact (Rust `Quat::angle_to`, `tools/freeclip2/quat.py`);
+  the firmware's glide routine is exact f32 nlerp (listing read: `0x600fa45a`, `0x600ff572`), and recorded glides fit
+  within 0.00015°. Two streams start mid-glide (live6, stream_restart): their first ~230 samples were never sent.
+- Final design (user chose over the 70-sample hold): precise `angle_to`, `FIT_TOL_DEG` = 0.001°, unseen-start glide
+  hypotheses bounded by the number of unsent samples, `MissedGlide` report without recalibration. Measured on all 17
+  raw logs: no glide sample released, 561 real samples kept that the old fallback dropped.
+- Core review: wording fixes and the `Available(false)` obligation in `tracker.rs`.
+- Privacy check of `data/` (serial number, phone address, wall-clock times); six recordings converted to fixtures
+  with the new `to_fixture.py`. 78 tests, `nix flake check` pass. All staged, not committed.

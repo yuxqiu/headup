@@ -84,23 +84,14 @@ impl HeadTracker for FreeClip2 {
             if let Some(event) = self.link.next_event() {
                 return Ok(Some(event));
             }
-            // Wake for whichever comes first: the caller's deadline or the protocol's timer.
-            let wake = self.link.next_wake().map_or(deadline, |w| w.min(deadline));
             let mut buf = [0u8; 1024];
-            match tokio::time::timeout_at(wake, self.stream.read(&mut buf)).await {
-                Ok(read) => {
-                    let n = read.context("RFCOMM read")?;
-                    ensure!(n > 0, "earbuds closed the connection");
-                    self.link.on_bytes(Instant::now(), &buf[..n])?;
-                }
-                Err(_) => {
-                    let now = Instant::now();
-                    self.link.on_timer(now);
-                    if now >= deadline {
-                        return Ok(self.link.next_event());
-                    }
-                }
-            }
+            let Ok(read) = tokio::time::timeout_at(deadline, self.stream.read(&mut buf)).await
+            else {
+                return Ok(None);
+            };
+            let n = read.context("RFCOMM read")?;
+            ensure!(n > 0, "earbuds closed the connection");
+            self.link.on_bytes(Instant::now(), &buf[..n])?;
         }
     }
 

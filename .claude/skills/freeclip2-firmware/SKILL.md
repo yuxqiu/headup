@@ -57,9 +57,10 @@ addresses in FINDINGS "Firmware head-tracking logic"):
    parameter setter; then check new recordings with
    `python3 -I tools/freeclip2/recordings/glide_check.py data/*_raw.jsonl` and replay recordings with `cargo test`.
    Pass: the glide length mode is 68 (`GLIDE_LEN` in `tools/freeclip2/quat.py` and `rebuild.rs`) and the clean-glide
-   misfit max stays below ~0.15°; the still-run median should stay near the firmware threshold (208 on 526). The
-   share of re-centres at 68 is not a criterion: movement cuts many glides short. 526 data: "re-centres: 138; glide
-   length mode 68 (60 of 138)", clean glides 50, misfit max 0.126°, still run median 213.5. The tool exits non-zero
+   misfit max stays below 0.001° (`FIT_TOL_DEG` in `rebuild.rs`); the still-run median should stay near the firmware
+   threshold (208 on 526). The share of re-centres at 68 is not a criterion: movement cuts many glides short. 526
+   data (2026-11-13): "re-centres: 156; glide length mode 68 (91 of 156)", clean glides 57, misfit max 0.00014°,
+   still run median 214. The tool exits non-zero
    when no glide fits the formula.
 7. The 43/54 state-byte builder (`connected | audio << 1`) and the 0x8406 peer-link message behind reply 1.
 

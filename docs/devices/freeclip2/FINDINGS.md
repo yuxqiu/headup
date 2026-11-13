@@ -583,6 +583,36 @@ the firmware; they are read below ("Re-centre and stillness"). The chain, from t
   `0x600ff572`). `b` is `rel` on the trigger sample and `I` afterwards, so the glide is `nlerp(I, G0, (68−k)/69)`
   whatever the head does: **the output during a countdown never depends on the input.** `pause` goes out with the
   sample (buffer `+20`, `0x600e18b8`); task 40 drops samples whose flag is 1 (`0x7039c9c0`).
+- **The glide arithmetic is exact nlerp in f32** (read 2026-11-13). `0x600fa45a(out, a, b, t)`: if `0 ≤ t ≤ 1` (the
+  `1` is the f32 constant at `0x20007804`, bytes `0000803f`), `out = normalize(t·a + (1 − t)·b)`, otherwise
+  identity. Scale `0x600ff68e` and add `0x600ff5f8` are plain `fmul.s`/`fadd.s` per component; normalize
+  `0x600ff572` sums the squares in f32 (`fmadd.s`), widens it to double (`0x3dcec`), returns identity if it is
+  below `1e-6`, else passes it to `0x60105fc4`, narrows the result (`0x3e4ee`) and divides each component by it
+  (`fdiv.s`). `0x60105fc4` is a soft-float double routine shaped like a square root (halves the exponent by its
+  parity, starts from a table at `0x60116208`) `[inferred: sqrt]`; even an approximate double result is far below
+  f32 precision once narrowed. So the routine itself differs from the f64 formula in `rebuild.rs` by f32 rounding
+  only (order of 1e-4°).
+- **Recorded glides fit the formula to f32 precision** (2026-11-13). The 0.126° "worst misfit" reported before and
+  in DECISIONS was an artifact of measuring angles as `2·acos(|a·b|)` (in `tools/freeclip2/quat.py` and Rust
+  `Quat::angle_to`): near 1 the result is dominated by the inputs' norm error (f32 samples: |norm − 1| up to
+  1e-7, giving ~0.05°; the 6-decimal logs of 2026-11-11: up to 7e-7, giving ~0.12°). Measured as
+  `2·atan2(|vec(a·b̄)|, |scalar(a·b̄)|)` on normalised inputs, every clean glide ≥ 5° in `data/*_raw.jsonl` (76) fits
+  `nlerp(I, P, (68−k)/69)` within 0.00015° (6-decimal logs) and 0.00001° (f32 logs). The first re-centre of a
+  stream follows the same formula exactly.
+- **A stream can resume in the middle of a glide** (data/live6_raw.jsonl, second stream): after an audio gap the
+  sequence restarted at 227 (162 s later) with samples already gliding, from 1.25° to the identity sample at seq 279. The pose the
+  glide started from is not in the stream, so no hypothesis can follow it. The same happened in
+  tests/fixtures/freeclip2/stream_restart.csv (721 → 235, a 0.46° glide). In both, the glide's start is seq 211,
+  where every stream's first re-centre starts: the new stream's first ~230 samples were never sent. In live6 the
+  43/49 and 1/39 frames 4.4 s before the first sample match the stream starting then (226 samples at 52.5 Hz);
+  why its samples were not sent is `[unverified]` (the sample loop sends only while `enable`, `link[1]` and `mode`
+  allow; "43/89 (samples)"). Solving for the glide's start from the first sample after the gap (each step `k`
+  gives one start pose) explains both resumes exactly and matches none of the other 109 resumes in `data/`.
+- **An identity sample without a glide** (data/live4_raw.jsonl, third stream): after a wear flicker (43/37 off and
+  on at the same instant, then 43/88), the stream read identity for seq 1–11, rose to 3.34° by seq 33 and read
+  identity from seq 34 on, with no glide before it. Which firmware path does this is `[unverified]` (candidates:
+  the stage's forced-identity flag `S+28` or its warm-up counter `S+32`). headup's rebuilder reports it as a missed
+  glide and moves its reference to the last pose, the same as for a glide cut short.
 - **Which pose becomes the reference.** During the countdown, the input two samples back; on the step after the
   identity sample (countdown 1), the current input. With a still head that is the held pose. It is not the glide's
   start pose, not the still run's anchor, and not a prediction: the input is the latency-compensated `q`, but its
@@ -614,10 +644,11 @@ the firmware; they are read below ("Re-centre and stillness"). The chain, from t
 - Values: static `P[8] = 200`, `P[12] = 67`; the runtime setter (`0x600fa29e`, from `0x600f9c5c`) overwrites them
   with `6·rate/dec` and `2·rate/dec`. The sensor mode selects `rate`/`dec`: mode 9 → 104 Hz, dec 3 (15 → 120 Hz,
   dec 4; else 100 Hz, dec 3), so **`P[8] = 208`, `N = P[12] = 69`**.
-- Recordings agree (`tools/freeclip2/recordings/glide_check.py`, all `data/*_raw.jsonl`): 138 re-centres, glide
-  length 68 samples from the held pose to the identity sample at every rate seen (39–62 Hz); the formula
-  `nlerp(I, held, (68−k)/69)` fits 50 clean glides within 0.126° (slerp: 0.50°); the still run before a glide has a
-  median of 213.5 samples (threshold 208). So the rule is a sample count, not a duration: ~4 s at 52 Hz, ~6 s at
+- Recordings agree (`tools/freeclip2/recordings/glide_check.py`, all `data/*_raw.jsonl`, rerun 2026-11-13): 156
+  re-centres, glide length 68 samples from the held pose to the identity sample at every rate seen (39–62 Hz); the
+  formula `nlerp(I, held, (68−k)/69)` fits 57 clean glides within 0.00014° (single-precision rounding; the 0.126°
+  reported before was the `acos` artifact described below); the still run before a glide has a median of 214
+  samples (threshold 208). So the rule is a sample count, not a duration: ~4 s at 52 Hz, ~6 s at
   35 Hz.
 - This explains "every stream's first re-centre ends at seq 279–280" (Re-centre model): a new stream's still counter
   starts with the stream, so the first trigger comes after 208 samples and the 69-step glide ends at ~279.
@@ -656,7 +687,7 @@ The earbuds run 7.0.0.526 (MBB 1/7 TLV 7, hardware `HL1SAKM_Ver.A`), the version
 | Stillness: re-centre after 208 samples within 10° on every axis (~4 s at 52 Hz), then the stream pauses; resumes on movement without 43/88 | `0x600fa53c` (P[8] = 208); recordings: median still run 213.5 samples; grounding test 109–129 s; resume when pitch or yaw of the output reaches 4° (roll not checked), 121 of 121 normal resumes ≥ 4.00° | grounded (code + recordings + live); while paused the earbuds re-centre silently every 209 still samples ("Re-centre and stillness") |
 | Stitch `absolute = raw × reference` (`rebuild.rs` `Stitch`) | `0x600ff6b0`: `raw = q ⊗ conj(ref)`, `q` in a gravity-aligned frame (Mahony `0x600ff812`), so a rebase composes on the right | grounded (code); fixed 2026-11-12 (was `reference × raw`); test `nod_after_a_turn_reads_as_pitch`, guided run 1 upright pitch after turns 8.5–9.3° → 0.9–4.4° |
 | Sequence keeps counting through silences | grounding test: 559 → 1300 over 14 s of silence (~53/s) | grounded (live) |
-| Re-centre = 68-sample glide, `nlerp(I, held, (68−k)/69)`, ending in an exact identity sample (`rebuild.rs`) | `0x600fa53c`/`0x600faa4e` (N = 69, nlerp); 138 recorded re-centres, 50 clean glides within 0.126° (`recordings/glide_check.py`) | grounded (code + recordings) |
+| Re-centre = 68-sample glide, `nlerp(I, held, (68−k)/69)`, ending in an exact identity sample (`rebuild.rs`) | `0x600fa53c`/`0x600faa4e` (N = 69, nlerp); 156 recorded re-centres, 57 clean glides within 0.00014° (`recordings/glide_check.py`) | grounded (code + recordings) |
 | 43/90 is harmless; only records the host (`protocol.rs` connect) | handler `0x7039c82e`; mode test and every session sent it | grounded (code); not needed for the stream on this core |
 | Spatial mode (43/180) does not matter | `data/mode_gate_live.jsonl`: off/follow/fixed all stream | grounded (live) |
 | Another device (phone) streaming takes the earbuds over; this computer's audio does not preempt it, and a 43/88 from this computer is then refused (`link.rs` cancels an accepted switch when another device streams) | `data/grounding_test2.log` "phone_takeover": phone `…09` at 124 s; this computer's audio from 134 s gave no `…09`; 43/88 at 144 s → `2=02` | grounded (live) |
@@ -798,7 +829,8 @@ identity sample as ground truth for each glide's end.
   a fixed axis, but the first sample is already about two steps along: in all 60 clean glides from ≥ 10°, the jump
   from `P` to the first glide sample is 1.78–2.07 steps (typically 1.95), and `P` itself was still. (A first version
   of this entry fitted a 67-step ramp from the first glide sample and called that `q_s`; that start was one sample
-  late.) From `P`, 145 of 170 glides fit within 0.5° (median 0.23° for glides from ≥ 10°, 0.11° below).
+  late.) From `P`, 145 of 170 glides fit within 0.5° (median 0.23° for glides from ≥ 10°, 0.11° below). (These
+  misfits were measured with `acos` and are mostly its artifact; "Re-centre and stillness" has the exact fit.)
 - **28 glides (16%) do not fit:** they are cut short (section "Head movement during a glide": the earbuds end a
   glide early when the head moves, and the movement does not show in its readings). The code settles which device
   behaviour it is (2026-11-12, "Re-centre and stillness"): the earbuds move the reference to the input two samples

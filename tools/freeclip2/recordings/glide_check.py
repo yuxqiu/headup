@@ -6,7 +6,7 @@ usage: python3 -I tools/freeclip2/recordings/glide_check.py RAW.jsonl...   (head
 
 For each re-centre (an exact identity sample after others) it reports:
 - glide length: samples from the held pose to the identity sample (7.0.0.526: 68);
-- fit of the firmware formula, nlerp(I, held, (68 - k) / 69) for the k-th sample (526: max ~0.13 deg);
+- fit of the firmware formula, nlerp(I, held, (68 - k) / 69) for the k-th sample (526: max 0.0002 deg, single-precision rounding);
 - still run: samples before the held pose within 10 deg on every axis of the run's first sample (526: > 208).
 """
 import json, os, statistics, sys
@@ -16,7 +16,7 @@ from quat import GLIDE_LEN, IDENTITY, angle, conj, euler, glide_point, mul  # no
 
 RAMP_STEP = 0.05  # deg; walking back, a sample is on the ramp if it is this much farther from I (arbitrary)
 MIN_HELD = 8  # deg; nearer held poses give glides too small to fit meaningfully (arbitrary)
-CUT_SHORT = 3  # deg; a glide off the formula by more than this was cut short by movement (526 clean fits: < 0.13)
+CUT_SHORT = 3  # deg; a glide off the formula by more than this was cut short by movement (526 clean fits: < 0.001)
 STILL_BOX = 10  # deg per Euler axis around the run's first sample; what counts as still (arbitrary)
 
 
@@ -62,7 +62,7 @@ def main(paths):
     if not misfits:
         sys.exit("clean glides: 0; no re-centre fits the firmware formula (did the glide change?)")
     print(f"clean glides: {len(misfits)}; firmware formula misfit median {statistics.median(misfits):.3f} deg, "
-          f"max {max(misfits):.3f} deg")
+          f"max {max(misfits):.5f} deg")
     if not still:
         sys.exit("still run before the glide: none measured")
     print(f"still run before the glide: median {statistics.median(still)} samples "

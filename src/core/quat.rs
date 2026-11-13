@@ -40,10 +40,13 @@ impl Quat {
         self.w * b.w + self.x * b.x + self.y * b.y + self.z * b.z
     }
 
-    /// Rotation angle between two orientations, degrees.
+    /// Rotation angle between two orientations, in degrees. Uses `atan2` on the normalised
+    /// difference rotation, which stays exact near zero. `acos` of the dot product would not: for
+    /// single-precision input, rounding alone would read as ~0.05°.
     pub fn angle_to(self, b: Quat) -> f64 {
-        let d = self.dot(b).abs().min(1.0);
-        (2.0 * d.acos()).to_degrees()
+        let d = self.normalized() * b.normalized().conj();
+        let v = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt();
+        (2.0 * v.atan2(d.w.abs())).to_degrees()
     }
 
     /// Mean of nearby orientations: the normalised sum, with each sign aligned to the first (q and

@@ -6,12 +6,12 @@ use super::mbb::{Decoder, Frame};
 use super::protocol::{
     Message, RawFrame, RawSample, SwitchReply, capability_query, stream_switch, wear_query,
 };
-use super::rebuild::Rebuilder;
-use crate::core::quat::Quat;
+use super::rebuild::{Rebuilder, Rebuilt};
 use crate::core::record::DeviceLog;
 use crate::core::tracker::Event;
 use anyhow::Result;
 use bluer::Address;
+use serde::Serialize;
 use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -59,18 +59,6 @@ impl Link {
         Ok(())
     }
 
-    /// Nothing arrived until `now`: release the held poses the silence allows.
-    pub fn on_timer(&mut self, now: Instant) {
-        let released = self.rebuild.release(self.since_epoch(now));
-        self.queue_poses(released);
-    }
-
-    /// When to call [`Link::on_timer`] if nothing arrives first. Calling it then always releases
-    /// what was due: times are exact (integer nanoseconds) all the way through.
-    pub fn next_wake(&self) -> Option<Instant> {
-        Some(self.epoch + self.rebuild.next_release()?)
-    }
-
     /// The next event for the session, in order.
     pub fn next_event(&mut self) -> Option<Event> {
         self.events.pop_front()
@@ -101,8 +89,21 @@ impl Link {
             }
             Message::StreamSwitch(reply) => self.earbuds.on_reply(reply),
             Message::Sample { seq, raw } => {
-                let released = self.rebuild.push(self.since_epoch(now), seq, raw);
-                self.queue_poses(released);
+                for out in self.rebuild.push(self.since_epoch(now), seq, raw) {
+                    match out {
+                        Rebuilt::Pose { at, orientation } => {
+                            let at = self.epoch + at;
+                            self.events.push_back(Event::Pose { at, orientation });
+                        }
+                        Rebuilt::MissedGlide { seq } => {
+                            eprintln!(
+                                "warning: the earbuds re-centred (sample {seq}) in a way headup \
+                                 does not recognise; the pose may be off until the next calibration"
+                            );
+                            self.log.record(&MissedGlide { missed_glide: seq })?;
+                        }
+                    }
+                }
                 None
             }
             Message::Other => None,
@@ -130,17 +131,17 @@ impl Link {
         }
     }
 
-    fn queue_poses(&mut self, released: Vec<(Duration, Quat)>) {
-        for (t, orientation) in released {
-            let at = self.epoch + t;
-            self.events.push_back(Event::Pose { at, orientation });
-        }
-    }
-
     fn since_epoch(&self, now: Instant) -> Duration {
         now.checked_duration_since(self.epoch)
             .expect("time went backwards past the link's start")
     }
+}
+
+/// `--raw-log` record of a re-centre the rebuilder did not recognise as a glide:
+/// `{"missed_glide":1234}`, where 1234 is the sequence number of the identity sample that ended it.
+#[derive(Serialize)]
+struct MissedGlide {
+    missed_glide: u32,
 }
 
 /// `now` if it is known and differs from what `told` holds, which then becomes `now`.
@@ -274,6 +275,7 @@ impl Earbuds {
 mod tests {
     use super::super::protocol::sample_frame;
     use super::*;
+    use crate::core::quat::Quat;
 
     fn pc() -> Address {
         "D4:94:A9:22:86:6F".parse().unwrap()
@@ -455,32 +457,6 @@ mod tests {
         assert_eq!(link.take_outbox(), [stream_switch(true)]);
         link.on_bytes(now, &reply(0)).unwrap();
         assert_eq!(events(&mut link), []);
-    }
-
-    // The timer fired exactly when `next_wake` asked: it must release something. When the
-    // rebuilder kept time in f64 seconds, converting to an Instant and back could land a
-    // nanosecond early; then nothing was released, `next_wake` stayed the same, and a caller
-    // looping on it spun forever.
-    #[test]
-    fn timer_at_next_wake_makes_progress() {
-        let start = Instant::now();
-        for k in 0..200u32 {
-            let mut link = link(start);
-            // Arbitrary offsets and a 35 Hz spacing, so due times land on many different values.
-            let base = Duration::from_micros(13_700) * k;
-            for seq in 1..=3u32 {
-                let at = start + base + Duration::from_nanos(28_571_429) * seq;
-                let raw = Quat::IDENTITY;
-                link.on_bytes(at, &sample_frame(seq, raw).encode()).unwrap();
-            }
-            let wake = link.next_wake().expect("samples are held");
-            link.on_timer(wake);
-            assert_ne!(
-                link.next_wake(),
-                Some(wake),
-                "timing {k}: no progress at the wake time"
-            );
-        }
     }
 
     #[test]

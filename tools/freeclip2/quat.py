@@ -22,13 +22,18 @@ def conj(q):
 
 
 def angle(q):
-    """Rotation angle of a unit quaternion, in degrees."""
-    return math.degrees(2 * math.acos(min(1.0, abs(q[0]))))
+    """Rotation angle of a quaternion, in degrees. Uses atan2: acos of `w` loses precision near zero,
+    where single-precision rounding alone would read as ~0.05°."""
+    w, x, y, z = q
+    return math.degrees(2 * math.atan2(math.sqrt(x * x + y * y + z * z), abs(w)))
 
 
 def between(a, b):
-    """Angle between two orientations, in degrees."""
-    return math.degrees(2 * math.acos(min(1.0, abs(sum(x * y for x, y in zip(a, b))))))
+    """Angle between two orientations, in degrees (normalised first)."""
+    def unit(q):
+        n = math.sqrt(sum(c * c for c in q))
+        return tuple(c / n for c in q)
+    return angle(mul(unit(a), conj(unit(b))))
 
 
 def euler(q):

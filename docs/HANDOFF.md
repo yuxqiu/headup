@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-13 00:05 UTC
+Last updated: 2026-11-13 16:00 UTC
 
 ## Current state
 - The protocol works.
@@ -33,6 +33,18 @@ Last updated: 2026-11-13 00:05 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- 2026-11-13: the rebuilder releases each sample as soon as no glide hypothesis covers it (no 70-sample hold, no
+  `QUIET` timer), with an exact glide model: precise `Quat::angle_to` (the old acos was the whole "0.126° misfit"),
+  `FIT_TOL_DEG` = 0.001°, hypotheses for glides whose start was not sent, and a `missed_glide` report (no
+  recalibration). DECISIONS "Exact glide model, immediate release". Six recordings published as fixtures
+  (DECISIONS "Publish selected recordings as fixtures"). Core wording made device-neutral; `Available(false)`
+  obligation documented. 78 tests, clippy, fmt, `nix flake check` pass; staged, not committed. Next:
+  1. Live run (headup service stopped): look down and hold, sit up, turn then slouch, an audio gap. Expect the tone
+     about 10 s after looking down and the recovery tink right after sitting up (no 1.3–2 s hold any more), and no
+     `missed_glide` warning on stderr.
+  2. The user commits; then release (patch bump) and update the installed service.
+  3. Open: why the earbuds skip a new stream's first seconds, and what makes an identity sample without a glide
+     (live4 seq 34): both `[unverified]` in FINDINGS "Re-centre and stillness".
 - After v0.3.0: any tracking unavailability now ends monitoring and headup recalibrates when tracking resumes
   (DECISIONS "Recalibrate after every unavailability"; also fixes long phone takeovers keeping the old reference).
   Calibration asks a still head to move (new voice prompt) and only uses poses measured after the prompt
@@ -75,9 +87,7 @@ Last updated: 2026-11-13 00:05 UTC
 0. v0.1.2 released (https://github.com/yuxqiu/headup/releases/tag/v0.1.2, signed tag on b01263b): re-sends the
    stream switch when this computer starts streaming. CI green on x86_64 and aarch64; release workflow uploaded both
    tarballs; x86_64 tarball verified (sha256, `--version` 0.1.2).
-1. Live check of the rebuilder and timing changes (DECISIONS "Hold samples by count"): the same steps as the last live
-   check (RUNBOOK). Expect the tone ~11.3 s after you look down at 52.5 Hz (~12 s at 35 Hz), and no tone if you sit
-   up just before it.
+1. (Done 2026-11-12; the hold it describes was replaced on 2026-11-13 by "Exact glide model, immediate release".)
 2. Then release (minor bump: the log format changed) and update the installed service (`nix flake update headup`,
    then switch). Point `logFile` at a new file first: the old one holds relative `t`. The live check of the
    2026-11-12 refactors passed (data/live_check*.jsonl).

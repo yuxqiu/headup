@@ -21,8 +21,10 @@ pub enum Event {
     Worn(bool),
     /// Whether the device can deliver head tracking right now, beyond being worn (a device
     /// precondition; see [`TrackerTraits::tracking_hint`]). Sent on change; assume available until told otherwise.
-    /// While available, silence means the head is still. Poses may still arrive after
-    /// `Available(false)` (held or trailing data); they do not end it, `Available(true)` does.
+    /// While available, silence means the head is still. If a backend's silence can also mean
+    /// something else (data stopped, a stall), it must send `Available(false)` then; otherwise the
+    /// session keeps the last posture forever. Poses may still arrive after `Available(false)`
+    /// (held or trailing data). They do not end it; only `Available(true)` does.
     Available(bool),
 }
 
