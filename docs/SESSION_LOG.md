@@ -542,3 +542,8 @@
 - Removed the session's delivery-lag model (held poses now ≤49 ms in every fixture): the session drains the
   tracker, then judges posture up to now. FakeTracker plays its script on the clock.
 - Calibration decisions moved into `core/calibration.rs` as a state machine with direct tests. 91 tests pass.
+- Live test (data/live8*.jsonl, 210 s, silence played to the earbuds): calibrated on the first attempt (107
+  samples, p90 0.6°). Two held slouches: tone exactly 10.00 s and the spoken reminder 30.00 s after the smoothed
+  pitch crossed 20° (the reminder during 24 s of silence from a still head), recovery on the same pose as the
+  crossing below 15°, re-anchored to -6.1° and -10.7°. Six later glances (≤5 s) cued nothing. Raw log: at most 3
+  samples within any 20 ms (prompt bursts gone), no missed glide. The user heard every prompt and cue.
