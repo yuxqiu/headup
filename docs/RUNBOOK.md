@@ -3,9 +3,10 @@
 Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via BlueZ).
 
 ## Nix
-- Dev shell with the Rust toolchain, clippy, rustfmt, rust-analyzer, python3, pw-play, espeak-ng and notify-send:
+- Dev shell with the Rust toolchain, clippy, rustfmt, rust-analyzer, python3, espeak-ng, and pw-play and notify-send
+  for the live-test tools:
   `nix develop`
-- Build the package (runs the tests; the binary is wrapped with its cue tools): `nix build`
+- Build the package (runs the tests): `nix build`
 - Run: `nix run . -- [C0:DA:5E:F1:A0:A6] [--log data/session.jsonl] [--raw-log data/session_raw.jsonl]`. The address is optional;
   without it, headup auto-detects connected supported earbuds and waits/reconnects.
 - The flake only sees git-tracked files, so `git add` new files before `nix build`.
@@ -27,7 +28,8 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
 - Rust detector (inside `nix develop`):
   - Tests: `cargo test`. They include replays of the recordings in `tests/fixtures/`.
   - Run: `cargo run --release -- [C0:DA:5E:F1:A0:A6] [--log data/session.jsonl]`
-  - It needs `pw-play` and `notify-send` on PATH, and the BlueZ D-Bus API. Calibration is spoken at start and after
+  - It needs the BlueZ D-Bus API, a desktop notification server, and a PulseAudio server (PipeWire provides one;
+    without it sound goes to ALSA's default device). Calibration is spoken at start and after
     re-wearing; stop with Ctrl-C, which disables the stream.
 - Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match the `phrases!` list in
   `src/core/cues.rs`.

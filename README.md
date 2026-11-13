@@ -17,7 +17,7 @@ your posture while you listen to something on the computer.
 
 ## Requirements
 
-- Linux with BlueZ (the standard Bluetooth stack) and PipeWire audio.
+- Linux with BlueZ (the standard Bluetooth stack) and PipeWire (with its PulseAudio server) or PulseAudio.
 - Earbuds that are paired and connected to the computer.
 
 ## Install (Nix + Home Manager)
@@ -46,8 +46,8 @@ once: `nix run github:yuxqiu/headup`.
 
 Download `headup-v<version>-<arch>-linux.tar.gz` from
 [Releases](https://github.com/yuxqiu/headup/releases) (x86_64 and aarch64; glibc 2.35 or newer),
-check it against its `.sha256`, and put `headup` on your `PATH`. It needs `pw-play` (PipeWire),
-`notify-send` (libnotify) and the D-Bus library, which most desktop distributions already include.
+check it against its `.sha256`, and put `headup` on your `PATH`. It needs the D-Bus and ALSA libraries
+(`libdbus-1`, `libasound2`), which most desktop distributions already include.
 
 ## Run
 

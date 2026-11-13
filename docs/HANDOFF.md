@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-13 16:00 UTC
+Last updated: 2026-11-13 16:56 UTC
 
 ## Current state
 - The protocol works.
@@ -33,6 +33,11 @@ Last updated: 2026-11-13 16:00 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- 2026-11-13: cues play in-process (`core/audio.rs`, `cpal`; notifications via `notify-rust`); DECISIONS "Cues play
+  in-process with cpal". Next: a live run to hear tone, tink and prompts on the earbuds (start and end intact).
+  Then the Bluetooth backends for macOS/Windows (research in this session: `windows` crate Win32 + Winsock
+  `AF_BTH`; `objc2-io-bluetooth`, needs an `.app` bundle and a LaunchAgent on macOS 14+), after the user picks
+  platforms.
 - 2026-11-13: the rebuilder releases each sample as soon as no glide hypothesis covers it (no 70-sample hold, no
   `QUIET` timer), with an exact glide model: precise `Quat::angle_to` (the old acos was the whole "0.126° misfit"),
   `FIT_TOL_DEG` = 0.001°, hypotheses for glides whose start was not sent, and a `missed_glide` report (no

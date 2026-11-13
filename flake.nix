@@ -11,8 +11,8 @@
         "aarch64-linux"
       ];
       forAllSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
-      # Commands the detector runs for cues (pw-play, notify-send).
-      runtimeDeps = pkgs: [
+      # Commands the live-test tools run for prompts (tools/freeclip2/device/: pw-play, notify-send).
+      toolDeps = pkgs: [
         pkgs.pipewire
         pkgs.libnotify
       ];
@@ -24,15 +24,11 @@
           version = (pkgs.lib.importTOML ./Cargo.toml).package.version;
           src = self;
           cargoLock.lockFile = ./Cargo.lock;
-          nativeBuildInputs = [
-            pkgs.makeWrapper
-            pkgs.pkg-config
+          nativeBuildInputs = [ pkgs.pkg-config ];
+          buildInputs = [
+            pkgs.dbus # BlueZ D-Bus API (device auto-detection)
+            pkgs.alsa-lib # cpal's ALSA output, used when no PulseAudio server is running
           ];
-          buildInputs = [ pkgs.dbus ]; # BlueZ D-Bus API (device auto-detection)
-          postInstall = ''
-            wrapProgram $out/bin/headup \
-              --prefix PATH : ${pkgs.lib.makeBinPath (runtimeDeps pkgs)}
-          '';
           meta = {
             mainProgram = "headup";
             license = pkgs.lib.licenses.mit;
@@ -56,7 +52,6 @@
             buildPhase = "cargo clippy --offline --locked --all-targets -- --deny warnings";
             doCheck = false;
             installPhase = "touch $out";
-            postInstall = "";
           });
           fmt =
             pkgs.runCommand "headup-fmt"
@@ -86,7 +81,7 @@
             pkgs.python3 # tools/*.py (stdlib only)
             pkgs.espeak-ng # spoken prompts in tools/freeclip2/device/guided.py and tools/freeclip2/device/wear_test.py
           ]
-          ++ runtimeDeps pkgs;
+          ++ toolDeps pkgs;
         };
       });
 

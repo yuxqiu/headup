@@ -1,14 +1,15 @@
 //! Audio and desktop cues.
 //!
-//! `pw-play` plays the sounds. Tones are generated at startup. Spoken prompts were pre-recorded
-//! with Piper's "alba" voice and are embedded in the binary (assets/voice/).
-//! tools/gen_voice.sh regenerates them. `notify-send` shows the desktop notifications.
+//! Sounds play in-process on the default audio output ([`audio`]). Tones are generated at startup.
+//! Spoken prompts were pre-recorded with Piper's "alba" voice and are embedded in the binary
+//! (assets/voice/). tools/gen_voice.sh regenerates them. Desktop notifications go through
+//! `notify-rust`.
 
+use super::audio;
 use super::detector::Cue;
 use super::wav::Pcm;
-use anyhow::{Context, Result, ensure};
-use std::path::{Path, PathBuf};
-use tokio::process::Command;
+use anyhow::{Context, Result};
+use std::sync::Arc;
 
 /// Generates [`Phrase`] from `Variant => "clip"` pairs. Each clip is embedded from
 /// assets/voice/<clip>.wav.
@@ -23,13 +24,12 @@ macro_rules! phrases {
         impl Phrase {
             const ALL: &[Phrase] = &[$(Phrase::$phrase),+];
 
-            /// File name and WAV bytes of the phrase's clip.
-            fn clip(self) -> (&'static str, &'static [u8]) {
+            /// WAV bytes of the phrase's clip.
+            fn clip(self) -> &'static [u8] {
                 match self {
-                    $(Phrase::$phrase => (
-                        concat!($clip, ".wav"),
-                        include_bytes!(concat!("../../assets/voice/", $clip, ".wav")),
-                    ),)+
+                    $(Phrase::$phrase => {
+                        include_bytes!(concat!("../../assets/voice/", $clip, ".wav"))
+                    })+
                 }
             }
         }
@@ -46,7 +46,7 @@ phrases! {
 
 impl Phrase {
     fn pcm(self) -> Result<Pcm> {
-        Pcm::parse(self.clip().1).with_context(|| format!("embedded clip for {self:?}"))
+        Pcm::parse(self.clip()).with_context(|| format!("embedded clip for {self:?}"))
     }
 }
 
@@ -60,97 +60,81 @@ pub trait CueSink {
 }
 
 pub struct Cues {
-    dir: PathBuf,
-    tone: PathBuf,
-    tink: PathBuf,
+    tone: Arc<Pcm>,
+    tink: Arc<Pcm>,
+    /// Every phrase's clip, decoded once at startup.
+    phrases: Vec<(Phrase, Arc<Pcm>)>,
 }
 
 impl Cues {
     pub fn new() -> Result<Self> {
-        for (cmd, hint) in [
-            ("pw-play", "PipeWire's pw-play"),
-            ("notify-send", "libnotify's notify-send"),
-        ] {
-            ensure!(on_path(cmd), "`{cmd}` not found on PATH ({hint})");
-        }
-        let dir =
-            PathBuf::from(std::env::var("XDG_RUNTIME_DIR").context("XDG_RUNTIME_DIR not set")?)
-                .join("headup");
-        std::fs::create_dir_all(&dir)?;
-        let write = |name: &str, pcm: Pcm| -> Result<PathBuf> {
-            let path = dir.join(name);
-            std::fs::write(&path, pcm.encode())?;
-            Ok(path)
-        };
-        let tone = write("tone.wav", Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)]))?;
-        let tink = write("tink.wav", Pcm::tones(&[(880.0, 0.08), (1318.5, 0.14)]))?;
-        for &p in Phrase::ALL {
-            write(p.clip().0, p.pcm()?)?;
-        }
-        Ok(Cues { dir, tone, tink })
+        let phrases = Phrase::ALL
+            .iter()
+            .map(|&p| Ok((p, Arc::new(p.pcm()?))))
+            .collect::<Result<_>>()?;
+        Ok(Cues {
+            tone: Arc::new(Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)])),
+            tink: Arc::new(Pcm::tones(&[(880.0, 0.08), (1318.5, 0.14)])),
+            phrases,
+        })
     }
 
-    fn phrase_path(&self, p: Phrase) -> PathBuf {
-        self.dir.join(p.clip().0)
+    fn phrase(&self, p: Phrase) -> Arc<Pcm> {
+        let (_, pcm) = self
+            .phrases
+            .iter()
+            .find(|(q, _)| *q == p)
+            .expect("all phrases decoded");
+        pcm.clone()
     }
 }
 
 impl CueSink for Cues {
     fn play(&self, cue: Cue) {
-        match cue {
-            Cue::Tone => spawn("pw-play", &[path_str(&self.tone)]),
-            Cue::Recovered => spawn("pw-play", &[path_str(&self.tink)]),
-            Cue::Speak => spawn("pw-play", &[path_str(&self.phrase_path(Phrase::LiftHead))]),
-            Cue::Notify => spawn(
-                "notify-send",
-                &[
-                    "-a",
-                    "headup",
-                    "Sit up straight",
-                    // The text names no duration, because the detector's settings decide when
-                    // this fires.
-                    "You have been looking down for a while.",
-                ],
-            ),
-        }
+        let pcm = match cue {
+            Cue::Tone => self.tone.clone(),
+            Cue::Recovered => self.tink.clone(),
+            Cue::Speak => self.phrase(Phrase::LiftHead),
+            Cue::Notify => {
+                tokio::spawn(notify());
+                return;
+            }
+        };
+        tokio::task::spawn_blocking(move || {
+            if let Err(e) = audio::play(&pcm) {
+                report(&e);
+            }
+        });
     }
 
     async fn say(&self, p: Phrase) -> Result<()> {
-        let st = Command::new("pw-play")
-            .arg(self.phrase_path(p))
-            .status()
-            .await?;
-        ensure!(st.success(), "pw-play failed for {p:?}: {st}");
-        Ok(())
+        let pcm = self.phrase(p);
+        tokio::task::spawn_blocking(move || audio::play(&pcm))
+            .await
+            .context("audio task")?
+            .with_context(|| format!("playing {p:?}"))
     }
 }
 
-fn on_path(cmd: &str) -> bool {
-    std::env::var_os("PATH")
-        .is_some_and(|p| std::env::split_paths(&p).any(|d| d.join(cmd).is_file()))
-}
-
-fn path_str(p: &Path) -> &str {
-    p.to_str().expect("runtime dir path is UTF-8")
-}
-
-/// Start a cue command without waiting for it. A failure is reported but does not stop
-/// monitoring. It goes straight to stderr, not through `Recorder`, because the waiting task
-/// outlives this call and cannot borrow the recorder. Failures are rare, so breaking into a
-/// terminal status line is acceptable.
-fn spawn(cmd: &str, args: &[&str]) {
-    match Command::new(cmd).args(args).spawn() {
-        Ok(mut child) => {
-            let cmd = cmd.to_string();
-            tokio::spawn(async move {
-                match child.wait().await {
-                    Ok(st) if st.success() => {}
-                    other => eprintln!("cue `{cmd}` failed: {other:?}"),
-                }
-            });
-        }
-        Err(e) => eprintln!("cue `{cmd}` could not start: {e}"),
+/// Show the "sit up" desktop notification.
+async fn notify() {
+    let shown = notify_rust::Notification::new()
+        .appname("headup")
+        .summary("Sit up straight")
+        // The text names no duration, because the detector's settings decide when this fires.
+        .body("You have been looking down for a while.")
+        .show_async()
+        .await;
+    if let Err(e) = shown {
+        report(&anyhow::Error::from(e).context("desktop notification"));
     }
+}
+
+/// Report a failed cue. It does not stop monitoring. It goes straight to stderr, not through
+/// `Recorder`, because the cue runs in its own task, which cannot borrow the recorder. Failures
+/// are rare, so breaking into a terminal status line is acceptable.
+fn report(e: &anyhow::Error) {
+    eprintln!("cue failed: {e:#}");
 }
 
 #[cfg(test)]

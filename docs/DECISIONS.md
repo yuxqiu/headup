@@ -761,3 +761,29 @@
 - Rejected: the other raw logs (live2/3/5/7, refusal, smoke, outage2, session2/8): their glides are covered by the
   selection. Kept out entirely: `research/` (vendor APK, decompiled code, firmware: not ours to publish).
 
+## 2026-11-13: Cues play in-process with cpal; notifications with notify-rust (user)
+- What: sounds no longer run `pw-play` and notifications no longer run `notify-send`. `core::audio::play` opens
+  the default output with `cpal` 0.18.2, plays the clip, waits until it has been heard, and closes the output.
+  Notifications use `notify-rust` 4.18.2 (pure-Rust D-Bus on Linux). The WAV files in `$XDG_RUNTIME_DIR/headup/`
+  and the `PATH` checks are gone; the Nix package needs `alsa-lib` at build time and no wrapper.
+- Why: portability (user), first step towards macOS and Windows; `cpal` covers CoreAudio, WASAPI and Linux.
+- On Linux `cpal`'s `pulseaudio` feature (pure Rust) is on: it plays through the PulseAudio protocol, which PipeWire
+  serves, so a cue reaches the default output, the earbuds. Without a PulseAudio server `cpal` uses ALSA's default
+  device, which reaches PipeWire only with its ALSA plugin.
+- When a sound is done: the output is opened per sound and closed after it, because an open output streams
+  silence (rejected in "Silent lead-in for every sound"; voxtype #870 reports the same with Bluetooth multipoint).
+  Closing discards what is still buffered (`cpal`'s PulseAudio stream deletes without draining), so `play` waits
+  for the first buffer requested after the whole sound and sleeps until that buffer's playback time. With a 20 ms
+  buffer the wait overshoots by at most 20 ms; left to the server (2 s buffer) a 0.3 s sound took 2.08 s. Measured
+  here: 0.3 s sound returned after 0.362 s, 3.0 s after 3.072 s (35 ms reported latency).
+- A stalled or vanished output fails the sound after its length plus 2 s, so a spoken prompt cannot hang the
+  session (Handy #2424 and local-voice #17 hit such hangs).
+- Format: clips are mono 16-bit; `audio::convert` resamples linearly to the output's rate and copies the signal to
+  every channel, then writes in the output's sample format (f32, i16, i32 or u16).
+- Rejected:
+  - `rodio`: its end-of-sound signal fires when its mixer has consumed the sound, not when it was heard, and it
+    hides `cpal`'s playback timestamps. Users either keep one output open (Handy) or sleep a guessed time before
+    closing (voxtype: 150 ms); headup's first version padded 0.25 s. Neither is right here.
+  - `libpulse-simple-binding`: Linux only.
+- Live check still owed: cues audible on the earbuds, not clipped, prompts not cut at the end.
+

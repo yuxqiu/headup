@@ -68,6 +68,7 @@ impl Pcm {
         Ok(Pcm { rate, samples })
     }
 
+    #[cfg(test)]
     pub fn encode(&self) -> Vec<u8> {
         let data_len = (self.samples.len() * 2) as u32;
         let mut out = Vec::with_capacity(44 + data_len as usize);
