@@ -233,8 +233,8 @@ mod tests {
         assert_eq!(parse("6f8622a994d409").unwrap(), audio(pc, true));
         assert_eq!(parse("6f8622a994d403").unwrap(), audio(pc, false));
         assert_eq!(parse("6f8622a994d401").unwrap(), audio(pc, false));
-        let phone = "EC:81:50:6E:86:B5";
-        assert_eq!(parse("b5866e5081ec01").unwrap(), audio(phone, false));
+        let phone = "12:34:56:78:9A:BC";
+        assert_eq!(parse("bc9a7856341201").unwrap(), audio(phone, false));
         assert!(parse("0102").is_err());
     }
 

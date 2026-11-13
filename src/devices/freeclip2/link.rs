@@ -298,7 +298,7 @@ mod tests {
     }
 
     fn phone() -> Address {
-        "EC:81:50:6E:86:B5".parse().unwrap()
+        "12:34:56:78:9A:BC".parse().unwrap()
     }
 
     fn link(now: Instant) -> Link {

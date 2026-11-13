@@ -758,6 +758,7 @@
   only `t` since the first sample, `seq` and the quaternion (`tools/freeclip2/recordings/to_fixture.py`); a scan for
   addresses, the serial and Unix times found none. The earbuds', this computer's and the phone's addresses were
   already public (RUNBOOK; the `link.rs` and `protocol.rs` tests since f71ddc7; the phone's was first missed here).
+  The tests now use a made-up phone address (`12:34:56:78:9A:BC`); history is not rewritten (user).
 - Rejected: the other raw logs (live2/3/5/7, refusal, smoke, outage2, session2/8): their glides are covered by the
   selection. Kept out entirely: `research/` (vendor APK, decompiled code, firmware: not ours to publish).
 
