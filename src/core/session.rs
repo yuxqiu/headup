@@ -14,12 +14,12 @@ use tokio::time::Instant;
 /// How long the head must hold steady, after the prompt, to calibrate.
 const CALIBRATION: Duration = Duration::from_secs(3);
 const CALIBRATION_MAX_P90_DEG: f64 = 8.0;
-/// An attempt fails ("you moved") if the head is not steady for CALIBRATION this long after the
-/// attempt's first pose.
+/// An attempt fails ("you moved") if the head has not held steady for CALIBRATION by this long
+/// after the attempt's first pose.
 const CALIBRATION_ATTEMPT: Duration = Duration::from_secs(5);
 const CALIBRATION_TRIES: usize = 4;
-/// Some trackers send nothing while the head is still. With no pose since the prompt after this
-/// long, ask the user to move a little, and again every NUDGE_EVERY.
+/// Some trackers send nothing while the head is still. If no pose has arrived this long after the
+/// prompt, ask the user to move a little. Ask again every NUDGE_EVERY.
 const NUDGE_AFTER: Duration = Duration::from_secs(5);
 const NUDGE_EVERY: Duration = Duration::from_secs(15);
 /// After a failed calibration (head kept moving), wait this long before asking again.
@@ -31,17 +31,19 @@ const STATUS_EVERY: Duration = Duration::from_secs(1);
 /// How long to wait for a tracker event before re-checking timers.
 const POLL: Duration = Duration::from_secs(1);
 
-/// Why a cycle (wait until worn, calibrate, monitor) ended early. Carried by `?`, so every wait
-/// in the session gives up the same way when the earbuds come off.
+/// Why a cycle ended early. A cycle waits until the earbuds are worn, calibrates, then monitors.
+/// `?` carries the interrupt, so every wait in the session gives up the same way when the earbuds
+/// come off.
 enum Interrupt {
     /// The earbuds were taken off.
     Removed,
-    /// The tracker became unavailable. The head may move unseen until it resumes, and resumed
-    /// tracking may measure from a new pose, so the posture reference can't be trusted: drop the
-    /// slouch state (no reminders from stale data) and recalibrate once tracking resumes.
-    /// Silence while available just means the head is still and never ends a cycle.
+    /// The tracker became unavailable. The head may move unseen until tracking resumes, and
+    /// resumed tracking may measure from a new pose. So the posture reference can't be trusted.
+    /// The session drops the slouch state, so no reminder plays from stale data, and recalibrates
+    /// once tracking resumes. Silence while tracking is available only means the head is still. It
+    /// never ends a cycle.
     Unavailable,
-    /// A tracker or output error: ends the session.
+    /// A tracker or output error. It ends the session.
     Fatal(anyhow::Error),
 }
 
@@ -57,17 +59,20 @@ type Flow<T> = std::result::Result<T, Interrupt>;
 /// A delivered pose: when it was measured (since the session started) and the orientation.
 type Pose = (Duration, Quat);
 
-/// The session's timeline: time since the session started (monotonic, unlike log time; exact
-/// integer nanoseconds), and how far along it the delivered posture reaches. A backend that holds
-/// samples delivers each pose `lag` after it was measured, so posture is known only up to
-/// `now - lag`. Reminders and calibration judge posture up to there, never beyond it, so a
-/// reminder cannot play after the user has already sat up. During silence that point advances
-/// with real time, because silence means the posture is unchanged. With a backend that holds
-/// nothing, `lag` is 0.
+/// The session's timeline. Session time is the time since the session started. It is monotonic,
+/// unlike log time, and counts exact integer nanoseconds.
+///
+/// The timeline also tracks how far the delivered posture reaches. A backend that holds samples
+/// delivers each pose `lag` after it was measured, so posture is known only up to `now - lag`.
+/// Reminders and calibration judge posture up to that point, never beyond it. So a reminder
+/// cannot play after the user has already sat up. During silence, that point advances with real
+/// time, because silence means the posture is unchanged. With a backend that holds nothing, `lag`
+/// is 0.
 struct Timeline {
     start: Instant,
-    /// Measurement time of the latest pose, and how long after measurement it arrived.
+    /// Measurement time of the latest pose.
     measured: Duration,
+    /// How long after its measurement the latest pose arrived.
     lag: Duration,
 }
 
@@ -85,14 +90,14 @@ impl Timeline {
         self.start.elapsed()
     }
 
-    /// How far the delivered posture reaches. Never before the latest pose's measurement time,
-    /// since its delivery is in the past.
+    /// How far the delivered posture reaches. This is never before the latest pose's measurement
+    /// time, because that pose was delivered in the past.
     fn known_until(&self) -> Duration {
         self.now() - self.lag
     }
 
-    /// Take delivery of a pose measured at `at`; returns its measurement time. A pose from before
-    /// the session or out of order is a tracker bug.
+    /// Take delivery of a pose measured at `at`, and return its measurement time in session time.
+    /// A pose from before the session, or out of order, is a tracker bug and an error.
     fn deliver(&mut self, at: Instant) -> Result<Duration> {
         let measured = at
             .checked_duration_since(self.start)
@@ -119,8 +124,8 @@ enum Tracking {
     Starting,
     /// A pose or `Available(true)`: silence means the head is still.
     Available,
-    /// `Available(false)`: the head may move unseen. Poses still arriving (data measured
-    /// before, or trailing data) do not end it; only `Available(true)` does.
+    /// `Available(false)`: the head may move unseen. Poses may still arrive: data measured
+    /// before, or trailing data. They do not end this state. Only `Available(true)` does.
     Unavailable,
 }
 
@@ -139,7 +144,7 @@ impl TrackerStatus {
         }
     }
 
-    /// The wear state changed; `true` if the earbuds were just taken off.
+    /// Record the reported wear state. Returns `true` if the earbuds were just taken off.
     fn worn_changed(&mut self, worn: bool) -> bool {
         std::mem::replace(&mut self.worn, worn) && !worn
     }
@@ -151,7 +156,8 @@ impl TrackerStatus {
         }
     }
 
-    /// The tracker reported its availability; `true` if tracking that was available just stopped.
+    /// Record the reported availability. Returns `true` if tracking was available and just
+    /// stopped.
     fn availability_changed(&mut self, available: bool) -> bool {
         let next = if available {
             Tracking::Available
@@ -162,21 +168,25 @@ impl TrackerStatus {
     }
 }
 
-/// One calibration attempt: the poses measured since it started. It succeeds once the delivered
-/// posture shows the head steady for CALIBRATION: the latest pose measured at least CALIBRATION
-/// before the known end and every pose after it are within CALIBRATION_MAX_P90_DEG (90th
-/// percentile) of their mean. Silence after a pose means the head stayed there. Only poses
-/// measured after the attempt started count, so data from before the prompt never calibrates.
+/// One calibration attempt: the poses measured since it started.
+///
+/// It succeeds once the delivered posture shows the head steady for CALIBRATION. The span starts
+/// at the latest pose measured at least CALIBRATION before the known end. That pose and every
+/// pose after it must lie within CALIBRATION_MAX_P90_DEG of their mean, at the 90th percentile.
+/// Silence after a pose means the head stayed there. Only poses measured after the attempt
+/// started count, so data from before the prompt never calibrates.
 struct CalibrationAttempt {
     start: Duration,
-    /// Poses (measurement time, orientation) from the latest one that can still begin a steady
-    /// span, oldest first.
+    /// Poses (measurement time, orientation), oldest first. The first is the latest pose that can
+    /// still begin a span.
     poses: VecDeque<(Duration, Quat)>,
     /// When the attempt's first pose was measured.
     first: Option<Duration>,
 }
 
-/// A steady span: the mean pose, and the 90th-percentile angle (degrees) of the poses from it.
+/// A span of poses to calibrate on. It holds the mean pose, the 90th-percentile angle (degrees)
+/// of the poses from that mean, and the number of poses. The span is steady only if `p90` is
+/// below CALIBRATION_MAX_P90_DEG.
 struct CalibrationResult {
     mean: Quat,
     p90: f64,
@@ -192,8 +202,9 @@ impl CalibrationAttempt {
         }
     }
 
-    /// A pose measured at `measured`; poses measured before the attempt started (during the
-    /// prompt, delivered late by a backend that holds samples) don't count.
+    /// Add a pose measured at `measured`. Poses measured before the attempt started don't count.
+    /// A backend that holds samples can deliver such poses late, for example ones measured during
+    /// the prompt.
     fn add(&mut self, measured: Duration, q: Quat) {
         if measured >= self.start {
             self.first.get_or_insert(measured);
@@ -201,8 +212,8 @@ impl CalibrationAttempt {
         }
     }
 
-    /// The span of CALIBRATION ending at `known` (how far the delivered posture reaches), if
-    /// poses cover it.
+    /// The span of length CALIBRATION that ends at `known`, if poses cover it. `known` is how far
+    /// the delivered posture reaches.
     fn span(&mut self, known: Duration) -> Option<CalibrationResult> {
         let from = known.checked_sub(CALIBRATION)?;
         let begin = self.poses.iter().rposition(|&(m, _)| m <= from)?;
@@ -225,9 +236,9 @@ struct Session<'a, T: HeadTracker, C: CueSink> {
     status: TrackerStatus,
 }
 
-/// Calibrate, then monitor; pause while the earbuds are off and recalibrate when they are put back
-/// on (reseating changes how the earbud sits) or after tracking was unavailable. Returns only with a
-/// tracker error; the caller handles Ctrl-C.
+/// Calibrate, then monitor. Pause while the earbuds are off. Recalibrate when they are put back
+/// on, because reseating changes how the earbud sits. Also recalibrate after tracking was
+/// unavailable. Returns only with a tracker or output error. The caller handles Ctrl-C.
 pub async fn run<T: HeadTracker, C: CueSink>(
     tracker: &mut T,
     cues: &C,
@@ -276,7 +287,8 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         }
     }
 
-    /// The next pose within `timeout`, or `None` for silence. Taking the earbuds off interrupts.
+    /// Wait up to `timeout` for the next tracker event. Returns the pose if the event was one, and
+    /// `None` otherwise. Taking the earbuds off, or tracking becoming unavailable, interrupts.
     async fn next(&mut self, timeout: Duration) -> Flow<Option<Pose>> {
         match self.tracker.next_event(timeout).await? {
             Some(Event::Pose { at, orientation }) => {
@@ -323,7 +335,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         Ok(self.rec.event(LogEvent::Resumed)?)
     }
 
-    /// Consume events for `period` (taking the earbuds off interrupts).
+    /// Consume events for `period`. Interrupts as [`Session::next`] does.
     async fn idle(&mut self, period: Duration) -> Flow<()> {
         let end = self.now() + period;
         while self.now() < end {
@@ -333,8 +345,9 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         Ok(())
     }
 
-    /// Wait until tracking is available (see [`Tracking`]). It can take a while to start (until the
-    /// device's precondition is met; see `TrackerTraits`), so this waits without a deadline.
+    /// Wait until tracking is available (see [`Tracking`]). Tracking may not start until a device
+    /// precondition is met (see `TrackerTraits`). That can take a while, so this waits without a
+    /// deadline.
     async fn wait_for_tracking(&mut self) -> Flow<()> {
         let start = self.now();
         let mut noted = false;
@@ -352,8 +365,8 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     }
 
     /// Capture the upright pose: the head held steady for CALIBRATION after the prompt (see
-    /// [`CalibrationAttempt`]). A still head may send nothing, so with no pose yet the user is
-    /// asked to move a little. `None` if the head kept moving on every attempt.
+    /// [`CalibrationAttempt`]). A still head may send nothing. So while no pose has arrived, the
+    /// user is asked to move a little. Returns `None` if the head kept moving on every attempt.
     async fn calibrate(&mut self) -> Flow<Option<Quat>> {
         self.wait_for_tracking().await?;
         self.cues.say(Phrase::SitUpright).await?;
@@ -398,8 +411,8 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         let mut det = Detector::new(detector_config(self.tracker.traits()));
         let mut last_status: Option<Duration> = None;
         loop {
-            // Wake when the known posture reaches the next reminder (now, if it already has). Time
-            // is exact, so at that point `tick` fires it.
+            // Wake when the known posture reaches the next reminder, or now if it already has.
+            // Times are exact, so `tick` fires the reminder at that point.
             let wait = det.next_due().map_or(POLL, |due| {
                 due.saturating_sub(self.time.known_until()).min(POLL)
             });
@@ -486,7 +499,7 @@ mod tests {
 
     // --- Scripted session tests (tokio's paused clock makes the waits instant). ---
 
-    /// `x` seconds, to the millisecond (script times are exact integers from here on).
+    /// `x` seconds, rounded to the millisecond. Script times are then exact integers.
     fn secs(x: f64) -> Duration {
         Duration::from_millis((x * 1000.0).round() as u64)
     }
@@ -525,8 +538,9 @@ mod tests {
 
     const SAMPLE: Duration = Duration::from_millis(20);
 
-    /// Like a real backend: wait for the next pose sample (of `pitch`, `left` of poses remaining)
-    /// and deliver it `lag` after its measurement, or time out first.
+    /// Wait for the next pose sample, like a real backend. The pose has pitch `pitch`, and `left`
+    /// is how much of the pose span remains. The pose is delivered `lag` after its measurement.
+    /// Returns `None` if `timeout` passes first.
     async fn sample(
         until_sample: &mut Duration,
         lag: Duration,
@@ -693,8 +707,8 @@ mod tests {
         assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
     }
 
-    // With the same lag, a slouch held past 10 s still cues, once its posture has arrived: the
-    // tone is due ~10.1 s into the slouch (measured from 6 s) and comes the 1.5 s lag later.
+    // With the same lag, a slouch held past 10 s still cues once its posture has arrived. The
+    // slouch starts at 6 s. The tone is due about 10.1 s into it and plays 1.5 s (the lag) later.
     #[tokio::test(start_paused = true)]
     async fn late_poses_delay_the_reminder_by_the_lag() {
         let script = vec![
@@ -710,9 +724,9 @@ mod tests {
         assert!((secs(17.5)..secs(17.7)).contains(&tone), "tone at {tone:?}");
     }
 
-    // The head moves while the 2 s "sit upright" prompt plays and is still afterwards. With poses
-    // delivered 1.5 s late, the ones measured during the prompt arrive inside the capture window;
-    // they must not count, so calibration succeeds at once.
+    // The head moves while the 2 s "sit upright" prompt plays, then holds still. Poses arrive
+    // 1.5 s late, so the ones measured during the prompt arrive inside the capture window. They
+    // must not count, so calibration succeeds on the first attempt.
     #[tokio::test(start_paused = true)]
     async fn calibration_ignores_poses_measured_during_the_prompt() {
         let script = vec![
@@ -743,9 +757,9 @@ mod tests {
         assert_eq!(run.count("say SitUpright"), 2, "{:?}", run.names());
     }
 
-    // Slouch from ~4 s; tracking becomes unavailable at 6 s, before the tone (~14 s) is due. No
-    // reminder may fire from that stale posture, and tracking that resumes is calibrated again,
-    // however short the gap.
+    // The slouch starts at about 4 s. Tracking becomes unavailable at 6 s, before the tone is due
+    // at about 14 s. No reminder may fire from that stale posture. When tracking resumes, the
+    // session calibrates again, however short the gap.
     #[tokio::test(start_paused = true)]
     async fn unavailability_drops_the_slouch_and_recalibrates() {
         let script = vec![
@@ -763,8 +777,8 @@ mod tests {
     }
 
     // A still head sends no poses. When tracking resumes, headup asks the user to sit upright at
-    // once; with no pose 5 s later it asks them to move a little, and calibrates on the poses that
-    // follow: moving, then holding still, does not count as "you moved".
+    // once. With no pose 5 s later, it asks them to move a little. It then calibrates on the poses
+    // that follow. Moving, then holding still, does not count as "you moved".
     #[tokio::test(start_paused = true)]
     async fn still_head_is_asked_to_move_when_tracking_resumes() {
         let script = vec![

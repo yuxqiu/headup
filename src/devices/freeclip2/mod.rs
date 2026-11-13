@@ -1,13 +1,14 @@
 //! HUAWEI FreeClip 2 backend: MBB over RFCOMM channel 1 (docs/devices/freeclip2/FINDINGS.md).
 //!
-//! - 43/88 switches the spatial-audio pose stream on/off; 43/89 carries relative quaternions that
-//!   re-centre themselves and restart with each new stream (`rebuild` makes them continuous).
-//! - 43/37 reports per-earbud wear state, pushed on change and answered when queried. Tracking
-//!   stops when either earbud is off, so [`Event::Worn`] means both are worn.
-//! - 43/54 reports each connected source device's audio state. Head tracking only flows to the
-//!   earbuds' current device, the last one to start streaming audio: that becomes
-//!   [`Event::Available`]. headup's 43/88 is refused while another device is current; headup
-//!   sends it again once this computer streams.
+//! - 43/88 switches the spatial-audio pose stream on or off.
+//! - 43/89 carries the poses as relative quaternions. They re-centre themselves and restart with
+//!   each new stream. `rebuild` makes them continuous.
+//! - 43/37 reports the wear state of each earbud. The earbuds push it on change and answer it when
+//!   queried. Tracking stops when either earbud is off, so [`Event::Worn`] means both are worn.
+//! - 43/54 reports the audio state of each connected source device. Head tracking only flows to
+//!   the earbuds' current device, which is the last one to start streaming audio. Whether this
+//!   computer is that device becomes [`Event::Available`]. The earbuds refuse headup's 43/88 while
+//!   another device is current, so headup sends it again once this computer streams.
 //! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts_up`]).
 
 mod link;
@@ -107,7 +108,7 @@ impl HeadTracker for FreeClip2 {
 
 #[cfg(test)]
 mod tests {
-    // Test-only modules in tests/: recordings replayed through the protocol (and the session).
+    // Test-only modules in tests/. They replay recordings through the protocol and the session.
     mod end_to_end;
     pub(super) mod replay;
 }

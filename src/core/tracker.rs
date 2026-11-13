@@ -7,31 +7,38 @@ use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Event {
-    /// Head orientation. Absolute within one wear period (relative to an arbitrary but fixed frame
-    /// chosen by the backend), in the convention of [`Quat::euler`]: pitch > 0 = looking down,
-    /// yaw > 0 = turned left, roll > 0 = tilted right. The frame may change after `Worn(true)`, or
-    /// when tracking resumes after `Available(false)`; the session recalibrates in both cases.
-    /// `at` is when the backend received the sample the pose comes from (the best available
-    /// measure of when it was measured), which is earlier than delivery if the backend holds
-    /// samples back; smoothing and slouch timing run on it. It must not go backwards, nor be
-    /// earlier than the session's start.
+    /// Head orientation, in the convention of [`Quat::euler`]: pitch > 0 is looking down, yaw > 0
+    /// is turned left, roll > 0 is tilted right.
+    ///
+    /// The orientation is absolute within one wear period. It is relative to a frame the backend
+    /// chooses, arbitrary but fixed. The frame may change after `Worn(true)`, or when tracking
+    /// resumes after `Available(false)`. The session recalibrates in both cases.
+    ///
+    /// `at` is when the backend received the sample the pose comes from. It is the best available
+    /// measure of when the pose was measured. It is earlier than delivery if the backend holds
+    /// samples back. Smoothing and slouch timing run on `at`. It must not go backwards, and it must
+    /// not be earlier than the session's start.
     Pose { at: Instant, orientation: Quat },
-    /// Whether the earbuds are worn well enough for head tracking (the backend decides what that
-    /// takes). Sent on change; a backend should report the initial state soon after connecting.
+    /// Whether the earbuds are worn well enough for head tracking. The backend decides what that
+    /// takes. Sent on change. A backend should report the initial state soon after connecting.
     Worn(bool),
-    /// Whether the device can deliver head tracking right now, beyond being worn (a device
-    /// precondition; see [`TrackerTraits::tracking_hint`]). Sent on change; assume available until told otherwise.
-    /// While available, silence means the head is still. If a backend's silence can also mean
-    /// something else (data stopped, a stall), it must send `Available(false)` then; otherwise the
-    /// session keeps the last posture forever. Poses may still arrive after `Available(false)`
-    /// (held or trailing data). They do not end it; only `Available(true)` does.
+    /// Whether the device can deliver head tracking right now, beyond being worn. This covers a
+    /// device precondition (see [`TrackerTraits::tracking_hint`]). Sent on change. Until told
+    /// otherwise, assume tracking is available.
+    ///
+    /// While tracking is available, silence means the head is still. A backend whose silence can
+    /// also mean something else, such as a stall or data that stopped, must send
+    /// `Available(false)` then. Otherwise the session keeps the last posture forever.
+    ///
+    /// Poses may still arrive after `Available(false)`, from held or trailing data. They do not end
+    /// the unavailability. Only `Available(true)` does.
     Available(bool),
 }
 
 /// A source of head orientation. Device quirks such as re-centring are the backend's job.
 #[allow(async_fn_in_trait)] // used through generics only, not as dyn or across threads
 pub trait HeadTracker {
-    /// Wait up to `timeout` for the next event. `Ok(None)` means nothing arrived; trackers may go
+    /// Wait up to `timeout` for the next event. `Ok(None)` means nothing arrived. Trackers may go
     /// quiet while the head is still, so callers treat silence as "unchanged", not as an error.
     /// Lost connections and protocol errors are `Err`.
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>>;
@@ -54,7 +61,7 @@ pub struct TrackerTraits {
     /// "waiting for head tracking" messages.
     pub tracking_hint: Option<&'static str>,
     /// The reported orientation accumulates error towards "looking up" over a session, so the same
-    /// pose reads higher later. The session then re-anchors upright after each recovery. (Drift
-    /// the other way is not corrected; it would need a different rule.)
+    /// pose reads higher later. The session then re-anchors upright after each recovery. Drift
+    /// the other way is not corrected, because that would need a different rule.
     pub pose_drifts_up: bool,
 }

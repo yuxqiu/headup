@@ -1,5 +1,5 @@
-//! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session (and,
-//! for re-anchoring, straight into the detector).
+//! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session. The
+//! re-anchoring test feeds the poses straight into the detector instead.
 
 use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay, secs};
 use crate::core::detector::Detector;
@@ -8,9 +8,10 @@ use crate::devices::freeclip2::FreeClip2;
 use crate::testing::run_session;
 use std::time::Duration;
 
-// Ground truth (guided.py --slouch): five upright → look-down cycles back to the same screen
-// point. The earbuds' re-centres add ~10° towards "looking up" per cycle; without the detector's
-// re-anchoring, upright drifts to about -40° and the last look-down never counts as a slouch.
+// Ground truth (guided.py --slouch): five cycles of upright, then look down, then back to the
+// same screen point. The earbuds' re-centres add ~10° towards "looking up" per cycle. Without the
+// detector's re-anchoring, upright drifts to about -40° and the last look-down never counts as a
+// slouch.
 #[test]
 fn repeated_slouches_stay_detectable_end_to_end() {
     let rows = read_csv("slouch_guided.csv");
@@ -55,8 +56,8 @@ fn kinds(cues: &[(String, Duration)]) -> Vec<&str> {
         .collect()
 }
 
-// The real long-hold recording: each 30 s look-down hold must cue, and sitting back up must
-// register as recovery (session 1 failed this before glides were suppressed).
+// The real long-hold recording. Each 30 s look-down hold must cue, and sitting back up must
+// register as recovery.
 #[tokio::test(start_paused = true)]
 async fn long_holds_trigger_cues_end_to_end() {
     let rows = read_csv("hold_test.csv");
@@ -76,8 +77,8 @@ async fn long_holds_trigger_cues_end_to_end() {
     assert_eq!(key, want, "cues: {cues:?}");
 }
 
-// The stream-restart recording: one slouch, so exactly one tone and one recovery, and the
-// recovery only once the user actually sat up (~25.6 s), not at the restart.
+// The stream-restart recording has one slouch, so exactly one tone and one recovery. The recovery
+// comes only once the user actually sat up (~25.6 s), not at the restart.
 #[tokio::test(start_paused = true)]
 async fn stream_restart_end_to_end() {
     let cues = session_cues("stream_restart.csv").await;
@@ -89,9 +90,10 @@ async fn stream_restart_end_to_end() {
     );
 }
 
-// data/live_check_raw.jsonl (2026-11-12), the one recording at 35 Hz instead of 52.5 Hz: a quick
-// glance down, a held slouch, sitting back up. At this rate each 68-sample glide takes ~1.95 s.
-// All four glides are dropped whole, the glance is ignored, and the slouch cues once and recovers.
+// data/live_check_raw.jsonl (2026-11-12) is the one recording at 35 Hz instead of 52.5 Hz. It has
+// a quick glance down, a held slouch, and sitting back up. At this rate each 68-sample glide takes
+// ~1.95 s. All four glides are dropped whole, the glance is ignored, and the slouch cues once and
+// recovers.
 #[tokio::test(start_paused = true)]
 async fn live_35hz_session_end_to_end() {
     let rows = read_csv("live_35hz.csv");

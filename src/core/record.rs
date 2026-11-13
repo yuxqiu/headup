@@ -1,11 +1,15 @@
-//! Everything a run reports: messages and events on the console, an optional JSON-lines session
-//! log ([`Recorder`]), and an optional JSON-lines log of raw device data ([`DeviceLog`]). Every log
-//! line starts with `t`: wall-clock Unix time in seconds, to the millisecond, so lines from both
-//! logs, from different runs and from the journal line up. Console lines carry no time: the journal
-//! stamps them under systemd.
+//! Everything a run reports:
 //!
-//! The live status line (`\r`-updated) is shown only when stdout is a terminal; under systemd the
-//! journal gets one clean line per message instead.
+//! - messages and events on the console,
+//! - an optional JSON-lines session log ([`Recorder`]),
+//! - an optional JSON-lines log of raw device data ([`DeviceLog`]).
+//!
+//! Every log line starts with `t`, the wall-clock Unix time in seconds, to the millisecond. This
+//! lets lines from both logs, from different runs and from the journal line up. Console lines
+//! carry no time, because under systemd the journal stamps them.
+//!
+//! The live status line is redrawn in place with `\r`. It is shown only when stdout is a
+//! terminal. Under systemd the journal gets one clean line per message instead.
 
 use super::detector::Cue;
 use super::quat::Euler;
@@ -63,11 +67,11 @@ pub enum LogEvent {
     CalibrationFailed,
     /// The device can deliver head tracking again.
     TrackingAvailable,
-    /// The device stopped being able to deliver head tracking: the posture reference is dropped,
-    /// and headup recalibrates when tracking resumes.
+    /// The device can no longer deliver head tracking. The posture reference is dropped, and
+    /// headup recalibrates when tracking resumes.
     TrackingUnavailable,
-    /// Upright was re-anchored after a recovery to this pitch (relative to calibration), because the
-    /// head settled above the old upright.
+    /// After a recovery the head settled above upright, so upright was re-anchored to this pitch
+    /// (relative to calibration).
     Reanchored { upright: f64 },
     /// A reminder cue was played.
     Cue(Cue),
@@ -128,7 +132,7 @@ impl Recorder {
         eprintln!("{msg}");
     }
 
-    /// A session event, now: shown and logged.
+    /// A session event that happens now. It is shown and logged.
     pub fn event(&mut self, event: LogEvent) -> Result<()> {
         #[derive(Serialize)]
         struct Fields {
@@ -149,8 +153,8 @@ impl Recorder {
         Ok(())
     }
 
-    /// Head orientation relative to the calibrated upright pose, measured at `at`: logged only,
-    /// with `t` the time of measurement.
+    /// Head orientation relative to the calibrated upright pose, measured at `at`. It is logged,
+    /// not shown. The line's `t` is the time of measurement.
     pub fn pose(&mut self, at: Instant, e: Euler) -> Result<()> {
         #[derive(Serialize)]
         struct Fields {

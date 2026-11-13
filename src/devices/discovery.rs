@@ -15,7 +15,7 @@ pub struct Found {
 }
 
 /// The connected supported earbuds at `want`, or the first connected supported earbuds if `want`
-/// is `None`; `None` if there are none.
+/// is `None`. `None` if there are none.
 pub async fn find(session: &bluer::Session, want: Option<Address>) -> Result<Option<Found>> {
     let mut found = connected(session).await?.into_iter();
     Ok(match want {
@@ -44,8 +44,8 @@ async fn connected(session: &bluer::Session) -> Result<Vec<Found>> {
     let mut found = Vec::new();
     for address in adapter.device_addresses().await.context("device list")? {
         let device = adapter.device(address).context("device")?;
-        // BlueZ forgets nearby BLE devices at any time, so a device can vanish between listing and
-        // querying it ("target object was either not present or removed"); skip it.
+        // BlueZ forgets nearby BLE devices at any time. A device can vanish between listing and
+        // querying it ("target object was either not present or removed"), so skip it.
         let (Ok(connected), Ok(name)) = (device.is_connected().await, device.name().await) else {
             continue;
         };

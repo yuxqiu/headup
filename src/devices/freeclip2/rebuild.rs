@@ -5,31 +5,32 @@
 //! jump: it glides to identity over the next `GLIDE_LEN` samples. With `q_s` the pose held before
 //! the glide, the `k`-th glide sample reads `nlerp(I, q_s, (GLIDE_LEN − k) / (GLIDE_LEN + 1))`, and
 //! sample `GLIDE_LEN` is exactly identity. This is the firmware's own formula, and recorded glides
-//! match it within 0.0002° (docs/devices/freeclip2/FINDINGS.md "Re-centre and stillness"). It counts
-//! samples, so it holds at any sample rate.
+//! match it within 0.0002° (docs/devices/freeclip2/FINDINGS.md "Re-centre and stillness"). It
+//! counts samples, so it holds at any sample rate.
 //!
 //! A glide is not head movement, so it must not come out. `Rebuilder` has two parts:
 //!
-//! - [`GlideFilter`] decides what happens to each raw sample: it comes out, or it is dropped as part
-//!   of a glide. It also says when the earbuds moved their reference. It hands these decisions on as
-//!   an ordered list of [`Step`]s.
-//! - [`Stitch`] applies the steps. It turns each released sample into an absolute orientation
-//!   (`raw × reference`). At each `Step::Rebase` the reference becomes the last absolute
-//!   orientation, because that is where the earbuds moved their reference.
+//! - [`GlideFilter`] decides what happens to each raw sample: it comes out, or it is dropped as
+//!   part of a glide. It also says when the earbuds moved their reference. It hands these decisions
+//!   on as an ordered list of [`Step`]s.
+//! - [`Stitch`] applies the steps. It turns each released sample into an absolute orientation (`raw
+//!   × reference`). At each `Step::Rebase` the reference becomes the last absolute orientation,
+//!   because that is where the earbuds moved their reference.
 //!
 //! How the filter decides:
 //!
 //! - Any sample could be the pose a glide starts from, so each one starts a hypothesis
 //!   ([`Hypotheses`]). A hypothesis lives while every later sample matches the glide formula within
 //!   `FIT_TOL_DEG`. Head movement does not match, so most hypotheses die at the next sample. A real
-//!   glide matches until its identity sample: during a glide the readings do not depend on the head.
+//!   glide matches until its identity sample: during a glide the readings do not depend on the
+//!   head.
 //! - Samples up to the start of the oldest live hypothesis come out at once. Later samples might be
 //!   part of a glide, so they wait for it to be decided, however long the stream is silent.
 //! - When an identity sample ends a glide, the glide's samples are dropped, the rest come out, and
 //!   the reference moves.
-//! - The earbuds sometimes do not send the start of a glide: they resume after a gap, or start a new
-//!   stream, in the middle of one. So after a gap, a sample also starts hypotheses of the form "this
-//!   is step `k` of a glide that started in the gap".
+//! - The earbuds sometimes do not send the start of a glide: they resume after a gap, or start a
+//!   new stream, in the middle of one. So after a gap, a sample also starts hypotheses of the form
+//!   "this is step `k` of a glide that started in the gap".
 //! - When a new stream starts (the sequence number goes backwards), a glide in progress is dropped
 //!   (the head was still), the rest come out, and the reference moves to the last orientation.
 //! - An identity sample that no hypothesis explains is reported ([`Rebuilt::MissedGlide`]).
@@ -244,8 +245,8 @@ impl GlideFilter {
                     // everything held from the last `GLIDE_SAMPLES`.
                     None => {
                         // If nothing is held, the glide's samples have already come out: the model
-                        // missed the glide. Unless it was too small to track (the last sample within
-                        // `FIT_TOL_DEG` of identity).
+                        // missed the glide. Unless it was too small to track (the last sample
+                        // within `FIT_TOL_DEG` of identity).
                         let prev = self.last.expect("a glide end follows a sample");
                         if self.held.is_empty() && prev.raw.angle_to(Quat::IDENTITY) > FIT_TOL_DEG {
                             steps.push(Step::MissedGlide(sample.seq));
@@ -378,8 +379,8 @@ mod tests {
     use crate::core::quat::{Euler, Quat};
     use crate::devices::freeclip2::tests::replay::{Row, phase_at, phases, read_csv, replay, secs};
 
-    /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples of
-    /// each phase, in order.
+    /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples
+    /// of each phase, in order.
     fn phase_medians(name: &str) -> Vec<(String, f64, f64, f64)> {
         let rows = read_csv(name);
         let ph = phases(&rows);
@@ -468,10 +469,11 @@ mod tests {
         row(t, seq, raw)
     }
 
-    // A re-centre after a ~90° turn (e.g. to a side monitor), with glide samples from the firmware's
-    // formula. The head settles slowly for 220 samples (0.03° per sample, 6.6° in all). That stays
-    // inside the firmware's 10° stillness box, so the earbuds re-centre after 208 samples. Only the
-    // last pose starts the glide that follows. The rebuilt yaw must stay where the head settled.
+    // A re-centre after a ~90° turn (e.g. to a side monitor), with glide samples from the
+    // firmware's formula. The head settles slowly for 220 samples (0.03° per sample, 6.6° in all).
+    // That stays inside the firmware's 10° stillness box, so the earbuds re-centre after 208
+    // samples. Only the last pose starts the glide that follows. The rebuilt yaw must stay where
+    // the head settled.
     #[test]
     fn hides_glide_from_a_large_angle() {
         let yaw = |deg: f64| rotation(deg, (0.0, 0.0, 1.0));
@@ -494,8 +496,8 @@ mod tests {
     }
 
     // Turn left 60° and hold until the earbuds re-centre there, then nod down 30°. The earbuds
-    // report the nod relative to the turned reference (`raw = q ⊗ conj(ref)`). Rebuilt, it must read
-    // 30° of pitch at 60° of yaw.
+    // report the nod relative to the turned reference (`raw = q ⊗ conj(ref)`). Rebuilt, it must
+    // read 30° of pitch at 60° of yaw.
     #[test]
     fn nod_after_a_turn_reads_as_pitch() {
         let yaw = |deg: f64| rotation(deg, (0.0, 0.0, 1.0));
@@ -518,9 +520,9 @@ mod tests {
         );
     }
 
-    /// Sample `k` of a firmware glide from the held pose `q`: `normalize(t·q + (1−t)·I)` with
-    /// `t = (68 − k) / 69`, exactly identity at `k = 68`. Written from FINDINGS with literal numbers,
-    /// so it shares nothing with `rebuild`'s code. Assumes `q.w >= 0`.
+    /// Sample `k` of a firmware glide from the held pose `q`: `normalize(t·q + (1−t)·I)` with `t =
+    /// (68 − k) / 69`, exactly identity at `k = 68`. Written from FINDINGS with literal numbers, so
+    /// it shares nothing with `rebuild`'s code. Assumes `q.w >= 0`.
     fn firmware_glide(q: Quat, k: u32) -> Quat {
         if k == 68 {
             return Quat::IDENTITY;
@@ -535,10 +537,10 @@ mod tests {
         .normalized()
     }
 
-    // The sample rate varies (35 Hz in data/live_check_raw.jsonl, 52.5 Hz elsewhere), but a glide is
-    // always 68 samples: about 1.95 s at 35 Hz. Here a 3 s stall in transit (seen early in streams)
-    // delays the identity sample to ~4.9 s after the glide began. Every output must still read 30°,
-    // the held pose.
+    // The sample rate varies (35 Hz in data/live_check_raw.jsonl, 52.5 Hz elsewhere), but a glide
+    // is always 68 samples: about 1.95 s at 35 Hz. Here a 3 s stall in transit (seen early in
+    // streams) delays the identity sample to ~4.9 s after the glide began. Every output must still
+    // read 30°, the held pose.
     #[test]
     fn hides_slow_glide_at_any_sample_rate() {
         let hz = 35.0;
@@ -896,12 +898,12 @@ mod tests {
         }
     }
 
-    // tools/freeclip2/device/glide_move.py (2026-11-12): look down; at a beep, the moment a re-centre
-    // starts, look straight back up. The earbuds cut the glide short, and the movement does not show
-    // in its readings. Their reference is then the pose two samples before the cut (FINDINGS
-    // "Re-centre and stillness"), so the movement before it is lost. Afterwards the rebuilt pose
-    // must be near upright (within the earbuds' ~10° error per re-centre), not stuck at the ~50°
-    // slouch. Trial 2 got no beep (no re-centre in time).
+    // tools/freeclip2/device/glide_move.py (2026-11-12): look down; at a beep, the moment a
+    // re-centre starts, look straight back up. The earbuds cut the glide short, and the movement
+    // does not show in its readings. Their reference is then the pose two samples before the cut
+    // (FINDINGS "Re-centre and stillness"), so the movement before it is lost. Afterwards the
+    // rebuilt pose must be near upright (within the earbuds' ~10° error per re-centre), not stuck
+    // at the ~50° slouch. Trial 2 got no beep (no re-centre in time).
     #[test]
     fn moving_during_a_glide_is_not_lost() {
         let rows = read_csv("glide_move.csv");
@@ -954,7 +956,8 @@ mod tests {
             }
         }
         // Five re-centres (one small, while upright at 5.4 s). Each drops exactly its glide's 67
-        // samples: the hypothesis from the pose held before each glide predicts its identity sample.
+        // samples: the hypothesis from the pose held before each glide predicts its identity
+        // sample.
         let dropped = rows.len() - out.len();
         assert_eq!(dropped, 5 * 67, "dropped samples");
     }
@@ -1004,8 +1007,9 @@ mod tests {
     }
 
     // data/session3 (stream_restart.csv): while the user looked down ~51° with the head still, the
-    // earbuds started a new stream (seq 721 -> 235), measured from the pose at that moment. Then the
-    // user sat up. The rebuilt pose must stay down until the user sits up, and read upright after.
+    // earbuds started a new stream (seq 721 -> 235), measured from the pose at that moment. Then
+    // the user sat up. The rebuilt pose must stay down until the user sits up, and read upright
+    // after.
     #[test]
     fn continues_across_stream_restart() {
         let rows = read_csv("stream_restart.csv");

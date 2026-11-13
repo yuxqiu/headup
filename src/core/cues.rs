@@ -1,6 +1,8 @@
-//! Audio and desktop cues. Sounds are played with `pw-play`: generated tones, and spoken prompts
-//! pre-recorded with Piper's "alba" voice and embedded in the binary (assets/voice/, regenerated
-//! with tools/gen_voice.sh). Notifications use `notify-send`.
+//! Audio and desktop cues.
+//!
+//! `pw-play` plays the sounds. Tones are generated at startup. Spoken prompts were pre-recorded
+//! with Piper's "alba" voice and are embedded in the binary (assets/voice/).
+//! tools/gen_voice.sh regenerates them. `notify-send` shows the desktop notifications.
 
 use super::detector::Cue;
 use super::wav::Pcm;
@@ -8,11 +10,11 @@ use anyhow::{Context, Result, ensure};
 use std::path::{Path, PathBuf};
 use tokio::process::Command;
 
-/// Generates [`Phrase`] from `Variant => "clip"` pairs; each clip is embedded from
+/// Generates [`Phrase`] from `Variant => "clip"` pairs. Each clip is embedded from
 /// assets/voice/<clip>.wav.
 macro_rules! phrases {
     ($($phrase:ident => $clip:literal),+ $(,)?) => {
-        /// Fixed spoken prompts; the text is in tools/gen_voice.sh.
+        /// Fixed spoken prompts. Their text is in tools/gen_voice.sh.
         #[derive(Debug, Clone, Copy, PartialEq)]
         pub enum Phrase {
             $($phrase),+
@@ -105,7 +107,8 @@ impl CueSink for Cues {
                     "-a",
                     "headup",
                     "Sit up straight",
-                    // No duration in the text: when it fires is the detector's setting.
+                    // The text names no duration, because the detector's settings decide when
+                    // this fires.
                     "You have been looking down for a while.",
                 ],
             ),
@@ -131,9 +134,10 @@ fn path_str(p: &Path) -> &str {
     p.to_str().expect("runtime dir path is UTF-8")
 }
 
-/// Fire-and-forget a cue command; failures are reported but don't stop monitoring. They go to
-/// stderr directly, not through `Recorder`: the task outlives the call and cannot borrow it, and
-/// a failure is rare enough that breaking into a terminal status line is acceptable.
+/// Start a cue command without waiting for it. A failure is reported but does not stop
+/// monitoring. It goes straight to stderr, not through `Recorder`, because the waiting task
+/// outlives this call and cannot borrow the recorder. Failures are rare, so breaking into a
+/// terminal status line is acceptable.
 fn spawn(cmd: &str, args: &[&str]) {
     match Command::new(cmd).args(args).spawn() {
         Ok(mut child) => {

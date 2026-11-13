@@ -1,6 +1,7 @@
-//! The FreeClip 2's MBB service 43 messages that headup uses (docs/devices/freeclip2/FINDINGS.md,
-//! catalogue in docs/devices/freeclip2/mbb_commands.txt): the frames headup sends, one typed parse
-//! of every frame it receives, and their `--raw-log` records.
+//! The FreeClip 2's MBB service 43 messages that headup uses. This module holds the frames headup
+//! sends, one typed parse of every frame it receives, and their `--raw-log` records. Sources:
+//! docs/devices/freeclip2/FINDINGS.md, and the catalogue in
+//! docs/devices/freeclip2/mbb_commands.txt.
 
 use super::mbb::Frame;
 use crate::core::quat::Quat;
@@ -15,7 +16,8 @@ const CMD_DEVICE_STATE: u8 = 54;
 const CMD_STREAM_SWITCH: u8 = 88;
 const CMD_STREAM_DATA: u8 = 89;
 const CMD_SPATIAL_CAPABILITY: u8 = 90;
-/// The current device's audio state while it streams. The 43/54 state byte is `connected | audio << 1`.
+/// The current device's audio state while it streams. The 43/54 state byte is
+/// `connected | audio << 1`.
 const AUDIO_STREAMING: u8 = 4;
 
 /// 43/37 query: report the wear state of both earbuds.
@@ -23,9 +25,10 @@ pub fn wear_query() -> Frame {
     Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])])
 }
 
-/// 43/90 query: spatial-audio capability. The firmware records the asking device in a list that
-/// the 43/89 path does not check (FINDINGS "Firmware head-tracking logic"); sent because tracking
-/// once came back right after it (FINDINGS "Tracking outage"). Its reply is ignored.
+/// 43/90 query: spatial-audio capability. Its reply is ignored. headup sends it because tracking
+/// once came back right after it (FINDINGS "Tracking outage"). The firmware records the asking
+/// device in a list, but the 43/89 path does not check that list (FINDINGS "Firmware head-tracking
+/// logic").
 pub fn capability_query() -> Frame {
     Frame::new(SVC, CMD_SPATIAL_CAPABILITY, &[(1, &[])])
 }
@@ -77,12 +80,15 @@ fn wear(f: &Frame) -> Result<Message> {
     })
 }
 
-/// 43/54, the paired-device-list change report. Its TLV 5 form carries one device's audio state:
-/// the device's Bluetooth address (little-endian), then a state byte. The firmware builds that byte
-/// as `connected | audio << 1`, where `audio` is the audio state of the earbuds' current device
-/// (0 for any other device); 4 is streaming (FINDINGS "43/54 state byte"). Recordings show 0x01,
-/// 0x03 and 0x09; any other `audio` value is read as not streaming, a variant rather than a broken
-/// frame. Other forms (e.g. TLV 1 = `01 00`) are other list reports.
+/// 43/54, the paired-device-list change report. Its TLV 5 form carries one device's audio state.
+/// TLV 5 holds the device's Bluetooth address (little-endian), then a state byte.
+///
+/// The firmware builds the state byte as `connected | audio << 1`. `audio` is the audio state of
+/// the earbuds' current device, and 0 for any other device. `audio` 4 means streaming (FINDINGS
+/// "43/54 state byte"). Recordings show 0x01, 0x03 and 0x09. Any other `audio` value is read as
+/// not streaming: it is a variant, not a broken frame.
+///
+/// Other forms of 43/54 (e.g. TLV 1 = `01 00`) are other list reports.
 fn device_audio(f: &Frame) -> Result<Message> {
     let Some(v) = f.tlv(5) else {
         return Ok(Message::Other);
@@ -106,8 +112,8 @@ pub enum SwitchReply {
     Accepted,
     /// 1: refused while the link between the two earbuds is down (FINDINGS "Reply value 1").
     PeerLinkDown,
-    /// 2: refused, this computer is not the earbuds' current device (the last one to start
-    /// streaming audio). Seen when headup connects while the phone was last active.
+    /// 2: refused because this computer is not the earbuds' current device, which is the last
+    /// one to start streaming audio. Seen when headup connects while the phone was last active.
     NotCurrentDevice,
 }
 
@@ -152,8 +158,8 @@ pub fn sample_frame(seq: u32, raw: Quat) -> Frame {
     Frame::new(SVC, CMD_STREAM_DATA, &[(1, &seq.to_le_bytes()), (2, &quat)])
 }
 
-/// `--raw-log` record of a 43/89 sample as sent: `{"seq":7,"raw":[w,x,y,z]}`. The earbuds send
-/// f32, so the components are logged as f32 (exact and short).
+/// `--raw-log` record of a 43/89 sample as the earbuds sent it: `{"seq":7,"raw":[w,x,y,z]}`. The
+/// earbuds send f32, so the components are logged as f32, which is exact and short.
 #[derive(Serialize)]
 pub struct RawSample {
     seq: u32,
@@ -198,7 +204,7 @@ mod tests {
             .collect()
     }
 
-    // Frames as pushed by a real FreeClip 2 during tools/freeclip2/device/single_bud_test.py: head
+    // Frames as pushed by a real FreeClip 2 during tools/freeclip2/device/single_bud_test.py. Head
     // tracking only runs while both earbuds are worn.
     #[test]
     fn wear_state_needs_both_earbuds() {
@@ -214,8 +220,8 @@ mod tests {
         assert!(Message::parse(&Frame::new(43, 37, &[(3, &[0])])).is_err());
     }
 
-    // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/device/single_bud_test.py, data/reclaim_test.log):
-    // this computer is D4:94:A9:22:86:6F, sent little-endian.
+    // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/device/single_bud_test.py,
+    // data/reclaim_test.log). This computer is D4:94:A9:22:86:6F, sent little-endian.
     #[test]
     fn device_audio_state() {
         let parse = |s: &str| Message::parse(&Frame::new(43, 54, &[(5, &hex(s))]));
@@ -233,7 +239,7 @@ mod tests {
     }
 
     // 43/54 is the paired-device-list change report ("连接管理—PDL列表变化上报" in the vendor
-    // app); only its TLV 5 form carries a device's audio state. This other form came from a real
+    // app). Only its TLV 5 form carries a device's audio state. This other form came from a real
     // FreeClip 2 (data/live3_raw.jsonl) and must not end the session.
     #[test]
     fn other_device_list_reports_are_not_errors() {
@@ -241,8 +247,8 @@ mod tests {
         assert_eq!(Message::parse(&f).unwrap(), Message::Other);
     }
 
-    // 43/88 replies from a real FreeClip 2: `02` while the phone was the current device, `00` once
-    // this computer streamed (data/live2_raw.jsonl, data/live3_raw.jsonl).
+    // 43/88 replies from a real FreeClip 2 (data/live2_raw.jsonl, data/live3_raw.jsonl). The reply
+    // was `02` while the phone was the current device, and `00` once this computer streamed.
     #[test]
     fn stream_switch_replies() {
         let parse = |v: &[u8]| Message::parse(&Frame::new(43, 88, &[(2, v)]));

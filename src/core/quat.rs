@@ -2,8 +2,8 @@
 
 use std::ops::Mul;
 
-/// Head orientation as angles in degrees, in the framework convention: pitch > 0 = looking down,
-/// yaw > 0 = turned left, roll > 0 = tilted right.
+/// Head orientation as angles in degrees. Pitch > 0 is looking down, yaw > 0 is turned left, and
+/// roll > 0 is tilted right.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Euler {
     pub roll: f64,

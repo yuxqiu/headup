@@ -1,19 +1,24 @@
 //! Slouch detection state machine (design: docs/UX_RESEARCH.md).
 //!
-//! Input is forward pitch relative to the calibrated upright pose (degrees, looking down > 0).
-//! Trackers may stop sending while the head is still, so silence means "unchanged": the caller
-//! must also call `tick` periodically and timers keep running on the last smoothed value.
-//! Smoothing is by time, not by sample, so it behaves the same at any sample rate.
+//! The input is forward pitch in degrees, relative to the calibrated upright pose. Looking down is
+//! positive.
 //!
-//! Each sample goes through three steps, in [`Detector::update`]: smooth it (relative to
-//! calibration), let a `Settling` state finish and maybe re-anchor upright, then step the posture
-//! `State` machine on the smoothed pitch relative to upright.
+//! Trackers may stop sending while the head is still, so silence means the pitch is unchanged. The
+//! caller must also call `tick` periodically, and timers keep running on the last smoothed value.
+//! Smoothing works on time, not on sample count, so it behaves the same at any sample rate.
 //!
-//! With `reanchor_after_recovery` (for trackers whose pose drifts towards "looking up"), upright is
-//! re-anchored after each recovery: the first time the head holds still after sitting back up, a
-//! pitch above upright (< 0) becomes the new upright. People sit back up to their upright, not
-//! beyond it, so a reading above it after a recovery is accumulated tracker error. Drift the other
-//! way is not corrected.
+//! [`Detector::update`] takes each sample through three steps:
+//!
+//! 1. Smooth it. The smoothed value is relative to calibration.
+//! 2. If the state is `Settling`, check whether the head now holds still. This may re-anchor
+//!    upright.
+//! 3. Step the posture `State` machine on the smoothed pitch relative to upright.
+//!
+//! `reanchor_after_recovery` is for trackers whose pose drifts towards "looking up". With it,
+//! upright is re-anchored after each recovery. The first time the head holds still after sitting
+//! back up, a pitch above upright (< 0) becomes the new upright. People sit back up to their
+//! upright, not beyond it. So a reading above upright after a recovery is accumulated tracker
+//! error. Drift the other way is not corrected.
 
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -68,8 +73,9 @@ impl Default for Config {
     }
 }
 
-/// "Holding still" for the re-anchor: pitch samples spanning at least `SETTLE_MIN` of the last
-/// `SETTLE_WINDOW` all lie within `SETTLE_RANGE_DEG`.
+/// When the head counts as holding still, for the re-anchor. The pitch samples of the last
+/// `SETTLE_WINDOW` must span at least `SETTLE_MIN`. They must also all lie within
+/// `SETTLE_RANGE_DEG` of each other.
 const SETTLE_WINDOW: Duration = Duration::from_secs(1);
 const SETTLE_MIN: Duration = Duration::from_millis(800);
 const SETTLE_RANGE_DEG: f64 = 2.0;
@@ -129,7 +135,8 @@ impl Smoother {
     }
 }
 
-/// A reminder timer: fires `cue` at `due`, then again `every` later (`None`: once).
+/// A reminder timer. It fires `cue` at `due`, then again each `every` later. With `every` set to
+/// `None`, it fires once.
 struct Timer {
     cue: Cue,
     due: Option<Duration>,
@@ -140,7 +147,7 @@ struct Timer {
 struct Episode {
     /// Tone, spoken reminder and notification, in play order.
     timers: [Timer; 3],
-    /// A reminder has played, so recovery earns the "tink".
+    /// A reminder has played, so recovery plays the "tink" (`Cue::Recovered`).
     cued: bool,
 }
 
@@ -178,14 +185,15 @@ impl Episode {
     }
 }
 
-/// The posture state machine. Its transitions (all in [`State::step`], except the last):
+/// The posture state machine. [`State::step`] makes all its transitions except the last:
 ///
 /// - `Upright` or `Settling` → `Slouching` when the smoothed pitch reaches `on_deg`.
-/// - `Slouching` → `Settling` (re-anchoring trackers) or `Upright` when it drops below `off_deg`;
-///   "recovered" if a reminder played.
-/// - `Slouching` stays `Slouching` otherwise, and its timers fire reminders as they fall due.
-/// - `Settling` → `Upright` once the head holds still ([`State::settle`]), re-anchoring upright if it
-///   settled above it.
+/// - `Slouching` → `Upright` when the smoothed pitch drops below `off_deg`. With
+///   `reanchor_after_recovery`, it goes to `Settling` instead. If a reminder played, this plays
+///   `Cue::Recovered`.
+/// - Otherwise `Slouching` stays `Slouching`, and its timers fire reminders as they fall due.
+/// - `Settling` → `Upright` once the head holds still ([`State::settle`]). If the head settled
+///   above upright, upright is re-anchored there.
 enum State {
     Upright,
     /// Just recovered from a slouch; waiting for the head to hold still, to re-anchor upright.
@@ -194,8 +202,9 @@ enum State {
 }
 
 impl State {
-    /// While settling: once the head holds still, stop settling, and return how far above
-    /// upright it settled (`p` < 0), if it did. `p` is the unsmoothed pitch relative to upright.
+    /// Feed a sample to a `Settling` state. `p` is the unsmoothed pitch relative to upright. Once
+    /// the head holds still, the state becomes `Upright`. If the head settled above upright
+    /// (`p` < 0), this returns `p`. Otherwise it returns `None`.
     fn settle(&mut self, t: Duration, p: f64) -> Option<f64> {
         let State::Settling(settling) = self else {
             return None;
@@ -207,8 +216,9 @@ impl State {
         (p < 0.0).then_some(p)
     }
 
-    /// The transition for smoothed pitch `s` (relative to upright) at time `t`, and the cues it
-    /// produces: entering a slouch, recovering from one, or a reminder falling due.
+    /// Step on smoothed pitch `s` (relative to upright) at time `t`. Returns the next state and
+    /// the cues of the step. Cues come from entering a slouch, recovering from one, or a reminder
+    /// falling due.
     fn step(self, t: Duration, s: f64, cfg: &Config) -> (State, Vec<Cue>) {
         match self {
             State::Upright | State::Settling(_) if s >= cfg.on_deg => {
@@ -282,8 +292,8 @@ impl Detector {
         Update { cues, reanchored }
     }
 
-    /// Advance timers to `t` without a new sample. At (or after) `next_due()` the due reminder
-    /// always fires: times are exact.
+    /// Advance the timers to `t` without a new sample. If `t` is at or after `next_due()`, the due
+    /// reminder always fires, because times are exact.
     pub fn tick(&mut self, t: Duration) -> Vec<Cue> {
         match &mut self.state {
             State::Slouching(episode) => episode.fire(t),
@@ -291,8 +301,8 @@ impl Detector {
         }
     }
 
-    /// When the next reminder falls due if the slouch goes on (same clock as `update` and
-    /// `tick`); `None` while not slouching.
+    /// When the next reminder falls due if the slouch goes on. It uses the same clock as `update`
+    /// and `tick`. `None` while not slouching.
     pub fn next_due(&self) -> Option<Duration> {
         match &self.state {
             State::Slouching(episode) => episode.next_due(),

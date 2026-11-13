@@ -1,5 +1,5 @@
 //! Replays recorded 43/89 samples (tests/fixtures/freeclip2/*.csv) through the real protocol
-//! ([`Link`]), as the socket would deliver them; and, through [`ReplayTracker`], through the real
+//! ([`Link`]), as the socket would deliver them. [`ReplayTracker`] also runs them through the real
 //! posture session.
 
 use crate::core::quat::Quat;
@@ -14,8 +14,8 @@ use std::collections::VecDeque;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// One recorded 43/89 sample, received at `t` since the recording began; `phase` is the
-/// guided-test step ("" if the recording has none).
+/// One recorded 43/89 sample, received at `t` since the recording began. `phase` is the
+/// guided-test step, or "" if the recording has none.
 pub struct Row {
     pub phase: String,
     pub t: Duration,
@@ -89,7 +89,7 @@ impl Replay {
         }
     }
 
-    /// The next event and when it is handed out. `None` once the recording is used up; samples
+    /// The next event and when it is handed out. `None` once the recording is used up. Samples
     /// held for a glide that has not ended stay held.
     pub fn next(&mut self) -> Option<(Instant, Event)> {
         loop {
@@ -124,9 +124,9 @@ pub fn replay(rows: &[Row]) -> Vec<Out> {
         .collect()
 }
 
-/// A [`HeadTracker`] that replays a recording through the protocol on tokio's paused clock, for
-/// running the real session on it. Time zero is when it is created; it fails with "script
-/// finished" when the recording is over.
+/// A [`HeadTracker`] that replays a recording through the protocol on tokio's paused clock, so the
+/// real session can run on it. Time zero is when it is created. It fails with "script finished"
+/// when the recording is over.
 pub struct ReplayTracker {
     replay: Replay,
     pending: Option<(Instant, Event)>,

@@ -12,8 +12,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// Records each prompt and cue with when it started (since the session began). A prompt takes
-/// `prompt` to speak.
+/// Records each prompt and cue with when it started, measured from the session start. Speaking a
+/// prompt takes `prompt`.
 struct FakeCues {
     start: Instant,
     prompt: Duration,

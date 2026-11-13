@@ -50,7 +50,7 @@ async fn sleep_or_ctrl_c(d: Duration, ctrl_c: &mut CtrlC) -> Result<bool> {
 
 /// How one attempt ended.
 enum Attempt {
-    /// Ctrl-C: headup stops (the stream was switched off).
+    /// Ctrl-C arrived and headup stops. If a tracker was connected, its stream was switched off.
     Stopped,
     /// No supported earbuds are connected yet; try again after RETRY.
     Waiting,
@@ -58,8 +58,8 @@ enum Attempt {
     Failed(String),
 }
 
-/// One attempt: find the earbuds, connect, and run a session until it ends. Errors are fatal;
-/// everything that can be retried is an [`Attempt`].
+/// One attempt: find the earbuds, connect, and run a session until it ends. Anything that can be
+/// retried comes back as an [`Attempt`]. An `Err` is fatal.
 async fn attempt(
     bt: &bluer::Session,
     args: &Args,
@@ -95,7 +95,8 @@ async fn attempt(
             return Ok(Attempt::Stopped);
         }
     };
-    // Usually fails because the link is gone; it matters only if the link is still up.
+    // Stopping usually fails because the link is already gone. A failure matters only if the
+    // link is still up, so it is only a warning.
     if let Err(e) = tracker.stop().await {
         rec.warn(&format!("could not stop the stream: {e:#}"));
     }
