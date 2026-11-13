@@ -20,7 +20,8 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   - `cues.rs`, `wav.rs`: sounds and notifications.
   - `record.rs`: console output and logs.
   - `quat.rs`: orientation math.
-- `src/devices/`: the backend registry (`mod.rs`) and BlueZ discovery (`discovery.rs`).
+- `src/devices/`: the backend registry (`mod.rs`), discovery (`discovery.rs`), and `bluetooth/`: the Bluetooth
+  operations backends use (`Host`, `RfcommStream`, `Address`), one implementation per OS (`bluez.rs` for Linux).
 - `src/devices/<model>/`: one backend. FreeClip 2: `protocol.rs` (wire messages), `link.rs` (protocol state, no
   I/O), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (the socket). Its test-only modules are in
   `src/devices/<model>/tests/`.

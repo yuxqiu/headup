@@ -9,8 +9,8 @@ use super::protocol::{
 use super::rebuild::{Rebuilder, Rebuilt};
 use crate::core::record::DeviceLog;
 use crate::core::tracker::Event;
+use crate::devices::bluetooth::Address;
 use anyhow::Result;
-use bluer::Address;
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::time::Duration;

@@ -4,6 +4,7 @@
 //! Adding a model: write a backend module whose tracker implements [`HeadTracker`] and
 //! [`Backend`], declare the module and add one line to the `backends!` list below.
 
+pub mod bluetooth;
 mod discovery;
 
 pub use discovery::{Found, ensure_supported, find};
@@ -11,6 +12,7 @@ pub use discovery::{Found, ensure_supported, find};
 use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::Result;
+use bluetooth::Host;
 use std::time::Duration;
 
 /// What the registry needs from a backend on top of [`HeadTracker`].
@@ -19,9 +21,9 @@ pub trait Backend: HeadTracker + Sized {
     /// Whether a Bluetooth device name belongs to this model.
     fn recognises(bluetooth_name: &str) -> bool;
 
-    /// Connect to `found` and start head tracking. `log` is for raw device data that helps debug
-    /// the backend (`--raw-log`).
-    async fn connect(found: &Found, log: DeviceLog) -> Result<Self>;
+    /// Connect to `found` through `host` and start head tracking. `log` is for raw device data
+    /// that helps debug the backend (`--raw-log`).
+    async fn connect(host: &Host, found: &Found, log: DeviceLog) -> Result<Self>;
 }
 
 /// Generates [`Model`] (one variant per backend) and [`AnyTracker`] (dispatch to the connected
@@ -52,11 +54,11 @@ macro_rules! backends {
 
         impl AnyTracker {
             /// Connect to `found` with its model's backend; see [`Backend::connect`].
-            pub async fn connect(found: &Found, log: DeviceLog) -> Result<Self> {
+            pub async fn connect(host: &Host, found: &Found, log: DeviceLog) -> Result<Self> {
                 Ok(match found.model {
-                    $(Model::$model => {
-                        AnyTracker::$model(<$backend as Backend>::connect(found, log).await?)
-                    })+
+                    $(Model::$model => AnyTracker::$model(
+                        <$backend as Backend>::connect(host, found, log).await?,
+                    ),)+
                 })
             }
         }

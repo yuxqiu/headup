@@ -18,9 +18,9 @@ mod rebuild;
 
 use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
+use crate::devices::bluetooth::{Host, RfcommStream};
 use crate::devices::{Backend, Found};
 use anyhow::{Context, Result, ensure};
-use bluer::rfcomm::{SocketAddr, Stream};
 use link::Link;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -30,7 +30,7 @@ const RFCOMM_CHANNEL: u8 = 1;
 
 /// The connected earbuds: the RFCOMM socket and the protocol state (`Link`).
 pub struct FreeClip2 {
-    stream: Stream,
+    stream: RfcommStream,
     link: Link,
 }
 
@@ -65,9 +65,10 @@ impl Backend for FreeClip2 {
 
     /// Connect, query wear state and start the pose stream. `log` receives every raw sample and
     /// every other frame.
-    async fn connect(found: &Found, log: DeviceLog) -> Result<Self> {
+    async fn connect(host: &Host, found: &Found, log: DeviceLog) -> Result<Self> {
         let addr = found.address;
-        let stream = Stream::connect(SocketAddr::new(addr, RFCOMM_CHANNEL))
+        let stream = host
+            .connect_rfcomm(addr, RFCOMM_CHANNEL)
             .await
             .with_context(|| format!("RFCOMM connect to {addr} channel {RFCOMM_CHANNEL} (is the FreeClip 2 connected?)"))?;
         let link = Link::new(found.adapter, log, Instant::now());

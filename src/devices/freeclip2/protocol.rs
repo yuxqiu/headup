@@ -5,8 +5,8 @@
 
 use super::mbb::Frame;
 use crate::core::quat::Quat;
+use crate::devices::bluetooth::Address;
 use anyhow::{Context, Result, bail};
-use bluer::Address;
 use serde::Serialize;
 use std::collections::BTreeMap;
 
@@ -99,7 +99,7 @@ fn device_audio(f: &Frame) -> Result<Message> {
     let mut be: [u8; 6] = address.try_into()?;
     be.reverse();
     Ok(Message::DeviceAudio {
-        address: Address::new(be),
+        address: Address(be),
         streaming: state >> 1 == AUDIO_STREAMING,
     })
 }

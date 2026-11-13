@@ -756,8 +756,8 @@
 - Privacy: `data/` itself is not published. It holds the earbuds' serial number (data/probe_01_sanity.log, 1/7
   TLV 9), the phone's Bluetooth address (43/54 TLV 5 in several raw logs) and wall-clock times. The fixtures keep
   only `t` since the first sample, `seq` and the quaternion (`tools/freeclip2/recordings/to_fixture.py`); a scan for
-  addresses, the serial and Unix times found none. The earbuds' and this computer's addresses were already public
-  (RUNBOOK, a `protocol.rs` test).
+  addresses, the serial and Unix times found none. The earbuds', this computer's and the phone's addresses were
+  already public (RUNBOOK; the `link.rs` and `protocol.rs` tests since f71ddc7; the phone's was first missed here).
 - Rejected: the other raw logs (live2/3/5/7, refusal, smoke, outage2, session2/8): their glides are covered by the
   selection. Kept out entirely: `research/` (vendor APK, decompiled code, firmware: not ours to publish).
 
@@ -786,4 +786,20 @@
     closing (voxtype: 150 ms); headup's first version padded 0.25 s. Neither is right here.
   - `libpulse-simple-binding`: Linux only.
 - Live check still owed: cues audible on the earbuds, not clipped, prompts not cut at the end.
+
+## 2026-11-13: Bluetooth behind a per-OS module (user: groundwork only)
+- What: `src/devices/bluetooth/` holds what headup needs from the Bluetooth stack: `Host` (connected devices,
+  this computer's adapter address, a device's name, an RFCOMM connection) and `RfcommStream`, plus headup's own
+  `Address` (replaces `bluer::Address` in discovery, the FreeClip 2 protocol and the command line). `bluez.rs` is
+  the Linux implementation; `bluer` is now a Linux-only dependency. `Backend::connect` receives the `Host`.
+- Why: portability towards Windows and macOS. No backend for them yet: the user has no machine to test on, and
+  a backend nobody has run is not known to work. Research for when one is wanted (2026-11-13): Windows via the
+  `windows` crate (Win32 `BluetoothFindFirstDevice`/`BluetoothGetRadioInfo`, Winsock `AF_BTH` with
+  `SOCKADDR_BTH.port = 1`); macOS via `objc2-io-bluetooth` (`openRFCOMMChannelAsync`), which needs a signed `.app`
+  with a Bluetooth usage description started by a LaunchAgent (macOS 14+ gates IOBluetooth behind a permission
+  prompt; daemons cannot get it). No cross-platform crate does classic RFCOMM (`btleplug`, `bluest`: BLE only).
+- A module per OS chosen with `cfg`, not a trait: one implementation per build, so no dynamic dispatch. Building
+  for another OS stops with a `compile_error!` naming what is missing.
+- Behaviour unchanged: no existing test changed; checked live (read-only BlueZ queries: adapter address,
+  connected devices, a known device's name).
 

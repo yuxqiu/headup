@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use headup::core::record::{DeviceLog, Recorder};
 use headup::core::{cues::Cues, session, tracker::HeadTracker};
+use headup::devices::bluetooth::{Address, Host};
 use headup::devices::{self, AnyTracker};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
@@ -16,7 +17,7 @@ use std::time::Duration;
 struct Args {
     /// Bluetooth address of the earbuds, e.g. C0:DA:5E:F1:A0:A6. Default: the first connected
     /// supported earbuds.
-    device: Option<bluer::Address>,
+    device: Option<Address>,
     /// Append posture samples and cue events as JSON lines to this file
     #[arg(long)]
     log: Option<PathBuf>,
@@ -61,7 +62,7 @@ enum Attempt {
 /// One attempt: find the earbuds, connect, and run a session until it ends. Anything that can be
 /// retried comes back as an [`Attempt`]. An `Err` is fatal.
 async fn attempt(
-    bt: &bluer::Session,
+    bt: &Host,
     args: &Args,
     cues: &Cues,
     rec: &mut Recorder,
@@ -82,7 +83,7 @@ async fn attempt(
     };
     rec.note(&format!("using {} ({})", found.name, found.address));
     let device_log = DeviceLog::new(args.raw_log.as_deref().map(open_append).transpose()?);
-    let mut tracker = match AnyTracker::connect(&found, device_log).await {
+    let mut tracker = match AnyTracker::connect(bt, &found, device_log).await {
         Ok(t) => t,
         Err(e) => return Ok(Attempt::Failed(format!("connecting failed: {e:#}"))),
     };
@@ -109,9 +110,7 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let cues = Cues::new()?;
     let mut rec = Recorder::new(args.log.as_deref().map(open_append).transpose()?);
-    let bt = bluer::Session::new()
-        .await
-        .context("connect to BlueZ over D-Bus")?;
+    let bt = Host::new().await?;
     if let Some(addr) = args.device {
         devices::ensure_supported(&bt, addr).await?;
     }

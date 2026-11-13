@@ -8,7 +8,6 @@ repository = "https://github.com/yuxqiu/headup"
 
 [dependencies]
 anyhow = "1.0.104"
-bluer = { version = "0.17.4", default-features = false, features = ["bluetoothd", "rfcomm"] }
 clap = { version = "4.6.7", features = ["derive"] }
 cpal = "0.18.2"
 notify-rust = { version = "4.18.2", default-features = false, features = ["z-with-tokio"] }
@@ -19,6 +18,7 @@ tokio = { version = "1.54.1", features = ["rt", "macros", "time", "signal", "io-
 # On Linux, play through PulseAudio's protocol (PipeWire serves it too), so cues reach the default
 # output. Without a PulseAudio server cpal falls back to ALSA.
 [target.'cfg(target_os = "linux")'.dependencies]
+bluer = { version = "0.17.4", default-features = false, features = ["bluetoothd", "rfcomm"] }
 cpal = { version = "0.18.2", features = ["pulseaudio"] }
 
 [dev-dependencies]
