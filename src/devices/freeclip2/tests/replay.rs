@@ -3,7 +3,6 @@
 //! posture session.
 
 use crate::core::quat::Quat;
-use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use crate::devices::freeclip2::FreeClip2;
 use crate::devices::freeclip2::link::Link;
@@ -76,7 +75,7 @@ impl Replay {
     /// Replay `rows`, with the recording's time zero at `start`.
     pub fn new(rows: &[Row], start: Instant) -> Self {
         let adapter = "00:00:00:00:00:01".parse().unwrap();
-        let mut link = Link::new(adapter, DeviceLog::new(None), start);
+        let mut link = Link::new(adapter, start);
         link.take_outbox();
         let rows = rows
             .iter()
@@ -99,6 +98,7 @@ impl Replay {
             let (at, bytes) = self.rows.pop_front()?;
             self.now = at;
             self.link.on_bytes(at, &bytes).unwrap();
+            self.link.take_log();
         }
     }
 }

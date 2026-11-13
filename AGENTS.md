@@ -23,7 +23,7 @@ user, through the earbuds, when they look down for too long. Everything runs loc
 - `src/devices/`: the backend registry (`mod.rs`), discovery (`discovery.rs`), and `bluetooth/`: the Bluetooth
   operations backends use (`Host`, `RfcommStream`, `Address`), one implementation per OS (`bluez.rs` for Linux).
 - `src/devices/<model>/`: one backend. FreeClip 2: `protocol.rs` (wire messages), `link.rs` (protocol state, no
-  I/O), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (the socket). Its test-only modules are in
+  I/O), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (a task that owns the socket and reads continuously). Its test-only modules are in
   `src/devices/<model>/tests/`.
 - `src/testing.rs`: test support shared across modules (run the real session on any tracker).
 - Per model, outside `src/`: `docs/devices/<model>/`, `tools/<model>/` (Python research scripts: `firmware/`,

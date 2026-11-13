@@ -18,20 +18,25 @@ mod rebuild;
 
 use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
-use crate::devices::bluetooth::{Host, RfcommStream};
+use crate::devices::bluetooth::{Address, Host};
 use crate::devices::{Backend, Found};
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result, bail, ensure};
 use link::Link;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 
 const RFCOMM_CHANNEL: u8 = 1;
 
-/// The connected earbuds: the RFCOMM socket and the protocol state (`Link`).
+/// The connected earbuds. A task owns the socket and the protocol state (`Link`) and reads all the
+/// time, so each sample is timed when it arrives, even while the session is busy speaking.
 pub struct FreeClip2 {
-    stream: RfcommStream,
-    link: Link,
+    /// Events from the task, in order. If the task fails, its error comes last.
+    events: mpsc::UnboundedReceiver<Result<Event>>,
+    /// Asks the task to switch the pose stream off and end. Dropping it ends the task without
+    /// switching the stream off.
+    stop: Option<oneshot::Sender<()>>,
 }
 
 impl FreeClip2 {
@@ -45,16 +50,77 @@ impl FreeClip2 {
         pose_drifts_up: true,
     };
 
-    /// Send the frames the protocol has queued.
-    async fn flush(&mut self) -> Result<()> {
-        for f in self.link.take_outbox() {
-            self.stream
-                .write_all(&f.encode())
-                .await
-                .context("RFCOMM write")?;
+    /// Start the task on a connected `stream`. `adapter` is this computer's Bluetooth address.
+    fn start<S>(stream: S, adapter: Address, log: DeviceLog) -> Self
+    where
+        S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    {
+        let (events_tx, events) = mpsc::unbounded_channel();
+        let (stop, stop_rx) = oneshot::channel();
+        let link = Link::new(adapter, Instant::now());
+        tokio::spawn(async move {
+            if let Err(e) = serve(stream, link, log, &events_tx, stop_rx).await {
+                // Fails only if the tracker is gone, and then nobody is left to tell.
+                let _ = events_tx.send(Err(e));
+            }
+        });
+        FreeClip2 {
+            events,
+            stop: Some(stop),
         }
-        Ok(())
     }
+}
+
+/// Move bytes between `stream` and `link`, pass its events on and write its log, until asked to
+/// stop or the tracker is dropped.
+async fn serve<S>(
+    mut stream: S,
+    mut link: Link,
+    mut log: DeviceLog,
+    events: &mpsc::UnboundedSender<Result<Event>>,
+    mut stop: oneshot::Receiver<()>,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut buf = [0u8; 1024];
+    loop {
+        send(&mut stream, &mut link).await?;
+        while let Some(event) = link.next_event() {
+            if events.send(Ok(event)).is_err() {
+                return Ok(()); // the tracker was dropped
+            }
+        }
+        let read = tokio::select! {
+            read = stream.read(&mut buf) => read,
+            asked = &mut stop => {
+                if asked.is_ok() {
+                    link.stop();
+                    send(&mut stream, &mut link).await?;
+                }
+                return Ok(());
+            }
+        };
+        let n = read.context("RFCOMM read")?;
+        ensure!(n > 0, "earbuds closed the connection");
+        let handled = link.on_bytes(Instant::now(), &buf[..n]);
+        // Written before a protocol error is returned, so the log shows the frame that caused it.
+        for record in link.take_log() {
+            log.record(&record)?;
+        }
+        handled?;
+    }
+}
+
+/// Send the frames `link` has queued.
+async fn send<S: AsyncWrite + Unpin>(stream: &mut S, link: &mut Link) -> Result<()> {
+    for f in link.take_outbox() {
+        stream
+            .write_all(&f.encode())
+            .await
+            .context("RFCOMM write")?;
+    }
+    Ok(())
 }
 
 impl Backend for FreeClip2 {
@@ -63,43 +129,38 @@ impl Backend for FreeClip2 {
         bluetooth_name.starts_with("HUAWEI FreeClip 2")
     }
 
-    /// Connect, query wear state and start the pose stream. `log` receives every raw sample and
-    /// every other frame.
+    /// Connect, then query wear state and start the pose stream. `log` receives every raw sample
+    /// and every other frame.
     async fn connect(host: &Host, found: &Found, log: DeviceLog) -> Result<Self> {
         let addr = found.device.address;
         let stream = host
             .connect_rfcomm(addr, RFCOMM_CHANNEL)
             .await
             .with_context(|| format!("RFCOMM connect to {addr} channel {RFCOMM_CHANNEL} (is the FreeClip 2 connected?)"))?;
-        let link = Link::new(found.adapter, log, Instant::now());
-        let mut dev = FreeClip2 { stream, link };
-        dev.flush().await?;
-        Ok(dev)
+        Ok(FreeClip2::start(stream, found.adapter, log))
     }
 }
 
 impl HeadTracker for FreeClip2 {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        let deadline = Instant::now() + timeout;
-        loop {
-            self.flush().await?;
-            if let Some(event) = self.link.next_event() {
-                return Ok(Some(event));
-            }
-            let mut buf = [0u8; 1024];
-            let Ok(read) = tokio::time::timeout_at(deadline, self.stream.read(&mut buf)).await
-            else {
-                return Ok(None);
-            };
-            let n = read.context("RFCOMM read")?;
-            ensure!(n > 0, "earbuds closed the connection");
-            self.link.on_bytes(Instant::now(), &buf[..n])?;
+        match tokio::time::timeout(timeout, self.events.recv()).await {
+            Err(_) => Ok(None),
+            Ok(Some(event)) => event.map(Some),
+            Ok(None) => bail!("the connection to the earbuds has ended"),
         }
     }
 
     async fn stop(&mut self) -> Result<()> {
-        self.link.stop();
-        self.flush().await
+        if let Some(stop) = self.stop.take() {
+            // Fails only if the task has ended; the loop below then returns its error.
+            let _ = stop.send(());
+        }
+        // The task closes the channel once the stream is switched off. Events still queued are
+        // dropped.
+        while let Some(event) = self.events.recv().await {
+            event?;
+        }
+        Ok(())
     }
 
     fn traits(&self) -> TrackerTraits {
@@ -113,4 +174,5 @@ mod tests {
     mod end_to_end;
     mod rebuild;
     pub(super) mod replay;
+    mod socket;
 }

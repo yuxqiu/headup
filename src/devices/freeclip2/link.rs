@@ -1,5 +1,5 @@
-//! The FreeClip 2 protocol without I/O: bytes and the time come in, events for the session and
-//! frames to send go out. [`super::FreeClip2`] only moves bytes between this and the socket, so
+//! The FreeClip 2 protocol without I/O: bytes and the time come in; events for the session, frames
+//! to send and `--raw-log` records go out. [`super::FreeClip2`] only moves bytes between this and the socket, so
 //! every protocol decision here can be tested without earbuds.
 
 use super::mbb::{Decoder, Frame};
@@ -7,7 +7,6 @@ use super::protocol::{
     Message, RawFrame, RawSample, SwitchReply, capability_query, stream_switch, wear_query,
 };
 use super::rebuild::{Rebuilder, Rebuilt};
-use crate::core::record::DeviceLog;
 use crate::core::tracker::Event;
 use crate::devices::bluetooth::Address;
 use anyhow::Result;
@@ -26,7 +25,8 @@ pub struct Link {
     earbuds: Earbuds,
     /// What the session has been told so far.
     told: View,
-    log: DeviceLog,
+    /// `--raw-log` records, oldest first.
+    log: Vec<LogRecord>,
     /// Events for the session, in order.
     events: VecDeque<Event>,
     /// Frames to send to the earbuds.
@@ -36,7 +36,7 @@ pub struct Link {
 impl Link {
     /// A link to earbuds just connected at `now`. It starts by asking for the wear state and
     /// switching the pose stream on.
-    pub fn new(adapter: Address, log: DeviceLog, now: Instant) -> Self {
+    pub fn new(adapter: Address, now: Instant) -> Self {
         Link {
             decoder: Decoder::default(),
             rebuild: Rebuilder::default(),
@@ -44,7 +44,7 @@ impl Link {
             adapter,
             earbuds: Earbuds::default(),
             told: View::default(),
-            log,
+            log: Vec::new(),
             events: VecDeque::new(),
             outbox: vec![wear_query(), capability_query(), stream_switch(true)],
         }
@@ -69,6 +69,11 @@ impl Link {
         std::mem::take(&mut self.outbox)
     }
 
+    /// `--raw-log` records waiting to be written, oldest first.
+    pub fn take_log(&mut self) -> Vec<LogRecord> {
+        std::mem::take(&mut self.log)
+    }
+
     /// Switch the pose stream off, leaving the earbuds as they were before headup.
     pub fn stop(&mut self) {
         self.outbox.push(stream_switch(false));
@@ -79,8 +84,10 @@ impl Link {
     fn on_frame(&mut self, now: Instant, f: &Frame) -> Result<()> {
         let msg = Message::parse(f);
         match msg {
-            Ok(Message::Sample { seq, raw }) => self.log.record(&RawSample::new(seq, raw))?,
-            _ => self.log.record(&RawFrame::from(f))?, // logged even if malformed, for debugging
+            Ok(Message::Sample { seq, raw }) => {
+                self.log.push(LogRecord::Sample(RawSample::new(seq, raw)))
+            }
+            _ => self.log.push(LogRecord::Frame(RawFrame::from(f))), // even if malformed, for debugging
         }
         let request = match msg? {
             Message::Wear { both_worn } => self.earbuds.on_wear(both_worn),
@@ -96,7 +103,8 @@ impl Link {
                             self.events.push_back(Event::Pose { at, orientation });
                         }
                         Rebuilt::MissedGlide { seq } => {
-                            self.log.record(&MissedGlide { missed_glide: seq })?;
+                            self.log
+                                .push(LogRecord::MissedGlide(MissedGlide { missed_glide: seq }));
                         }
                     }
                 }
@@ -133,11 +141,20 @@ impl Link {
     }
 }
 
+/// A `--raw-log` record. Each kind serialises as its own fields.
+#[derive(Serialize)]
+#[serde(untagged)]
+pub enum LogRecord {
+    Sample(RawSample),
+    Frame(RawFrame),
+    MissedGlide(MissedGlide),
+}
+
 /// `--raw-log` record of a re-centre that the rebuilder did not recognise as a glide. It reads
 /// `{"missed_glide":1234}`, where 1234 is the sequence number of the identity sample that ended
 /// the glide.
 #[derive(Serialize)]
-struct MissedGlide {
+pub struct MissedGlide {
     missed_glide: u32,
 }
 
@@ -298,7 +315,7 @@ mod tests {
     }
 
     fn link(now: Instant) -> Link {
-        let mut link = Link::new(pc(), DeviceLog::new(None), now);
+        let mut link = Link::new(pc(), now);
         link.take_outbox();
         link
     }
@@ -325,7 +342,7 @@ mod tests {
 
     #[test]
     fn starts_by_querying_and_switching_the_stream_on() {
-        let mut link = Link::new(pc(), DeviceLog::new(None), Instant::now());
+        let mut link = Link::new(pc(), Instant::now());
         let sent = link.take_outbox();
         assert_eq!(
             sent,

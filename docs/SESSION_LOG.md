@@ -533,3 +533,11 @@
 - Core review: wording fixes and the `Available(false)` obligation in `tracker.rs`.
 - Privacy check of `data/` (serial number, phone address, wall-clock times); six recordings converted to fixtures
   with the new `to_fixture.py`. 78 tests, `nix flake check` pass. All staged, not committed.
+
+## 2026-11-13 18:30 UTC
+- Design review of `Link`, the session and the tracker interface. Found that poses measured while a prompt
+  plays were stamped when it ended (raw-log bursts of 136–172 samples within 20 ms).
+- FreeClip 2 now reads its socket in its own task; `Link` returns raw-log records instead of writing them;
+  session tests moved to `src/core/tests/session.rs`. 87 tests, clippy and fmt pass.
+- Left for the user to decide: a pure calibration state machine, and a backend-provided "posture known
+  until" watermark instead of the session's lag inference.

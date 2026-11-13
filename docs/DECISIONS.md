@@ -812,3 +812,18 @@
 - Behaviour unchanged: no existing test changed; checked live (read-only BlueZ queries: adapter address,
   connected devices, a known device's name).
 
+
+## 2026-11-13: The FreeClip 2 backend reads its socket in its own task (user)
+- **What.** A task owns the RFCOMM socket and `Link`, reads all the time, stamps each read with its arrival
+  time and passes events over an unbounded channel. `next_event` waits on the channel; `stop` asks the task
+  to switch the stream off and waits until it has. `Link` no longer writes `--raw-log` itself: it returns
+  log records (`take_log`) and the task writes them, after each read, before returning a protocol error.
+- **Why.** The socket was read only inside `next_event`, and the session does not call it while it speaks a
+  prompt. Samples measured during a prompt queued in the socket and were stamped when the prompt ended:
+  the raw logs show 136–172 samples (2.6–3.3 s of data) read within 20 ms right after "Sit upright"
+  (`live3`, `live4`, `live7`, `gap_live` at ~3.9 s) and after later prompts. Calibration's rule to ignore
+  poses measured before the prompt ended could not work on them, and the earbuds' pushes waited unanswered.
+  `FakeTracker` stamps correctly, so the session tests did not catch it; `tests/socket.rs` does (checked
+  failing with read-on-request).
+- **Rejected.** Reading in `CueSink::say` while it plays: couples cues to the tracker. A bounded channel:
+  back-pressure would bring the late stamps back.

@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-13 16:56 UTC
+Last updated: 2026-11-13 18:30 UTC
 
 ## Current state
 - The protocol works.
@@ -19,8 +19,9 @@ Last updated: 2026-11-13 16:56 UTC
     data, `--raw-log`), both JSON lines via serde_json; `t` is wall-clock Unix time (session timing stays
     monotonic). Bluetooth is in `src/devices/bluetooth/` (BlueZ: `bluez.rs`), discovery in
     `src/devices/discovery.rs`. Test-only backend modules live in `src/devices/<model>/tests/`.
-  - 85 tests pass, including replays of all 14 recordings in `tests/fixtures/freeclip2/`, end-to-end cue tests,
-    and scripted session tests on a paused clock (core/session.rs).
+  - 87 tests pass, including replays of all 14 recordings in `tests/fixtures/freeclip2/`, end-to-end cue tests,
+    and scripted session tests on a paused clock (core/tests/session.rs). The FreeClip 2 backend reads
+    its socket in its own task, so poses are timed on arrival even while a prompt plays.
   - The design was approved by the user (docs/UX_RESEARCH.md); the parameters are in docs/DECISIONS.md.
 - Git: the user makes all commits; changes since their last commit are staged. `data/` and `research/` are
   gitignored; test recordings are in `tests/fixtures/freeclip2/`.
