@@ -8,7 +8,7 @@
 use super::audio;
 use super::detector::Cue;
 use super::wav::Pcm;
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 
 /// Generates [`Phrase`] from `Variant => "clip"` pairs. Each clip is embedded from
@@ -62,15 +62,16 @@ pub trait CueSink {
 pub struct Cues {
     tone: Arc<Pcm>,
     tink: Arc<Pcm>,
-    /// Every phrase's clip, decoded once at startup.
-    phrases: Vec<(Phrase, Arc<Pcm>)>,
+    /// Every phrase's clip, decoded once at startup, in `Phrase::ALL` order: a phrase's clip is
+    /// at its own index (`phrases!` lists the variants in declaration order).
+    phrases: Vec<Arc<Pcm>>,
 }
 
 impl Cues {
     pub fn new() -> Result<Self> {
         let phrases = Phrase::ALL
             .iter()
-            .map(|&p| Ok((p, Arc::new(p.pcm()?))))
+            .map(|&p| Ok(Arc::new(p.pcm()?)))
             .collect::<Result<_>>()?;
         Ok(Cues {
             tone: Arc::new(Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)])),
@@ -80,12 +81,7 @@ impl Cues {
     }
 
     fn phrase(&self, p: Phrase) -> Arc<Pcm> {
-        let (_, pcm) = self
-            .phrases
-            .iter()
-            .find(|(q, _)| *q == p)
-            .expect("all phrases decoded");
-        pcm.clone()
+        self.phrases[p as usize].clone()
     }
 }
 
@@ -109,8 +105,12 @@ impl CueSink for Cues {
 
     async fn say(&self, p: Phrase) -> Result<()> {
         let pcm = self.phrase(p);
-        tokio::task::spawn_blocking(move || audio::play(&pcm))
+        let limit = audio::time_limit(&pcm);
+        let playing = tokio::task::spawn_blocking(move || audio::play(&pcm));
+        // A sound server that stops answering would block `play` forever; the session moves on.
+        tokio::time::timeout(limit, playing)
             .await
+            .map_err(|_| anyhow!("the sound server did not answer"))?
             .context("audio task")?
             .with_context(|| format!("playing {p:?}"))
     }

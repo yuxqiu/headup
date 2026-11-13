@@ -11,7 +11,7 @@
 use super::wav::Pcm;
 use anyhow::{Context, Result, anyhow, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{FromSample, SampleFormat, SizedSample, StreamConfig};
+use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample, StreamConfig};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -20,10 +20,23 @@ use std::time::{Duration, Instant};
 /// Left to itself, a PulseAudio server would use 2 s.
 const BUFFER: Duration = Duration::from_millis(20);
 
+/// How long opening the output may take.
+const OPEN: Duration = Duration::from_secs(2);
+
 /// How much longer than the sound itself playback may take before the output counts as stalled.
-/// A stalled or vanished output would otherwise never report the end, and a spoken prompt would
-/// hold up the session.
+/// A stalled or vanished output would otherwise never report the end.
 const STALL: Duration = Duration::from_secs(2);
+
+/// The longest [`play`] should take for `pcm`. `play` gives up on an output that stops asking for
+/// audio, but not on a sound server that stops answering while the output is opened or closed;
+/// a caller that must not hang waits for `play` at most this long.
+pub fn time_limit(pcm: &Pcm) -> Duration {
+    OPEN + length(pcm) + STALL
+}
+
+fn length(pcm: &Pcm) -> Duration {
+    Duration::from_secs_f64(pcm.samples.len() as f64 / f64::from(pcm.rate))
+}
 
 /// Play `pcm` on the default output and return once its last sample has been heard. Blocks the
 /// thread. Fails if the output cannot be opened, reports an error, or stalls.
@@ -43,37 +56,41 @@ pub fn play(pcm: &Pcm) -> Result<()> {
         cpal::SupportedBufferSize::Unknown => cpal::BufferSize::Fixed(frames),
     };
     let samples = convert(pcm, config.sample_rate, config.channels);
+    let length = length(pcm);
     match supported.sample_format() {
-        SampleFormat::F32 => play_as::<f32>(&device, config, samples),
-        SampleFormat::I16 => play_as::<i16>(&device, config, samples),
-        SampleFormat::I32 => play_as::<i32>(&device, config, samples),
-        SampleFormat::U16 => play_as::<u16>(&device, config, samples),
+        SampleFormat::F32 => play_as::<f32>(&device, config, samples, length),
+        SampleFormat::I16 => play_as::<i16>(&device, config, samples, length),
+        SampleFormat::I32 => play_as::<i32>(&device, config, samples, length),
+        SampleFormat::U16 => play_as::<u16>(&device, config, samples, length),
         other => bail!("audio output uses an unsupported sample format ({other})"),
     }
 }
 
-/// Play interleaved `samples` on `device` in its sample type `T`; see [`play`].
-fn play_as<T>(device: &cpal::Device, config: StreamConfig, samples: Vec<f32>) -> Result<()>
+/// Play interleaved `samples`, `length` long, on `device` in its sample type `T`; see [`play`].
+fn play_as<T>(
+    device: &cpal::Device,
+    config: StreamConfig,
+    samples: Vec<f32>,
+    length: Duration,
+) -> Result<()>
 where
     T: SizedSample + FromSample<f32>,
 {
-    let channels = usize::from(config.channels);
-    let rate = f64::from(config.sample_rate);
-    let length = Duration::from_secs_f64(samples.len() as f64 / channels as f64 / rate);
-    // When the last sample will be heard, or why playback failed.
+    // When the last sample will be heard, or why playback failed. The data callback sends once.
     let (end_tx, end_rx) = mpsc::channel::<Result<Instant>>();
     let error_tx = end_tx.clone();
+    let mut end_tx = Some(end_tx);
     let mut next = 0;
-    let mut reported = false;
     // The sound's samples, then silence.
     let stream = device
         .build_output_stream::<T, _, _>(
             config,
             move |out: &mut [T], info| {
-                if next == samples.len() && !reported {
+                if next == samples.len()
+                    && let Some(end_tx) = end_tx.take()
+                {
                     // The whole sound was handed over before this buffer, which is heard from
                     // its playback time on.
-                    reported = true;
                     let t = info.timestamp();
                     let heard = t.playback.duration_since(t.callback);
                     let _ = end_tx.send(Ok(Instant::now() + heard));
@@ -88,9 +105,12 @@ where
                 next += n;
             },
             move |e| {
-                let _ = error_tx.send(Err(anyhow!(e).context("audio output")));
+                // After an underrun the output recovers by itself; the sound just has a gap.
+                if e.kind() != ErrorKind::Xrun {
+                    let _ = error_tx.send(Err(anyhow!(e).context("audio output")));
+                }
             },
-            Some(STALL),
+            Some(OPEN),
         )
         .context("open the audio output")?;
     stream.play().context("start the audio output")?;

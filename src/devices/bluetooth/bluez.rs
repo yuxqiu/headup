@@ -54,7 +54,8 @@ impl Host {
         Ok(connected)
     }
 
-    /// The name BlueZ knows `address` by, if any. The device need not be connected.
+    /// The name BlueZ knows `address` by. The device need not be connected. `None` when BlueZ has
+    /// no name for it or cannot be asked (a device BlueZ has not seen yet is not an error).
     pub async fn name_of(&self, address: Address) -> Result<Option<String>> {
         let device = self.adapter().await?.device(bluer::Address(address.0))?;
         Ok(device.name().await.ok().flatten())

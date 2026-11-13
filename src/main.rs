@@ -81,7 +81,10 @@ async fn attempt(
             )));
         }
     };
-    rec.note(&format!("using {} ({})", found.name, found.address));
+    rec.note(&format!(
+        "using {} ({})",
+        found.device.name, found.device.address
+    ));
     let device_log = DeviceLog::new(args.raw_log.as_deref().map(open_append).transpose()?);
     let mut tracker = match AnyTracker::connect(bt, &found, device_log).await {
         Ok(t) => t,

@@ -1,6 +1,6 @@
 //! Unit quaternion for head orientation.
 
-use std::ops::Mul;
+use std::ops::{Mul, Neg};
 
 /// Head orientation as angles in degrees. Pitch > 0 is looking down, yaw > 0 is turned left, and
 /// roll > 0 is tilted right.
@@ -96,6 +96,20 @@ impl Mul for Quat {
             x: a.w * b.x + a.x * b.w + a.y * b.z - a.z * b.y,
             y: a.w * b.y - a.x * b.z + a.y * b.w + a.z * b.x,
             z: a.w * b.z + a.x * b.y - a.y * b.x + a.z * b.w,
+        }
+    }
+}
+
+/// The same rotation with every component negated (`q` and `-q` describe the same rotation).
+impl Neg for Quat {
+    type Output = Quat;
+
+    fn neg(self) -> Quat {
+        Quat {
+            w: -self.w,
+            x: -self.x,
+            y: -self.y,
+            z: -self.z,
         }
     }
 }

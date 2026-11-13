@@ -1,14 +1,13 @@
 //! Finding connected earbuds that have a backend.
 
 use super::Model;
-use super::bluetooth::{Address, Host};
+use super::bluetooth::{Address, Device, Host};
 use anyhow::{Result, bail};
 
 /// A connected Bluetooth device that a backend supports.
 #[derive(Debug, Clone)]
 pub struct Found {
-    pub address: Address,
-    pub name: String,
+    pub device: Device,
     pub model: Model,
     /// This computer's Bluetooth adapter, as the earbuds know it.
     pub adapter: Address,
@@ -19,7 +18,7 @@ pub struct Found {
 pub async fn find(host: &Host, want: Option<Address>) -> Result<Option<Found>> {
     let mut found = connected(host).await?.into_iter();
     Ok(match want {
-        Some(address) => found.find(|f| f.address == address),
+        Some(address) => found.find(|f| f.device.address == address),
         None => found.next(),
     })
 }
@@ -43,11 +42,10 @@ async fn connected(host: &Host) -> Result<Vec<Found>> {
         .connected()
         .await?
         .into_iter()
-        .filter_map(|d| {
-            let model = Model::from_bluetooth_name(&d.name)?;
+        .filter_map(|device| {
+            let model = Model::from_bluetooth_name(&device.name)?;
             Some(Found {
-                address: d.address,
-                name: d.name,
+                device,
                 model,
                 adapter,
             })

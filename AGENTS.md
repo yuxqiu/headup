@@ -17,7 +17,7 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   - `tracker.rs`: the `HeadTracker` interface that backends implement.
   - `session.rs`: calibration and monitoring.
   - `detector.rs`: slouch detection.
-  - `cues.rs`, `wav.rs`: sounds and notifications.
+  - `cues.rs`, `audio.rs`, `wav.rs`: sounds and notifications (`audio.rs` plays a sound to the end).
   - `record.rs`: console output and logs.
   - `quat.rs`: orientation math.
 - `src/devices/`: the backend registry (`mod.rs`), discovery (`discovery.rs`), and `bluetooth/`: the Bluetooth

@@ -14,8 +14,7 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
 - Probe an MBB command: `python3 -I tools/freeclip2/device/probe.py C0:DA:5E:F1:A0:A6 '43/90:1='`
 - Troubleshoot a device backend: `headup --raw-log FILE` appends every raw sample (time, seq, quaternion as sent)
   and every other frame as JSON lines. Rebuilt orientations are in `--log` (pitch/yaw/roll). A FreeClip 2
-  re-centre the rebuilder's glide model did not follow is logged as `{"missed_glide":SEQ}` and printed as a warning
-  on stderr (the journal for the service).
+  re-centre the rebuilder's glide model did not follow is logged as `{"missed_glide":SEQ}`.
 - Log lines in both files start with `t`, wall-clock Unix time in seconds (ms precision). Convert in Python with
   `datetime.fromtimestamp(t)`; subtract the first `t` for seconds since start.
 - Stream head pose: `python3 -I tools/freeclip2/device/headpose.py C0:DA:5E:F1:A0:A6 SECONDS [data/out.csv]`

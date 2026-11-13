@@ -66,7 +66,7 @@ impl Backend for FreeClip2 {
     /// Connect, query wear state and start the pose stream. `log` receives every raw sample and
     /// every other frame.
     async fn connect(host: &Host, found: &Found, log: DeviceLog) -> Result<Self> {
-        let addr = found.address;
+        let addr = found.device.address;
         let stream = host
             .connect_rfcomm(addr, RFCOMM_CHANNEL)
             .await
@@ -111,5 +111,6 @@ impl HeadTracker for FreeClip2 {
 mod tests {
     // Test-only modules in tests/. They replay recordings through the protocol and the session.
     mod end_to_end;
+    mod rebuild;
     pub(super) mod replay;
 }

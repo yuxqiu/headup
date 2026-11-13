@@ -12,15 +12,15 @@ Last updated: 2026-11-13 16:56 UTC
   - Modular layout:
     - `src/core/`: quat, the `HeadTracker` trait, detector, session (calibration + monitor), cues.
     - `src/devices/freeclip2/`: mbb framing, rebuild, and the backend with `--raw-log`.
-  - `src/core/` also has `record.rs` (console/log output) and `wav.rs` (WAV parse, encode, tones); `src/devices/mod.rs` has
+  - `src/core/` also has `record.rs` (console/log output) and `audio.rs` (play to the end) and `wav.rs` (WAV parse, tones); `src/devices/mod.rs` has
     the `Backend` trait and the `backends!` list, which generates `Model` and the `AnyTracker` dispatch. Adding a model
     takes a backend module, its `mod` line and one list line.
   - Logging: `core::record::Recorder` (session log, `--log`, and the run clock) and `DeviceLog` (the backend's raw
     data, `--raw-log`), both JSON lines via serde_json; `t` is wall-clock Unix time (session timing stays
-    monotonic). BlueZ lookup is
-    in `src/devices/discovery.rs`. Test-only backend modules live in `src/devices/<model>/tests/`.
-  - 42 tests pass, including replays of real recordings (guided axes, long holds, stream restart), end-to-end
-    cue tests, and scripted session tests on a paused clock (core/session.rs).
+    monotonic). Bluetooth is in `src/devices/bluetooth/` (BlueZ: `bluez.rs`), discovery in
+    `src/devices/discovery.rs`. Test-only backend modules live in `src/devices/<model>/tests/`.
+  - 85 tests pass, including replays of all 14 recordings in `tests/fixtures/freeclip2/`, end-to-end cue tests,
+    and scripted session tests on a paused clock (core/session.rs).
   - The design was approved by the user (docs/UX_RESEARCH.md); the parameters are in docs/DECISIONS.md.
 - Git: the user makes all commits; changes since their last commit are staged. `data/` and `research/` are
   gitignored; test recordings are in `tests/fixtures/freeclip2/`.

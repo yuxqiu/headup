@@ -716,8 +716,13 @@
     samples (`Glide::through`, closed form). The earbuds can start sending in the middle of a stream's first
     re-centre (data/live6_raw.jsonl, stream_restart.csv). A glide whose start did arrive has its own hypothesis.
   - An identity sample that no hypothesis predicts, with nothing held (the glide's samples already came out), is
-    reported (`Rebuilt::MissedGlide`: stderr warning, `{"missed_glide":SEQ}` in `--raw-log`). It does not trigger
-    recalibration (user).
+    reported (`Rebuilt::MissedGlide`, written as `{"missed_glide":SEQ}` to `--raw-log`). It does not trigger
+    recalibration (user). It is not printed: `Link` does no I/O and console output goes through `Recorder`
+    (thermos review, 2026-11-13).
+  - A glide the earbuds cut short drops what is held after the oldest live hypothesis's start, which is the glide's
+    own start. (First version: the held samples of the last 70 sequence numbers; after a gap of more than that
+    before the identity sample it dropped nothing and the glide came out. Test `glide_cut_off_by_a_gap_stays_hidden`
+    fails on it.)
 - Why (user): the 0.2 s and the 70-sample hold were delays for samples known not to be part of a glide. Rejected
   first: the 70-sample hold with exact hypotheses (user preferred hiding all errors, then chose this once the model
   was shown exact): it hides glides outside the model too, but delays every pose and cue by 1.3–2.0 s.
@@ -786,6 +791,9 @@
     hides `cpal`'s playback timestamps. Users either keep one output open (Handy) or sleep a guessed time before
     closing (voxtype: 150 ms); headup's first version padded 0.25 s. Neither is right here.
   - `libpulse-simple-binding`: Linux only.
+- An underrun (`cpal` `ErrorKind::Xrun`) is not a failure: the output recovers by itself (ALSA, CoreAudio). Other
+  output errors fail the sound. `say` also waits at most `audio::time_limit` (open + length + stall, 2 s each side),
+  because a sound server that stops answering blocks `cpal` while the output is opened or closed (thermos review).
 - Live check still owed: cues audible on the earbuds, not clipped, prompts not cut at the end.
 
 ## 2026-11-13: Bluetooth behind a per-OS module (user: groundwork only)

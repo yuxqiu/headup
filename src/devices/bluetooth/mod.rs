@@ -5,7 +5,7 @@
 //! provides [`Host`] (the operations) and [`RfcommStream`] (a connection, read and written with
 //! tokio). Only Linux (BlueZ) has one so far.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Result, bail};
 use std::fmt;
 use std::str::FromStr;
 
@@ -54,7 +54,7 @@ impl FromStr for Address {
         }
         let mut bytes = [0; 6];
         for (b, p) in bytes.iter_mut().zip(parts) {
-            *b = u8::from_str_radix(p, 16).context("hex digits checked above")?;
+            *b = u8::from_str_radix(p, 16).expect("two hex digits, checked above");
         }
         Ok(Address(bytes))
     }

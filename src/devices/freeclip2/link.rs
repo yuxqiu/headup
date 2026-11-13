@@ -96,10 +96,6 @@ impl Link {
                             self.events.push_back(Event::Pose { at, orientation });
                         }
                         Rebuilt::MissedGlide { seq } => {
-                            eprintln!(
-                                "warning: the earbuds re-centred (sample {seq}) in a way headup \
-                                 does not recognise; the pose may be off until the next calibration"
-                            );
                             self.log.record(&MissedGlide { missed_glide: seq })?;
                         }
                     }
