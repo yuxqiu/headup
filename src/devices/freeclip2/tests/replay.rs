@@ -4,8 +4,10 @@
 
 use crate::core::quat::Quat;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
+use crate::devices::bluetooth::Address;
 use crate::devices::freeclip2::FreeClip2;
 use crate::devices::freeclip2::link::Link;
+use crate::devices::freeclip2::mbb::Frame;
 use crate::devices::freeclip2::protocol::sample_frame;
 use anyhow::{Result, bail};
 use serde::Deserialize;
@@ -63,7 +65,8 @@ pub fn read_csv(name: &str) -> Vec<Row> {
         .collect()
 }
 
-/// Feeds a recording to a [`Link`] as the socket would: each sample as a 43/89 frame at its
+/// Feeds a recording to a [`Link`] as the socket would: first a 43/54 push saying this computer
+/// streams audio (the earbuds send one on connect), then each sample as a 43/89 frame at its
 /// recorded time. All times are exact `Instant`s.
 pub struct Replay {
     link: Link,
@@ -74,9 +77,14 @@ pub struct Replay {
 impl Replay {
     /// Replay `rows`, with the recording's time zero at `start`.
     pub fn new(rows: &[Row], start: Instant) -> Self {
-        let adapter = "00:00:00:00:00:01".parse().unwrap();
+        let adapter: Address = "00:00:00:00:00:01".parse().unwrap();
         let mut link = Link::new(adapter, start);
+        let mut streaming = adapter.0;
+        streaming.reverse();
+        let push = Frame::new(43, 54, &[(5, &[&streaming[..], &[0x09]].concat())]);
+        link.on_bytes(start, &push.encode()).unwrap();
         link.take_outbox();
+        link.take_log();
         let rows = rows
             .iter()
             .map(|r| (start + r.t, sample_frame(r.seq, r.raw).encode()))
@@ -109,16 +117,18 @@ pub struct Out {
     pub abs: Quat,
 }
 
-/// Every pose the protocol hands out for a recording.
+/// Every pose the protocol hands out for a recording. Availability changes (from stretches in
+/// which the earbuds discard head movement) are skipped.
 pub fn replay(rows: &[Row]) -> Vec<Out> {
     let start = Instant::now();
     let mut replay = Replay::new(rows, start);
     std::iter::from_fn(|| replay.next())
-        .map(|(_, event)| match event {
-            Event::Pose { at, orientation } => Out {
+        .filter_map(|(_, event)| match event {
+            Event::Pose { at, orientation } => Some(Out {
                 t: at - start,
                 abs: orientation,
-            },
+            }),
+            Event::Available(_) => None,
             other => panic!("a recording of samples produced {other:?}"),
         })
         .collect()

@@ -874,3 +874,46 @@ identity sample as ground truth for each glide's end.
   at the slouch angle. Test `moving_during_a_glide_is_not_lost`.
 - The guided axis runs' glides with a late start and an early end (headpose_axes*.csv, e.g. `turn_left` → `center`
   at 35.8 s) are most likely the same thing: the head started turning at the prompt.
+
+## Instant resets while walking (data/reconnect_raw.jsonl, data/turn_test_raw.jsonl, 2026-11-13)
+
+- Two runs with the user walking to another room and back (fixtures `walk_reconnect.csv`, `turn_walk.csv`). Each
+  had two **instant resets**: the output went straight to identity with no glide, the sequence numbers
+  consecutive, so nothing was lost in transit. From 68° (yaw −68°) and 17° in the first run; from 108° (yaw
+  −107°, pitch 13°) and 6° in the second. Across the 17 earlier recordings, all at the desk, there was one such
+  sample (live4 seq 34, after a wear flicker).
+- The guided run (prompts in data/turn_test_phases.tsv) turned the head 50–67° left and right at the desk three
+  times: no instant reset, and facing the screen read pitch 0.0–1.0°, yaw −5.8° to −8.7° each time. After the walk,
+  facing the screen read pitch 8.4°, yaw −121°. After the first run's walk the user sat upright and headup read
+  pitch 24–29° [user report].
+- The first walk also had long silences (35 s, 25 s) while the user walked [user report], and the return turn
+  (~180°) never shows: the largest movement after leaving is 17°. A pause resumes at 4° of movement, so the
+  turn should have shown [inferred: samples sent but not received, or a slower stream; see below].
+- Near-versus-far run (data/walk2*.jsonl, fixture `walk_near_far.csv`, RSSI from `hcitool rssi` each second in
+  data/walk2_rssi.tsv, prompts in data/walk2_phases.tsv): 70 s walking in the same room (RSSI 0 to −9) had 2
+  instant resets and only ordinary pauses; 70 s walking to another room and back (RSSI down to −27) had 1 reset
+  and no gap at all, every sequence number received, but only 660 samples in 78 s (~8.5 per second instead of
+  ~52). So instant resets come from walking, not from a weak link, and on a weak link the stream slows down
+  rather than losing samples [one run].
+- **Firmware cause [code, 7.0.0.526].** An activity detector on the accelerometer (`0x600fab40`, called from the
+  re-centre stage at `0x600fa91a`): a 4th-order IIR filter on |a|, max−min over 30-sample windows ≥ 501 counts a
+  window as active; 10 active windows in a row (~310 samples, ~6 s) raise its flag, 4 quiet ones lower it. The
+  stage copies it into `S+28` (`0x600fa906–0x600fa984`, read and checked 2026-11-13): on the rising edge
+  `ref := q_in` and the output is identity; while it is up, every sample outputs identity with `P.countdown := 1`,
+  so the next sample sets `ref := q_in` again. The reference follows the head, the still counter runs, and after
+  ~209 samples the usual still trigger pauses the stream. It stays paused until the flag drops (the user quiet for
+  ~4 windows) and a later still trigger runs a silent identity glide; the stream then resumes relative to the head
+  pose at that moment. The fusion `q`, heading included, is not touched. So **every head movement from the reset
+  to the resume is lost**: the output after it is `q(t) ⊗ conj(q(t_end))`. Recorded identity runs before the gap:
+  211, 210, 211, 211 samples (one of 626 is unexplained). Units of the accelerometer threshold are unknown
+  [inferred: walking bounce]. `S+36` (set by stream-control command 0 with argument 1) disables the detector; the
+  stream start sends argument 0.
+- Decoder note: opcode 0x0b funct3 3 is "branch if rs1 ≥ imm" (funct3 2 is `<`); `xlinx.py` prints both as `b?i`
+  [code: loop at `0x600df116`, warm-up test at `0x600fa34c`].
+- Earlier guess, now explained: the yaw error after the first walk (≈ −85° to −99°) is
+  close to the sum of its two resets' yaw (−68° − 17°), which would fit a reset that does not move the reference
+  to the head [inferred, one run].
+- Recalibrating on every instant reset was tried and rejected: walking produced one about every 50 s, so the
+  user kept hearing "sit upright", once mid-walk. headup models the hold instead: tracking is unavailable from
+  its first identity sample to the first sample that is not identity (DECISIONS "The earbuds' hold makes tracking
+  unavailable").

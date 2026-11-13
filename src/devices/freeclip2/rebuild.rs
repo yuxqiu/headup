@@ -8,6 +8,14 @@
 //! match it within 0.0002° (docs/devices/freeclip2/FINDINGS.md "Re-centre and stillness"). It
 //! counts samples, so it holds at any sample rate.
 //!
+//! While the user walks around, the earbuds also **hold**: an activity detector on the accelerometer
+//! (`0x600fab40`) makes them move the reference onto the head at every sample, so the reading jumps
+//! to identity with no glide and stays there, the stream pauses, and it resumes relative to
+//! wherever the head is once the user has been quiet (FINDINGS "Instant resets while walking"). The
+//! head movement in between never reaches the stream, so a hold cannot be undone. The rebuilder
+//! reports where one starts ([`Rebuilt::HoldStarted`]); what that means for the session is decided
+//! by the link, which keeps the earbuds' state.
+//!
 //! A glide is not head movement, so it must not come out. `Rebuilder` has two parts:
 //!
 //! - [`GlideFilter`] decides what happens to each raw sample: it comes out, or it is dropped as
@@ -33,7 +41,8 @@
 //!   "this is step `k` of a glide that started in the gap".
 //! - When a new stream starts (the sequence number goes backwards), a glide in progress is dropped
 //!   (the head was still), the rest come out, and the reference moves to the last orientation.
-//! - An identity sample that no hypothesis explains is reported ([`Rebuilt::MissedGlide`]).
+//! - An identity sample that no hypothesis explains, with nothing held (no glide before it), starts
+//!   a hold ([`Rebuilt::HoldStarted`]).
 
 use crate::core::quat::Quat;
 use std::collections::VecDeque;
@@ -60,15 +69,15 @@ enum Step {
     Release(Held),
     /// The earbuds' reference has moved to where the head was at the last released sample.
     Rebase,
-    /// See [`Rebuilt::MissedGlide`].
-    MissedGlide(u32),
+    /// See [`Rebuilt::HoldStarted`].
+    HoldStarted(u32),
 }
 
 /// What an arriving sample means, given the one before it.
 enum Arrival {
     /// The sequence number went backwards: a new stream, measured from the head pose at its start.
     NewStream,
-    /// An exact identity sample after a non-identity one: a glide has ended.
+    /// An exact identity sample after a non-identity one: a glide has ended, or a hold started.
     GlideEnd,
     /// Any other sample.
     Sample,
@@ -251,18 +260,19 @@ impl GlideFilter {
     }
 
     /// The identity sample `end`, after `prev`, ends a glide: drop the glide's held samples,
-    /// release the rest, and move the reference to the last released pose.
+    /// release the rest, and move the reference to the last released pose. With no glide before
+    /// it, it starts a hold.
     fn end_glide(&mut self, prev: &Held, end: &Held, steps: &mut Vec<Step>) {
         match self.glides.ending_at(end) {
             // A full glide: the hypothesis that predicts this identity sample started it.
             Some(start) => self.drop_after(start),
             // No hypothesis predicts it: the earbuds cut the glide short because the head moved.
             None => {
-                // If nothing is held, the glide's samples have already come out: the model missed
-                // the glide. Unless it was too small to track (the last sample within
-                // `FIT_TOL_DEG` of identity).
+                // If nothing is held, no glide came before it: the earbuds started a hold. Unless
+                // the last reading was too small for a glide to be tracked (within `FIT_TOL_DEG`
+                // of identity).
                 if self.held.is_empty() && prev.raw.angle_to(Quat::IDENTITY) > FIT_TOL_DEG {
-                    steps.push(Step::MissedGlide(end.seq));
+                    steps.push(Step::HoldStarted(end.seq));
                 }
                 // Otherwise the glide's hypothesis is still alive and is the oldest: drop what
                 // is held after its start.
@@ -324,7 +334,7 @@ impl Stitch {
                     });
                 }
                 Step::Rebase => self.reference = self.last_abs,
-                Step::MissedGlide(seq) => out.push(Rebuilt::MissedGlide { seq }),
+                Step::HoldStarted(seq) => out.push(Rebuilt::HoldStarted { seq }),
             }
         }
         out
@@ -337,9 +347,9 @@ pub enum Rebuilt {
     /// A released sample: received at `at`, with its absolute orientation (relative to the stream
     /// start).
     Pose { at: Duration, orientation: Quat },
-    /// The identity sample `seq` ended a glide that no hypothesis predicted, and none of its
-    /// samples were held. The model missed it, so that glide's samples came out as head movement.
-    MissedGlide { seq: u32 },
+    /// The identity sample `seq` started a hold (see the module docs). Poses after the hold are
+    /// relative to an unknown pose, so the orientation frame before the hold no longer applies.
+    HoldStarted { seq: u32 },
 }
 
 /// See the module docs.

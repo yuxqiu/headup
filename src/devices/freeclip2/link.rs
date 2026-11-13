@@ -7,6 +7,7 @@ use super::protocol::{
     Message, RawFrame, RawSample, SwitchReply, capability_query, stream_switch, wear_query,
 };
 use super::rebuild::{Rebuilder, Rebuilt};
+use crate::core::quat::Quat;
 use crate::core::tracker::Event;
 use crate::devices::bluetooth::Address;
 use anyhow::Result;
@@ -96,15 +97,16 @@ impl Link {
             }
             Message::StreamSwitch(reply) => self.earbuds.on_reply(reply),
             Message::Sample { seq, raw } => {
+                self.earbuds.on_reading(raw);
                 for out in self.rebuild.push(self.since_epoch(now), seq, raw) {
                     match out {
                         Rebuilt::Pose { at, orientation } => {
                             let at = self.epoch + at;
                             self.events.push_back(Event::Pose { at, orientation });
                         }
-                        Rebuilt::MissedGlide { seq } => {
-                            self.log
-                                .push(LogRecord::MissedGlide(MissedGlide { missed_glide: seq }));
+                        Rebuilt::HoldStarted { seq } => {
+                            self.log.push(LogRecord::Hold(Hold { hold: seq }));
+                            self.earbuds.on_hold_started();
                         }
                     }
                 }
@@ -147,15 +149,14 @@ impl Link {
 pub enum LogRecord {
     Sample(RawSample),
     Frame(RawFrame),
-    MissedGlide(MissedGlide),
+    Hold(Hold),
 }
 
-/// `--raw-log` record of a re-centre that the rebuilder did not recognise as a glide. It reads
-/// `{"missed_glide":1234}`, where 1234 is the sequence number of the identity sample that ended
-/// the glide.
+/// `--raw-log` record of the start of a hold (see [`super::rebuild`]). It reads `{"hold":1234}`,
+/// where 1234 is the sequence number of the identity sample that started it.
 #[derive(Serialize)]
-pub struct MissedGlide {
-    missed_glide: u32,
+pub struct Hold {
+    hold: u32,
 }
 
 /// Returns `now` if it is known and differs from `told`, and stores it in `told`. Returns `None`
@@ -179,7 +180,8 @@ struct View {
 enum Request {
     /// Switch the pose stream on.
     SwitchOn,
-    /// Start a fresh orientation frame and switch the pose stream on.
+    /// A new pose stream: start a fresh orientation frame (a new [`Rebuilder`], the stream's state)
+    /// and switch the stream on.
     Restart,
 }
 
@@ -194,6 +196,12 @@ struct Earbuds {
     /// (`None` until reported).
     streaming: Option<bool>,
     switch: Switch,
+    /// 43/89: the earbuds hold. While the user walks around, their activity detector locks the
+    /// reference to the head on every sample, so the readings stay at identity, the stream pauses,
+    /// and it resumes relative to wherever the head is then (FINDINGS "Instant resets while
+    /// walking"). The readings do not follow the head meanwhile. The rebuilder recognises the start
+    /// ([`Rebuilt::HoldStarted`]): telling it from the end of a glide takes the glide model.
+    holding: bool,
 }
 
 /// What became of the last "stream on" (43/88 TLV 1 = 1).
@@ -229,14 +237,29 @@ enum Switch {
 
 impl Earbuds {
     /// 43/37. Taking an earbud off cancels the switch. Putting the earbuds back on needs a fresh
-    /// orientation frame and a new switch.
+    /// orientation frame and a new switch, and starts a new stream, so no hold carries over.
     fn on_wear(&mut self, worn: bool) -> Option<Request> {
         let was = self.worn.replace(worn);
         if !worn {
             self.cancel_switch();
             return None;
         }
-        (was == Some(false)).then(|| self.send(Request::Restart))
+        (was == Some(false)).then(|| {
+            self.holding = false;
+            self.send(Request::Restart)
+        })
+    }
+
+    /// 43/89: a hold started (see [`Earbuds::holding`]).
+    fn on_hold_started(&mut self) {
+        self.holding = true;
+    }
+
+    /// 43/89: a reading that is not identity follows the head again, so it ends a hold.
+    fn on_reading(&mut self, raw: Quat) {
+        if raw != Quat::IDENTITY {
+            self.holding = false;
+        }
     }
 
     /// 43/54 for one device.
@@ -279,8 +302,10 @@ impl Earbuds {
     fn view(&self) -> View {
         View {
             worn: self.worn,
-            // Poses flow to this computer while it streams, unless the switch was refused.
+            // Poses flow to this computer while it streams, unless the switch was refused. They
+            // follow the head unless the earbuds hold.
             available: match self.switch {
+                _ if self.holding => Some(false),
                 Switch::Refused => Some(false),
                 Switch::Unconfirmed | Switch::Accepted => self.streaming,
             },
@@ -486,6 +511,38 @@ mod tests {
         assert_eq!(link.take_outbox(), [stream_switch(true)]);
         link.on_bytes(now, &reply(0)).unwrap();
         assert_eq!(events(&mut link), []);
+    }
+
+    // While the user walks around, the earbuds hold: the reading jumps to identity with no glide
+    // and stays there while their reference follows the head. Head tracking is unavailable until
+    // the reading moves again (FINDINGS "Instant resets while walking").
+    #[test]
+    fn a_hold_makes_tracking_unavailable_until_the_reading_moves() {
+        let now = Instant::now();
+        let mut link = link(now);
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        assert_eq!(events(&mut link), [Event::Available(true)]);
+        let turned = Quat {
+            w: 0.9,
+            x: 0.0,
+            y: 0.0,
+            z: 0.19_f64.sqrt(),
+        };
+        let sample = |link: &mut Link, seq, raw| {
+            link.on_bytes(now, &sample_frame(seq, raw).encode())
+                .unwrap();
+            events(link)
+                .into_iter()
+                .filter(|e| !matches!(e, Event::Pose { .. }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sample(&mut link, 1, turned), []);
+        assert_eq!(
+            sample(&mut link, 2, Quat::IDENTITY),
+            [Event::Available(false)]
+        );
+        assert_eq!(sample(&mut link, 3, Quat::IDENTITY), []);
+        assert_eq!(sample(&mut link, 400, turned), [Event::Available(true)]);
     }
 
     #[test]

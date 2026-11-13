@@ -118,3 +118,27 @@ async fn live_session_with_two_slouches_end_to_end() {
         "spoken reminder {reminder:?} after the tone"
     );
 }
+
+// Three recorded walks (2026-11-13; FINDINGS "Instant resets while walking"). While the user walks,
+// the earbuds hold their reading and lose the head's movement, so the reference from before the
+// walk no longer applies. No reminder may come from it: each hold makes tracking unavailable, and
+// headup calibrates again once the user has stopped. Before this, the first walk ended with a tone,
+// a spoken reminder and a notification while the user sat upright.
+#[tokio::test(start_paused = true)]
+async fn walking_around_gives_no_reminder_end_to_end() {
+    for name in ["walk_reconnect.csv", "turn_walk.csv", "walk_near_far.csv"] {
+        let mut tracker = ReplayTracker::new(&read_csv(name));
+        let run = run_session(&mut tracker, Duration::ZERO).await;
+        let reminders: Vec<_> = run
+            .cues
+            .iter()
+            .filter(|(n, _)| !n.starts_with("say "))
+            .collect();
+        assert!(reminders.is_empty(), "{name}: {reminders:?}");
+        assert!(
+            run.events.contains(&"TrackingUnavailable".to_string()),
+            "{name}: {:?}",
+            run.events
+        );
+    }
+}

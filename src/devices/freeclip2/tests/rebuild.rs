@@ -249,32 +249,28 @@ fn cut_short_glide_keeps_the_pose_before_it() {
     assert!(out.iter().all(|o| (o.abs.euler().pitch - 53.0).abs() < 0.5));
 }
 
-/// The missed glides reported while pushing `rows`.
-fn missed(rows: &[Row]) -> Vec<u32> {
+/// The holds started while pushing `rows`, by the sequence numbers of their first samples.
+fn holds(rows: &[Row]) -> Vec<u32> {
     let mut rb = Rebuilder::default();
     rows.iter()
         .flat_map(|r| rb.push(r.t, r.seq, r.raw))
         .filter_map(|out| match out {
-            Rebuilt::MissedGlide { seq } => Some(seq),
+            Rebuilt::HoldStarted { seq } => Some(seq),
             Rebuilt::Pose { .. } => None,
         })
         .collect()
 }
 
-// A glide whose readings leave the formula partway through is reported as missed, whatever its
-// size.
+// The head turns, then the reading jumps to identity with no glide: the earbuds start a hold.
+// Identity samples after it start nothing more.
 #[test]
-fn glide_off_the_model_is_reported() {
-    for deg in [10.0, 20.0, 30.0, 40.0] {
-        let held = pitch_quat(deg);
-        let mut rows: Vec<Row> = (1..=100).map(|s| row_52hz(s, held)).collect();
-        rows.extend((1..=67).map(|k| {
-            let q = firmware_glide(held, k);
-            row_52hz(100 + k, if k == 30 { q * pitch_quat(0.2) } else { q })
-        }));
-        rows.push(row_52hz(168, Quat::IDENTITY));
-        assert_eq!(missed(&rows), [168], "glide from {deg}°");
-    }
+fn identity_with_no_glide_before_it_starts_a_hold() {
+    let mut rows: Vec<Row> = (1..=50)
+        .map(|s| row_52hz(s, pitch_quat(f64::from(s))))
+        .collect();
+    rows.extend((51..=260).map(|s| row_52hz(s, Quat::IDENTITY)));
+    rows.push(row_52hz(900, pitch_quat(5.0)));
+    assert_eq!(holds(&rows), [51]);
 }
 
 // A glide is under way when the earbuds stop sending; the next sample they send is its
@@ -330,7 +326,7 @@ fn glide_with_an_unseen_start_is_hidden() {
             let pitch = o.abs.euler().pitch;
             assert!((pitch - 30.0).abs() < 0.01, "{what}: pitch {pitch:.3}");
         }
-        assert_eq!(missed(&rows), Vec::<u32>::new(), "{what}");
+        assert_eq!(holds(&rows), Vec::<u32>::new(), "{what}");
     }
 }
 
@@ -367,18 +363,25 @@ fn recordings() -> Vec<String> {
         .filter(|n| n.ends_with(".csv"))
         .collect();
     names.sort();
-    assert!(names.len() >= 15, "recordings missing from {dir}");
+    assert!(names.len() >= 18, "recordings missing from {dir}");
     names
 }
 
-// Every real recording follows the glide formula, including glides cut short. The one report is
-// live4.csv seq 34: an identity sample with no glide before it, after a wear flicker (FINDINGS
-// "Re-centre and stillness").
+// Every real recording follows the glide formula, including glides cut short, so no glide is
+// taken for a hold. The holds are identity samples with no glide before them: live4.csv seq 34,
+// after a wear flicker, and the walks in turn_walk.csv, walk_reconnect.csv and walk_near_far.csv
+// (FINDINGS "Re-centre and stillness", "Instant resets while walking").
 #[test]
-fn real_glides_are_not_reported_as_missed() {
+fn holds_are_found_only_where_recorded() {
     for name in recordings() {
-        let want: &[u32] = if name == "live4.csv" { &[34] } else { &[] };
-        assert_eq!(missed(&read_csv(&name)), want, "{name}");
+        let want: &[u32] = match name.as_str() {
+            "live4.csv" => &[34],
+            "turn_walk.csv" => &[8197, 11137],
+            "walk_reconnect.csv" => &[984, 3414],
+            "walk_near_far.csv" => &[2122, 3622, 7552],
+            _ => &[],
+        };
+        assert_eq!(holds(&read_csv(&name)), want, "{name}");
     }
 }
 

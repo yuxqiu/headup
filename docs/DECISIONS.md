@@ -870,3 +870,40 @@
   that test (0°/30° alternation). This is the existing rule, not a change.
 - **Rejected.** A generic `Step::Say(Phrase)`: naming the outcome (`Nudge`, `Moved`) keeps the phrase choice in the
   session and makes each step's follow-up explicit.
+
+## 2026-11-13: The earbuds' hold makes tracking unavailable (user)
+- **What.** The hold is a device mode, stored with the earbuds' other facts: `Earbuds::holding`. The rebuilder
+  only recognises its start (an identity sample with no glide before it, `Rebuilt::HoldStarted`; telling it from a
+  glide's end takes the glide model), the way `Message::parse` decodes the other messages; `Link` routes it to
+  `Earbuds::on_hold_started`. `Earbuds::on_reading` ends the hold at the first 43/89 reading that is not identity,
+  and re-wearing (a new stream) clears it. `Earbuds::view` makes tracking unavailable while holding, so a hold
+  reaches the session as `Available(false)` and its end as `Available(true)`: the slouch is dropped and headup
+  calibrates once, after the walk. The hold's samples still come out; the session ignores poses while tracking is
+  unavailable. `Rebuilt::MissedGlide` became `Rebuilt::HoldStarted`; the raw-log record is `{"hold":SEQ}` (was
+  `{"missed_glide":SEQ}`). The session and the tracker interface are unchanged. Supersedes "It does not trigger
+  recalibration" in "Exact glide model, immediate release".
+- **Why.** Firmware 7.0.0.526 (FINDINGS "Instant resets while walking", checked in the disassembly): an activity
+  detector on the accelerometer raises a flag after ~6 s of sustained motion; while it is up the re-centre stage
+  outputs identity and copies the head pose into the reference every sample, then the stream pauses until the
+  user is quiet, and resumes relative to the head pose at that moment. The movement in between never reaches the
+  stream, so no rebuilder can undo it. Recorded: 7 holds in three walks, identity runs of 210–211 samples before
+  the pause. Replayed through the session (`walking_around_gives_no_reminder_end_to_end`), the first walk gave a
+  tone, a spoken reminder and a notification while the user sat upright; now none of the three walks gives a
+  reminder (the test fails with the hold ignored). The one desk case (live4 seq 34, after a wear flicker) now
+  recalibrates too.
+- **Rejected.**
+  - A `FrameChanged` tracker event that recalibrated at each reset (tried, not released): it fired at the hold's
+    start, mid-walk, so the user kept hearing "sit upright" ("I constantly get calibration prompt whether I am
+    walking near laptop or not"). A stillness wait before the prompt did not help, because the held reading looks
+    perfectly still.
+  - A flag in `Earbuds` set from the rebuilder's output (user: "a surgery fix by using this additional
+    variable"): it copied state the rebuilder owns.
+  - A stream mode in the glide filter that dropped the hold's samples (tried twice, user: "ugly and very
+    error-prone", then "even harder to read"): dropping them is not needed, and it tangled the hold into the
+    glide logic. A `following_head` bit in the rebuilder: a device mode inside the orientation algorithm, and
+    availability computed in two places. Moving the rebuilder into `Earbuds`: it would mix device facts with a
+    stream algorithm.
+  - Correcting the reference across a reset (keep it, or re-base onto the last pose, or its tilt or heading only):
+    the head's movement during the hold is lost, so no correction matches the walks' ground truth in pitch.
+  - The weak-link explanation: holds happened with RSSI 0 to −9 in the same room; far away the stream slowed
+    (~8.5 samples/s) but lost nothing.

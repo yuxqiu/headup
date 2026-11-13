@@ -30,8 +30,10 @@ async fn poses_keep_their_arrival_time_while_nothing_reads() {
         .collect();
     let mut want = Vec::new();
     let mut replay = Replay::new(&rows, start);
-    while let Some((_, Event::Pose { at, .. })) = replay.next() {
-        want.push(at - start);
+    while let Some((_, event)) = replay.next() {
+        if let Event::Pose { at, .. } = event {
+            want.push(at - start);
+        }
     }
     assert!(want.len() > 100, "{} poses", want.len());
 
