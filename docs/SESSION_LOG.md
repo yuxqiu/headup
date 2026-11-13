@@ -539,5 +539,6 @@
   plays were stamped when it ended (raw-log bursts of 136–172 samples within 20 ms).
 - FreeClip 2 now reads its socket in its own task; `Link` returns raw-log records instead of writing them;
   session tests moved to `src/core/tests/session.rs`. 87 tests, clippy and fmt pass.
-- Left for the user to decide: a pure calibration state machine, and a backend-provided "posture known
-  until" watermark instead of the session's lag inference.
+- Removed the session's delivery-lag model (held poses now ≤49 ms in every fixture): the session drains the
+  tracker, then judges posture up to now. FakeTracker plays its script on the clock.
+- Calibration decisions moved into `core/calibration.rs` as a state machine with direct tests. 91 tests pass.

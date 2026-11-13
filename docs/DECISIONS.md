@@ -849,3 +849,18 @@
   `calibration_ignores_poses_measured_during_the_prompt` now gets its late poses from the queue instead of a lag.
 - **Rejected.** Keeping `lag` as a safety net: it guards a case no backend has, and it made the posture rule hard to
   follow.
+
+## 2026-11-13: Calibration as a state machine (user)
+- **What.** `core/calibration.rs` holds every calibration decision in `Calibration`, a type without I/O like
+  `Detector`. The session feeds it poses (`pose`), asks it what to do (`check(now)` → `Wait`, `Nudge`,
+  `Moved(report)`, `Calibrated { upright, report }`, `GaveUp(report)`), speaks the prompt, and reports when the
+  prompt ended (`spoken(now)`), which resumes the attempt or starts the next one. The rule, the thresholds and the
+  retry policy are unchanged; `session.rs` keeps the waits and the prompts.
+- **Why.** User: easier to test and to read. The rules (span ends at now, 5 s per attempt, 4 attempts, nudges) were
+  spread through an async loop and testable only through the fake tracker. `core/tests/calibration.rs` now drives
+  them directly; the session tests are unchanged.
+- **Observed while testing.** Moving for 1 s and then holding still calibrates 3.4 s after the first pose, not 4 s:
+  the 90th percentile lets up to 10% of the span be the end of the movement, which shifts the mean by up to ~3° in
+  that test (0°/30° alternation). This is the existing rule, not a change.
+- **Rejected.** A generic `Step::Say(Phrase)`: naming the outcome (`Nudge`, `Moved`) keeps the phrase choice in the
+  session and makes each step's follow-up explicit.

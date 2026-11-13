@@ -15,7 +15,8 @@ user, through the earbuds, when they look down for too long. Everything runs loc
 
 - `src/core/`: device-agnostic logic.
   - `tracker.rs`: the `HeadTracker` interface that backends implement.
-  - `session.rs`: calibration and monitoring.
+  - `session.rs`: the session loop: waits, calibration prompts, monitoring.
+  - `calibration.rs`: calibration decisions as a state machine without I/O (like `detector.rs`).
   - `detector.rs`: slouch detection.
   - `cues.rs`, `audio.rs`, `wav.rs`: sounds and notifications (`audio.rs` plays a sound to the end).
   - `record.rs`: console output and logs.
