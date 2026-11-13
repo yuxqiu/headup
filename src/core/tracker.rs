@@ -15,9 +15,13 @@ pub enum Event {
     /// resumes after `Available(false)`. The session recalibrates in both cases.
     ///
     /// `at` is when the backend received the sample the pose comes from. It is the best available
-    /// measure of when the pose was measured. It is earlier than delivery if the backend holds
-    /// samples back. Smoothing and slouch timing run on `at`. It must not go backwards, and it must
-    /// not be earlier than the session's start.
+    /// measure of when the pose was measured. Smoothing and slouch timing run on `at`. It must not
+    /// go backwards, and it must not be earlier than the session's start.
+    ///
+    /// Deliver each pose as soon as it is known to be real. The session treats a tracker with
+    /// nothing to deliver as a head that has not moved, so a pose held back makes reminders and
+    /// calibration judge stale posture. Hold a sample only while it may be device noise that will
+    /// be dropped, and only briefly.
     Pose { at: Instant, orientation: Quat },
     /// Whether the earbuds are worn well enough for head tracking. The backend decides what that
     /// takes. Sent on change. A backend should report the initial state soon after connecting.
@@ -40,7 +44,8 @@ pub enum Event {
 pub trait HeadTracker {
     /// Wait up to `timeout` for the next event. `Ok(None)` means nothing arrived. Trackers may go
     /// quiet while the head is still, so callers treat silence as "unchanged", not as an error.
-    /// Lost connections and protocol errors are `Err`.
+    /// An event that is already waiting is returned at once, even with a zero `timeout`. Lost
+    /// connections and protocol errors are `Err`.
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>>;
 
     /// Stop streaming and leave the device in its normal state.

@@ -61,19 +61,10 @@ type Pose = (Duration, Quat);
 
 /// The session's timeline. Session time is the time since the session started. It is monotonic,
 /// unlike log time, and counts exact integer nanoseconds.
-///
-/// The timeline also tracks how far the delivered posture reaches. A backend that holds samples
-/// delivers each pose `lag` after it was measured, so posture is known only up to `now - lag`.
-/// Reminders and calibration judge posture up to that point, never beyond it. So a reminder
-/// cannot play after the user has already sat up. During silence, that point advances with real
-/// time, because silence means the posture is unchanged. With a backend that holds nothing, `lag`
-/// is 0.
 struct Timeline {
     start: Instant,
     /// Measurement time of the latest pose.
     measured: Duration,
-    /// How long after its measurement the latest pose arrived.
-    lag: Duration,
 }
 
 impl Timeline {
@@ -81,19 +72,12 @@ impl Timeline {
         Timeline {
             start: Instant::now(),
             measured: Duration::ZERO,
-            lag: Duration::ZERO,
         }
     }
 
     /// Time since the session started.
     fn now(&self) -> Duration {
         self.start.elapsed()
-    }
-
-    /// How far the delivered posture reaches. This is never before the latest pose's measurement
-    /// time, because that pose was delivered in the past.
-    fn known_until(&self) -> Duration {
-        self.now() - self.lag
     }
 
     /// Take delivery of a pose measured at `at`, and return its measurement time in session time.
@@ -107,7 +91,7 @@ impl Timeline {
             "tracker sent poses out of order: {measured:?} after {:?}",
             self.measured
         );
-        (self.measured, self.lag) = (measured, self.now() - measured);
+        self.measured = measured;
         Ok(measured)
     }
 
@@ -170,8 +154,8 @@ impl TrackerStatus {
 
 /// One calibration attempt: the poses measured since it started.
 ///
-/// It succeeds once the delivered posture shows the head steady for CALIBRATION. The span starts
-/// at the latest pose measured at least CALIBRATION before the known end. That pose and every
+/// It succeeds once the posture shows the head steady for CALIBRATION. The span starts at the
+/// latest pose measured at least CALIBRATION before now. That pose and every
 /// pose after it must lie within CALIBRATION_MAX_P90_DEG of their mean, at the 90th percentile.
 /// Silence after a pose means the head stayed there. Only poses measured after the attempt
 /// started count, so data from before the prompt never calibrates.
@@ -202,9 +186,8 @@ impl CalibrationAttempt {
         }
     }
 
-    /// Add a pose measured at `measured`. Poses measured before the attempt started don't count.
-    /// A backend that holds samples can deliver such poses late, for example ones measured during
-    /// the prompt.
+    /// Add a pose measured at `measured`. Poses measured before the attempt started don't count:
+    /// those measured during a prompt are delivered after it.
     fn add(&mut self, measured: Duration, q: Quat) {
         if measured >= self.start {
             self.first.get_or_insert(measured);
@@ -212,10 +195,10 @@ impl CalibrationAttempt {
         }
     }
 
-    /// The span of length CALIBRATION that ends at `known`, if poses cover it. `known` is how far
-    /// the delivered posture reaches.
-    fn span(&mut self, known: Duration) -> Option<CalibrationResult> {
-        let from = known.checked_sub(CALIBRATION)?;
+    /// The span of length CALIBRATION that ends at `now`, if poses cover it. Every pose measured
+    /// before `now` must have been added.
+    fn span(&mut self, now: Duration) -> Option<CalibrationResult> {
+        let from = now.checked_sub(CALIBRATION)?;
         let begin = self.poses.iter().rposition(|&(m, _)| m <= from)?;
         self.poses.drain(..begin);
         let samples: Vec<Quat> = self.poses.iter().map(|&(_, q)| q).collect();
@@ -287,21 +270,34 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         }
     }
 
-    /// Wait up to `timeout` for the next tracker event. Returns the pose if the event was one, and
-    /// `None` otherwise. Taking the earbuds off, or tracking becoming unavailable, interrupts.
-    async fn next(&mut self, timeout: Duration) -> Flow<Option<Pose>> {
-        match self.tracker.next_event(timeout).await? {
-            Some(Event::Pose { at, orientation }) => {
+    /// Wait up to `timeout` for tracker events, then take every event already waiting, and return
+    /// the poses among them. Afterwards the tracker has nothing left to deliver, so the posture is
+    /// known up to now: silence means the head has not moved. Taking the earbuds off, or tracking
+    /// becoming unavailable, interrupts.
+    async fn next(&mut self, timeout: Duration) -> Flow<Vec<Pose>> {
+        let mut poses = Vec::new();
+        let mut wait = timeout;
+        while let Some(event) = self.tracker.next_event(wait).await? {
+            poses.extend(self.handle(event)?);
+            wait = Duration::ZERO;
+        }
+        Ok(poses)
+    }
+
+    /// Record one tracker event. Returns the pose if it was one.
+    fn handle(&mut self, event: Event) -> Flow<Option<Pose>> {
+        match event {
+            Event::Pose { at, orientation } => {
                 let measured = self.time.deliver(at)?;
                 self.status.pose_arrived();
                 return Ok(Some((measured, orientation)));
             }
-            Some(Event::Worn(w)) => {
+            Event::Worn(w) => {
                 if self.status.worn_changed(w) {
                     return Err(Interrupt::Removed);
                 }
             }
-            Some(Event::Available(a)) => {
+            Event::Available(a) => {
                 self.rec.event(if a {
                     LogEvent::TrackingAvailable
                 } else {
@@ -311,7 +307,6 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                     return Err(Interrupt::Unavailable);
                 }
             }
-            None => {}
         }
         Ok(None)
     }
@@ -374,14 +369,14 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             let mut cal = CalibrationAttempt::start(self.now());
             let mut nudge_at = cal.start + NUDGE_AFTER;
             let result = loop {
-                if let Some((measured, q)) = self.next(Duration::from_millis(200)).await? {
+                for (measured, q) in self.next(Duration::from_millis(200)).await? {
                     cal.add(measured, q);
                 }
-                let known = self.time.known_until();
-                let span = cal.span(known);
+                let now = self.now();
+                let span = cal.span(now);
                 match (span, cal.first) {
                     (Some(span), _) if span.p90 < CALIBRATION_MAX_P90_DEG => break Some(span),
-                    (span, Some(first)) if known >= first + CALIBRATION_ATTEMPT => break span,
+                    (span, Some(first)) if now >= first + CALIBRATION_ATTEMPT => break span,
                     (_, None) if self.now() >= nudge_at => {
                         self.cues.say(Phrase::MoveHead).await?;
                         nudge_at = self.now() + NUDGE_EVERY;
@@ -411,25 +406,23 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         let mut det = Detector::new(detector_config(self.tracker.traits()));
         let mut last_status: Option<Duration> = None;
         loop {
-            // Wake when the known posture reaches the next reminder, or now if it already has.
-            // Times are exact, so `tick` fires the reminder at that point.
-            let wait = det.next_due().map_or(POLL, |due| {
-                due.saturating_sub(self.time.known_until()).min(POLL)
-            });
-            let pose = self.next(wait).await?;
-            let t = self.now();
-            let cues = match pose {
-                None => det.tick(self.time.known_until()),
-                Some((measured, q)) => {
-                    let angles = (baseline.conj() * q).euler();
-                    self.rec.pose(self.time.instant(measured), angles)?;
-                    let update = det.update(measured, angles.pitch);
-                    if let Some(upright) = update.reanchored {
-                        self.rec.event(LogEvent::Reanchored { upright })?;
-                    }
-                    update.cues
+            // Wake when the next reminder is due, or now if it already is. Times are exact, so
+            // `tick` fires the reminder at that point.
+            let wait = det
+                .next_due()
+                .map_or(POLL, |due| due.saturating_sub(self.now()).min(POLL));
+            let mut cues = Vec::new();
+            for (measured, q) in self.next(wait).await? {
+                let angles = (baseline.conj() * q).euler();
+                self.rec.pose(self.time.instant(measured), angles)?;
+                let update = det.update(measured, angles.pitch);
+                if let Some(upright) = update.reanchored {
+                    self.rec.event(LogEvent::Reanchored { upright })?;
                 }
-            };
+                cues.extend(update.cues);
+            }
+            let t = self.now();
+            cues.extend(det.tick(t));
             for cue in cues {
                 self.rec.event(LogEvent::Cue(cue))?;
                 self.cues.play(cue);

@@ -55,93 +55,90 @@ enum Script {
     Quiet(Duration),
 }
 
+/// A tracker that plays `Script` on the clock from when it is created, like a backend that reads
+/// all the time: events that fall due while the session is busy wait until it asks for them, with
+/// their own measurement times.
 struct FakeTracker {
-    script: VecDeque<Script>,
+    start: Instant,
+    /// Events and when they fall due (since `start`), in order.
+    events: VecDeque<(Duration, Event)>,
+    /// When the script ends.
+    end: Duration,
     drifts: bool,
-    /// How long after measurement each pose is delivered (a backend that holds samples).
-    lag: Duration,
-    /// Time until the next pose sample is due.
-    until_sample: Duration,
-}
-
-impl FakeTracker {
-    fn new(script: Vec<Script>, drifts: bool, lag: Duration) -> Self {
-        FakeTracker {
-            script: script.into(),
-            drifts,
-            lag,
-            // The first pose is measured one sample in and delivered `lag` later.
-            until_sample: SAMPLE + lag,
-        }
-    }
 }
 
 const SAMPLE: Duration = Duration::from_millis(20);
 
-/// Wait for the next pose sample, like a real backend. The pose has pitch `pitch`, and `left`
-/// is how much of the pose span remains. The pose is delivered `lag` after its measurement.
-/// Returns `None` if `timeout` passes first.
-async fn sample(
-    until_sample: &mut Duration,
-    lag: Duration,
-    timeout: Duration,
-    left: &mut Duration,
-    pitch: f64,
-) -> Option<Event> {
-    if timeout < *until_sample {
-        *until_sample -= timeout;
-        tokio::time::sleep(timeout).await;
-        return None;
+impl FakeTracker {
+    fn new(script: Vec<Script>, drifts: bool) -> Self {
+        let start = Instant::now();
+        let mut events = VecDeque::new();
+        let mut t = Duration::ZERO;
+        for step in script {
+            match step {
+                Script::Poses(pitch, span) => {
+                    for _ in samples(span) {
+                        t += SAMPLE;
+                        events.push_back((t, pose(start + t, pitch)));
+                    }
+                }
+                // Samples alternate, ending on `a`.
+                Script::Wobble(a, b, span) => {
+                    for left in samples(span).rev() {
+                        t += SAMPLE;
+                        let pitch = if left % 2 == 0 { a } else { b };
+                        events.push_back((t, pose(start + t, pitch)));
+                    }
+                }
+                Script::Ev(e) => events.push_back((t, e)),
+                Script::Quiet(d) => t += d,
+            }
+        }
+        FakeTracker {
+            start,
+            events,
+            end: t,
+            drifts,
+        }
     }
-    tokio::time::sleep(*until_sample).await;
-    *until_sample = SAMPLE;
-    *left = left
-        .checked_sub(SAMPLE)
-        .expect("script pose spans are whole samples");
-    Some(Event::Pose {
-        at: Instant::now() - lag,
+}
+
+/// Indices of the samples in a script pose span.
+fn samples(span: Duration) -> std::ops::Range<u128> {
+    assert!(
+        span.as_nanos().is_multiple_of(SAMPLE.as_nanos()),
+        "script pose spans are whole samples"
+    );
+    0..span.as_nanos() / SAMPLE.as_nanos()
+}
+
+fn pose(at: Instant, pitch: f64) -> Event {
+    Event::Pose {
+        at,
         orientation: tilt(pitch),
-    })
+    }
 }
 
 impl HeadTracker for FakeTracker {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        loop {
-            let Some(front) = self.script.front_mut() else {
-                bail!("script finished");
-            };
-            match front {
-                Script::Ev(e) => {
-                    let e = *e;
-                    self.script.pop_front();
-                    return Ok(Some(e));
-                }
-                Script::Poses(_, left) | Script::Wobble(_, _, left) | Script::Quiet(left)
-                    if left.is_zero() =>
-                {
-                    self.script.pop_front();
-                }
-                Script::Poses(pitch, left) => {
-                    let pitch = *pitch;
-                    return Ok(
-                        sample(&mut self.until_sample, self.lag, timeout, left, pitch).await,
-                    );
-                }
-                Script::Wobble(a, b, left) => {
-                    let next = (*left - SAMPLE).as_nanos() / SAMPLE.as_nanos();
-                    let pitch = if next.is_multiple_of(2) { *a } else { *b };
-                    return Ok(
-                        sample(&mut self.until_sample, self.lag, timeout, left, pitch).await,
-                    );
-                }
-                Script::Quiet(left) => {
-                    let d = (*left).min(timeout);
-                    *left -= d;
-                    tokio::time::sleep(d).await;
-                    return Ok(None);
-                }
+        let deadline = Instant::now() + timeout;
+        let Some(&(due, event)) = self.events.front() else {
+            let end = self.start + self.end;
+            if end > deadline {
+                tokio::time::sleep_until(deadline).await;
+                return Ok(None);
             }
+            tokio::time::sleep_until(end).await;
+            bail!("script finished");
+        };
+        let due = self.start + due;
+        if due > deadline {
+            tokio::time::sleep_until(deadline).await;
+            return Ok(None);
         }
+        tokio::time::sleep_until(due).await;
+        self.events.pop_front();
+        Ok(Some(event))
     }
 
     async fn stop(&mut self) -> Result<()> {
@@ -161,15 +158,13 @@ impl HeadTracker for FakeTracker {
 struct Sim {
     /// The tracker declares `pose_drifts_up`.
     drifts: bool,
-    /// Each pose is delivered this long after it is measured.
-    lag: Duration,
     /// Each spoken prompt takes this long.
     prompt: Duration,
 }
 
 /// Run `script` to its end and report what the session did.
 async fn simulate(script: Vec<Script>, sim: Sim) -> Outcome {
-    let mut tracker = FakeTracker::new(script, sim.drifts, sim.lag);
+    let mut tracker = FakeTracker::new(script, sim.drifts);
     run_session(&mut tracker, sim.prompt).await
 }
 
@@ -229,44 +224,9 @@ async fn tone_is_on_time_while_head_is_still() {
     );
 }
 
-// A backend that holds samples (here 1.5 s) delivers a sit-up late. Sitting up 9.5 s into a
-// slouch, before the 10 s tone, must give no tone: reminders wait for delivered posture.
-#[tokio::test(start_paused = true)]
-async fn no_reminder_after_sitting_up_when_poses_arrive_late() {
-    // Upright long enough for calibration to see 3 s of posture after the 1.5 s lag.
-    let script = vec![
-        Poses(0.0, secs(6.0)),
-        Poses(40.0, secs(9.5)),
-        Poses(0.0, secs(6.0)),
-    ];
-    let lagging = Sim {
-        lag: secs(1.5),
-        ..Sim::default()
-    };
-    let run = simulate(script, lagging).await;
-    assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
-}
-
-// With the same lag, a slouch held past 10 s still cues once its posture has arrived. The
-// slouch starts at 6 s. The tone is due about 10.1 s into it and plays 1.5 s (the lag) later.
-#[tokio::test(start_paused = true)]
-async fn late_poses_delay_the_reminder_by_the_lag() {
-    let script = vec![
-        Poses(0.0, secs(6.0)),
-        Poses(40.0, secs(14.0)),
-        Poses(0.0, secs(4.0)),
-    ];
-    let lagging = Sim {
-        lag: secs(1.5),
-        ..Sim::default()
-    };
-    let tone = simulate(script, lagging).await.first("Tone");
-    assert!((secs(17.5)..secs(17.7)).contains(&tone), "tone at {tone:?}");
-}
-
-// The head moves while the 2 s "sit upright" prompt plays, then holds still. Poses arrive
-// 1.5 s late, so the ones measured during the prompt arrive inside the capture window. They
-// must not count, so calibration succeeds on the first attempt.
+// The head moves while the 2 s "sit upright" prompt plays, then holds still. The poses measured
+// during the prompt are delivered after it. They must not count, so calibration succeeds on the
+// first attempt.
 #[tokio::test(start_paused = true)]
 async fn calibration_ignores_poses_measured_during_the_prompt() {
     let script = vec![
@@ -275,12 +235,39 @@ async fn calibration_ignores_poses_measured_during_the_prompt() {
         Poses(0.0, secs(6.0)),
     ];
     let sim = Sim {
-        lag: secs(1.5),
         prompt: secs(2.0),
         ..Sim::default()
     };
     let run = simulate(script, sim).await;
     assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
+}
+
+// The head moves throughout a 4 s "move your head" prompt and a little after it, then holds
+// still. When the prompt ends, all the poses measured during it are waiting. Calibration judges
+// only once it has taken them all, so it sees the movement: the attempt fails, and the next one
+// calibrates on the still head.
+#[tokio::test(start_paused = true)]
+async fn calibration_sees_every_pose_queued_during_a_prompt() {
+    let script = vec![
+        Poses(0.0, secs(0.02)),
+        Quiet(secs(9.0)), // "sit upright" (4 s), then 5 s without a pose
+        Wobble(0.0, 30.0, secs(4.5)),
+        Poses(0.0, secs(20.0)),
+    ];
+    let sim = Sim {
+        prompt: secs(4.0),
+        ..Sim::default()
+    };
+    let run = simulate(script, sim).await;
+    assert_eq!(
+        run.names(),
+        [
+            "say SitUpright",
+            "say MoveHead",
+            "say Moved",
+            "say Calibrated"
+        ]
+    );
 }
 
 #[tokio::test(start_paused = true)]

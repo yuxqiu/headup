@@ -827,3 +827,25 @@
   failing with read-on-request).
 - **Rejected.** Reading in `CueSink::say` while it plays: couples cues to the tracker. A bounded channel:
   back-pressure would bring the late stamps back.
+
+## 2026-11-13: The session judges posture up to now once the tracker is drained (user)
+- **What.** `Timeline` no longer tracks the latest pose's delivery lag or `known_until = now - lag`. The session takes
+  every waiting tracker event (`next` reads again with a zero wait until nothing is left) and then judges posture
+  up to now: calibration's span ends at now, and the detector ticks at now after each batch. `HeadTracker` now
+  promises that a waiting event is returned at once, even with a zero timeout, and `Event::Pose` asks backends to
+  deliver each pose as soon as it is known to be real.
+- **Why.** The lag machinery was built for the 1.3–2 s hold of the old glide filter. Replaying all 14 fixtures
+  through the real protocol now: 0–66 poses per recording are held at all, the 99th-percentile delay is 0 and the
+  longest is 49 ms (`live_35hz`). User: a tracker with nothing to deliver means the head has not moved; if a
+  backend holds real movement back, that is the backend's bug.
+- **What `lag` was still doing.** Since the backend reads in its own task, poses measured during a spoken prompt
+  queue up and arrive together after it. Judging after the first of them would see one pose covering the whole
+  prompt and could calibrate on a moving head. Draining before judging handles this;
+  `calibration_sees_every_pose_queued_during_a_prompt` covers it (fails if the session judges after each event).
+- **Tests.** `FakeTracker` now plays its script on the clock, so events that fall due during a prompt wait with
+  their measurement times, as with the real backend; its `lag` option is gone. Removed
+  `no_reminder_after_sitting_up_when_poses_arrive_late` and `late_poses_delay_the_reminder_by_the_lag`: they
+  tested a backend that holds poses for 1.5 s, which the contract no longer allows.
+  `calibration_ignores_poses_measured_during_the_prompt` now gets its late poses from the queue instead of a lag.
+- **Rejected.** Keeping `lag` as a safety net: it guards a case no backend has, and it made the posture rule hard to
+  follow.

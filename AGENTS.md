@@ -72,9 +72,10 @@ Run everything inside `nix develop`.
 - **Two kinds of time.** Timing logic uses the monotonic `tokio::time::Instant`, so tests can run on a paused
   clock, and spans of it as `Duration` (exact integer nanoseconds), never `f64` seconds: a float round trip can land
   a nanosecond early and make a timer loop spin. Convert to seconds only inside formulas (e.g. smoothing). Log lines use wall-clock Unix seconds (`t`). Console lines carry no time.
-- **Poses carry their measurement time** (`Event::Pose { at, .. }`). A backend that buffers reports when each pose
-  was measured; smoothing and slouch timers run on it, never on arrival time. Reminders fire only on delivered
-  posture: the detector's clock never runs ahead of the latest delivered pose (plus silence).
+- **Poses carry their measurement time** (`Event::Pose { at, .. }`); smoothing and slouch timers run on it, never on
+  when the session handles the pose. A tracker with nothing left to deliver means a head that has not moved: the
+  session takes every waiting event before it judges posture up to now. A backend delivers each pose as soon as it
+  knows it is real, and holds back only noise it will drop (FreeClip 2: glides), briefly.
 - **Logging.** Log lines are JSON written with serde_json; never build JSON by hand. Session output goes through
   `Recorder` (event names in `LogEvent`). A backend's raw data goes to its `DeviceLog` (`--raw-log`).
 - **Make illegal states unrepresentable.** Fields that are valid only together, or that exclude each other, go into
