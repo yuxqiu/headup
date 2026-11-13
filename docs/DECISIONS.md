@@ -763,7 +763,13 @@
   only `t` since the first sample, `seq` and the quaternion (`tools/freeclip2/recordings/to_fixture.py`); a scan for
   addresses, the serial and Unix times found none. The earbuds', this computer's and the phone's addresses were
   already public (RUNBOOK; the `link.rs` and `protocol.rs` tests since f71ddc7; the phone's was first missed here).
-  The tests now use a made-up phone address (`12:34:56:78:9A:BC`); history is not rewritten (user).
+  The tests now use a made-up phone address (`12:34:56:78:9A:BC`); history is not rewritten (user). The earbuds' and
+  this computer's addresses were replaced too (user): `AA:BB:CC:DD:EE:01` (earbuds) and `AA:BB:CC:DD:EE:02` (this
+  computer) in the docs, examples, the Home Manager example and the tests, including the little-endian bytes in the
+  43/54 test frames.
+- Added 2026-11-13 (user): `live8.csv`, the live test of the socket-reading task and the calibration state machine
+  (two held slouches, then short glances). `live_session_with_two_slouches_end_to_end` replays it through the real
+  session: tone, recovery, tone, spoken reminder 20 s later, recovery.
 - Rejected: the other raw logs (live2/3/5/7, refusal, smoke, outage2, session2/8): their glides are covered by the
   selection. Kept out entirely: `research/` (vendor APK, decompiled code, firmware: not ours to publish).
 

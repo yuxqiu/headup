@@ -1,32 +1,32 @@
 # RUNBOOK
 
-Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via BlueZ).
+Device MAC used in examples: `AA:BB:CC:DD:EE:01`, a made-up address; use your earbuds' (`bluetoothctl devices Connected`).
 
 ## Nix
 - Dev shell with the Rust toolchain, clippy, rustfmt, rust-analyzer, python3, espeak-ng, and pw-play and notify-send
   for the live-test tools:
   `nix develop`
 - Build the package (runs the tests): `nix build`
-- Run: `nix run . -- [C0:DA:5E:F1:A0:A6] [--log data/session.jsonl] [--raw-log data/session_raw.jsonl]`. The address is optional;
+- Run: `nix run . -- [AA:BB:CC:DD:EE:01] [--log data/session.jsonl] [--raw-log data/session_raw.jsonl]`. The address is optional;
   without it, headup auto-detects connected supported earbuds and waits/reconnects.
 - The flake only sees git-tracked files, so `git add` new files before `nix build`.
 
-- Probe an MBB command: `python3 -I tools/freeclip2/device/probe.py C0:DA:5E:F1:A0:A6 '43/90:1='`
+- Probe an MBB command: `python3 -I tools/freeclip2/device/probe.py AA:BB:CC:DD:EE:01 '43/90:1='`
 - Troubleshoot a device backend: `headup --raw-log FILE` appends every raw sample (time, seq, quaternion as sent)
   and every other frame as JSON lines. Rebuilt orientations are in `--log` (pitch/yaw/roll). A FreeClip 2
   re-centre the rebuilder's glide model did not follow is logged as `{"missed_glide":SEQ}`.
 - Log lines in both files start with `t`, wall-clock Unix time in seconds (ms precision). Convert in Python with
   `datetime.fromtimestamp(t)`; subtract the first `t` for seconds since start.
-- Stream head pose: `python3 -I tools/freeclip2/device/headpose.py C0:DA:5E:F1:A0:A6 SECONDS [data/out.csv]`
+- Stream head pose: `python3 -I tools/freeclip2/device/headpose.py AA:BB:CC:DD:EE:01 SECONDS [data/out.csv]`
 - Guided axis/drift test (spoken prompts through the buds, ~4 min; run in `nix develop`):
-  `python3 -I tools/freeclip2/device/guided.py C0:DA:5E:F1:A0:A6 tests/fixtures/freeclip2/headpose_axes.csv`
+  `python3 -I tools/freeclip2/device/guided.py AA:BB:CC:DD:EE:01 tests/fixtures/freeclip2/headpose_axes.csv`
 - Move during a re-centre (beeps when a glide starts; look straight up at the beep; audio playing, headup stopped):
-  `python3 -I tools/freeclip2/device/glide_move.py C0:DA:5E:F1:A0:A6 data/glide_move.csv [--trials 3]`
+  `python3 -I tools/freeclip2/device/glide_move.py AA:BB:CC:DD:EE:01 data/glide_move.csv [--trials 3]`
 - Spatial mode query/set: `python3 -I tools/freeclip2/device/probe.py MAC '43/180:1=18,2=,3='` / `'43/180:1=18,2=01'`
   (0 off, 1 follow, 2 fixed).
 - Rust detector (inside `nix develop`):
   - Tests: `cargo test`. They include replays of the recordings in `tests/fixtures/`.
-  - Run: `cargo run --release -- [C0:DA:5E:F1:A0:A6] [--log data/session.jsonl]`
+  - Run: `cargo run --release -- [AA:BB:CC:DD:EE:01] [--log data/session.jsonl]`
   - It needs the BlueZ D-Bus API, a desktop notification server, and a PulseAudio server (PipeWire provides one;
     without it sound goes to ALSA's default device). Calibration is spoken at start and after
     re-wearing; stop with Ctrl-C, which disables the stream.
@@ -54,9 +54,9 @@ Device MAC used in examples: `C0:DA:5E:F1:A0:A6` (FreeClip 2, connected via Blue
     `python3 -I tools/freeclip2/recordings/glide_check.py data/*_raw.jsonl`
 - Turn a raw log into a publishable test fixture (samples only, time since the first sample; no addresses, serial
   or wall-clock time): `python3 -I tools/freeclip2/recordings/to_fixture.py data/X_raw.jsonl tests/fixtures/freeclip2/X.csv`.
-  Add the name to `RECORDINGS` in `src/devices/freeclip2/rebuild.rs`.
+  The rebuilder tests replay every CSV in that directory.
   - Guided live test (headup stopped; prompts are spoken, printed and shown as notifications; run in `nix develop`):
-    `python3 -I tools/freeclip2/device/grounding_test.py C0:DA:5E:F1:A0:A6 bluez_output.C0_DA_5E_F1_A0_A6.1 data/grounding_test.log`
+    `python3 -I tools/freeclip2/device/grounding_test.py AA:BB:CC:DD:EE:01 bluez_output.AA_BB_CC_DD_EE_01.1 data/grounding_test.log`
     (stops with a non-zero exit if the RFCOMM link drops or the silence player dies)
 - Command catalogue: `python3 -I tools/freeclip2/app/used_cmds.py research/jadx_out/sources` (service-43 IDs the app sends)
 - Custom-instruction reference (WS63 encodings; this chip differs, see FINDINGS): `git clone --depth 1 https://github.com/hispark-rs/hisi-riscv-qemu research/hisi-riscv-qemu` (`docs/reference/xlinx-isa.md`).

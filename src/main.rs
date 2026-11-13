@@ -15,7 +15,7 @@ use std::time::Duration;
 #[derive(Parser)]
 #[command(version)]
 struct Args {
-    /// Bluetooth address of the earbuds, e.g. C0:DA:5E:F1:A0:A6. Default: the first connected
+    /// Bluetooth address of the earbuds, e.g. AA:BB:CC:DD:EE:01. Default: the first connected
     /// supported earbuds.
     device: Option<Address>,
     /// Append posture samples and cue events as JSON lines to this file

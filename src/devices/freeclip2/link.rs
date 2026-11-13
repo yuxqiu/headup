@@ -307,7 +307,7 @@ mod tests {
     use crate::core::quat::Quat;
 
     fn pc() -> Address {
-        "D4:94:A9:22:86:6F".parse().unwrap()
+        "AA:BB:CC:DD:EE:02".parse().unwrap()
     }
 
     fn phone() -> Address {

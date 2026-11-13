@@ -221,7 +221,8 @@ mod tests {
     }
 
     // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/device/single_bud_test.py,
-    // data/reclaim_test.log). This computer is D4:94:A9:22:86:6F, sent little-endian.
+    // data/reclaim_test.log), with made-up addresses. This computer is AA:BB:CC:DD:EE:02, sent
+    // little-endian.
     #[test]
     fn device_audio_state() {
         let parse = |s: &str| Message::parse(&Frame::new(43, 54, &[(5, &hex(s))]));
@@ -229,10 +230,10 @@ mod tests {
             address: address.parse().unwrap(),
             streaming,
         };
-        let pc = "D4:94:A9:22:86:6F";
-        assert_eq!(parse("6f8622a994d409").unwrap(), audio(pc, true));
-        assert_eq!(parse("6f8622a994d403").unwrap(), audio(pc, false));
-        assert_eq!(parse("6f8622a994d401").unwrap(), audio(pc, false));
+        let pc = "AA:BB:CC:DD:EE:02";
+        assert_eq!(parse("02eeddccbbaa09").unwrap(), audio(pc, true));
+        assert_eq!(parse("02eeddccbbaa03").unwrap(), audio(pc, false));
+        assert_eq!(parse("02eeddccbbaa01").unwrap(), audio(pc, false));
         let phone = "12:34:56:78:9A:BC";
         assert_eq!(parse("bc9a7856341201").unwrap(), audio(phone, false));
         assert!(parse("0102").is_err());

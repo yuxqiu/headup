@@ -367,7 +367,7 @@ fn recordings() -> Vec<String> {
         .filter(|n| n.ends_with(".csv"))
         .collect();
     names.sort();
-    assert!(names.len() >= 14, "recordings missing from {dir}");
+    assert!(names.len() >= 15, "recordings missing from {dir}");
     names
 }
 

@@ -102,3 +102,19 @@ async fn live_35hz_session_end_to_end() {
     let cues = session_cues("live_35hz.csv").await;
     assert_eq!(kinds(&cues), ["Tone", "Recovered"], "cues: {cues:?}");
 }
+
+// data/live8_raw.jsonl (2026-11-13): headup reading its socket in its own task, two held
+// slouches, then several short glances. The first slouch cues a tone; the second is held past
+// 30 s, mostly with the head still and the earbuds silent, so the spoken reminder comes 20 s
+// after its tone. Each sit-up plays the recovery cue, and no glance cues.
+#[tokio::test(start_paused = true)]
+async fn live_session_with_two_slouches_end_to_end() {
+    let cues = session_cues("live8.csv").await;
+    let names: Vec<&str> = cues.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["Tone", "Recovered", "Tone", "Speak", "Recovered"]);
+    let reminder = cues[3].1 - cues[2].1;
+    assert!(
+        (secs(20.0)..secs(20.1)).contains(&reminder),
+        "spoken reminder {reminder:?} after the tone"
+    );
+}

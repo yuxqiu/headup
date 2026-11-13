@@ -66,20 +66,20 @@ mod tests {
 
     #[test]
     fn address_round_trips_through_text() {
-        let a: Address = "c0:DA:5e:F1:A0:A6".parse().unwrap();
-        assert_eq!(a.0, [0xC0, 0xDA, 0x5E, 0xF1, 0xA0, 0xA6]);
-        assert_eq!(a.to_string(), "C0:DA:5E:F1:A0:A6");
+        let a: Address = "aa:BB:cC:dd:EE:01".parse().unwrap();
+        assert_eq!(a.0, [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0x01]);
+        assert_eq!(a.to_string(), "AA:BB:CC:DD:EE:01");
     }
 
     #[test]
     fn malformed_addresses_are_errors() {
         for s in [
             "",
-            "C0:DA:5E:F1:A0",
-            "C0:DA:5E:F1:A0:A6:00",
-            "C0-DA-5E-F1-A0-A6",
-            "C0:DA:5E:F1:A0:G6",
-            "C0:DA:5E:F1:A0:+6",
+            "AA:BB:CC:DD:EE",
+            "AA:BB:CC:DD:EE:01:00",
+            "AA-BB-CC-DD-EE-01",
+            "AA:BB:CC:DD:EE:G1",
+            "AA:BB:CC:DD:EE:+1",
         ] {
             assert!(s.parse::<Address>().is_err(), "{s:?}");
         }

@@ -1,7 +1,7 @@
 """Guided live test of the device behaviour headup relies on (skill freeclip2-firmware, FINDINGS "Grounding").
 
 usage (inside `nix develop`, headup service stopped): python3 -I tools/freeclip2/device/grounding_test.py MAC SINK OUT.log
-SINK is the earbuds' PipeWire sink, e.g. bluez_output.C0_DA_5E_F1_A0_A6.1. Spoken prompts go to the default sink.
+SINK is the earbuds' PipeWire sink, e.g. bluez_output.AA_BB_CC_DD_EE_01.1. Spoken prompts go to the default sink.
 This computer streams silence to SINK throughout, except in the "audio gap" phase. 43/88 is sent only where a
 phase says so, so each gap shows the earbuds' own behaviour. Logs one line per second (poses, seq range) and every
 other frame (runner.py, the same format as single_bud_test.py).

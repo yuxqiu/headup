@@ -23,7 +23,7 @@ in
     device = lib.mkOption {
       type = lib.types.nullOr lib.types.str;
       default = null;
-      example = "C0:DA:5E:F1:A0:A6";
+      example = "AA:BB:CC:DD:EE:01";
       description = "Bluetooth address of the earbuds. `null` uses the first connected supported earbuds.";
     };
 

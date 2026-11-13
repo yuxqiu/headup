@@ -31,7 +31,7 @@ inputs.headup.inputs.nixpkgs.follows = "nixpkgs";
 imports = [ inputs.headup.homeManagerModules.default ];
 services.headup = {
   enable = true;
-  # device = "C0:DA:5E:F1:A0:A6";   # optional; default: the first connected supported earbuds
+  # device = "AA:BB:CC:DD:EE:01";   # optional; default: the first connected supported earbuds
   # logFile = "${config.xdg.stateHome}/headup/log.jsonl";   # optional record of angles and reminders
 };
 ```
@@ -63,8 +63,8 @@ If several supported earbuds are connected, pass the address of the ones to use:
 
 ```sh
 bluetoothctl devices Connected
-# Device C0:DA:5E:F1:A0:A6 HUAWEI FreeClip 2
-headup C0:DA:5E:F1:A0:A6
+# Device AA:BB:CC:DD:EE:01 HUAWEI FreeClip 2
+headup AA:BB:CC:DD:EE:01
 ```
 
 To keep a record of your head angle and reminders, add `--log FILE` (JSON lines).
