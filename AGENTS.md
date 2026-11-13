@@ -59,7 +59,7 @@ Run everything inside `nix develop`.
 - **Adding a backend.** Write `src/devices/<model>/`, implement `HeadTracker` and `Backend`, declare the module, and
   add one line to `backends!` in `src/devices/mod.rs`. Do not add parallel `match` arms anywhere.
 - **Protocol logic without I/O.** Keep a backend's decisions in a synchronous type that takes bytes and time and
-  returns events and frames to send (FreeClip 2: `Link`). The `HeadTracker` impl only moves bytes, so every
+  returns events, frames to send and raw-log records (FreeClip 2: `Link`). The `HeadTracker` impl only moves bytes, so every
   decision can be unit-tested without earbuds.
 - **Device state, derived view, reported changes.** Inside that type, keep what the device said in one struct
   whose message handlers update it and return what to send. Compute what the session sees from it (a view), and
@@ -94,7 +94,7 @@ Run everything inside `nix develop`.
   session (FreeClip 2: `Replay`, `ReplayTracker`). Do not copy production loops into test helpers. Session tests use
   `FakeTracker` and `testing::run_session` on tokio's paused clock.
 - Test-only modules go in a `tests/` directory next to the module. Declare them from its inline `mod tests`, not in
-  the production module list.
+  the production module list. A single-file module uses `#[cfg(test)] #[path = "tests/<name>.rs"] mod tests;`.
 - A refactor leaves every test unchanged. If a test has to change, the change alters behaviour: say so and record it.
 - A changed test tolerance or threshold is a decision. Record it in `docs/DECISIONS.md` with the measured values.
 - Measure a behaviour change through the real code (replay recordings through the real rebuilder and session),
