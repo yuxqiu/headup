@@ -261,6 +261,23 @@ fn holds(rows: &[Row]) -> Vec<u32> {
         .collect()
 }
 
+// A glide whose readings leave the formula partway (not something the firmware does: its glide
+// does not depend on the head) is indistinguishable from head movement, so its identity sample is
+// taken for the start of a hold, whatever the glide's size.
+#[test]
+fn glide_off_the_model_is_taken_for_a_hold() {
+    for deg in [10.0, 20.0, 30.0, 40.0] {
+        let held = pitch_quat(deg);
+        let mut rows: Vec<Row> = (1..=100).map(|s| row_52hz(s, held)).collect();
+        rows.extend((1..=67).map(|k| {
+            let q = firmware_glide(held, k);
+            row_52hz(100 + k, if k == 30 { q * pitch_quat(0.2) } else { q })
+        }));
+        rows.push(row_52hz(168, Quat::IDENTITY));
+        assert_eq!(holds(&rows), [168], "glide from {deg}°");
+    }
+}
+
 // The head turns, then the reading jumps to identity with no glide: the earbuds start a hold.
 // Identity samples after it start nothing more.
 #[test]
@@ -370,8 +387,7 @@ fn recordings() -> Vec<String> {
 // Every real recording follows the glide formula, including glides cut short, so no glide is
 // taken for a hold. The holds are identity samples with no glide before them: live4.csv seq 34,
 // after a wear flicker, and the walks in turn_walk.csv, walk_reconnect.csv, walk_near_far.csv and
-// walk_slouch.csv
-// (FINDINGS "Re-centre and stillness", "Instant resets while walking").
+// walk_slouch.csv (FINDINGS "Re-centre and stillness", "Instant resets while walking").
 #[test]
 fn holds_are_found_only_where_recorded() {
     for name in recordings() {

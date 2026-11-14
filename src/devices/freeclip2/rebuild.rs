@@ -41,7 +41,7 @@
 //!   "this is step `k` of a glide that started in the gap".
 //! - When a new stream starts (the sequence number goes backwards), a glide in progress is dropped
 //!   (the head was still), the rest come out, and the reference moves to the last orientation.
-//! - An identity sample that no hypothesis explains, with nothing held (no glide before it), starts
+//! - An identity sample that no hypothesis explains, with nothing held, is taken for the start of
 //!   a hold ([`Rebuilt::HoldStarted`]).
 
 use crate::core::quat::Quat;
@@ -268,9 +268,12 @@ impl GlideFilter {
             Some(start) => self.drop_after(start),
             // No hypothesis predicts it: the earbuds cut the glide short because the head moved.
             None => {
-                // If nothing is held, no glide came before it: the earbuds started a hold. Unless
-                // the last reading was too small for a glide to be tracked (within `FIT_TOL_DEG`
-                // of identity).
+                // If nothing is held, no live hypothesis covers the samples before it: they are
+                // taken for head movement, and the identity sample for the start of a hold. A glide
+                // whose readings left the formula partway would look the same, but the firmware's
+                // glide does not depend on the head, and no recording has one
+                // (`holds_are_found_only_where_recorded`). Not when the last reading was too small
+                // for a glide to be tracked (within `FIT_TOL_DEG` of identity).
                 if self.held.is_empty() && prev.raw.angle_to(Quat::IDENTITY) > FIT_TOL_DEG {
                     steps.push(Step::HoldStarted(end.seq));
                 }
@@ -313,13 +316,14 @@ impl GlideFilter {
 /// Turns released samples into absolute orientations: `absolute = raw × reference`. The earbuds
 /// report `raw = q ⊗ conj(ref)` (firmware `0x600fa53c`, FINDINGS "Re-centre and stillness"), so
 /// the reference goes on the right. `reference` is the earbuds' reference pose, in the frame of the
-/// stream start. At a `Step::Rebase` it becomes the last absolute orientation, because that is
-/// where the earbuds just moved it.
+/// start of the stream or of the last hold. At a `Step::Rebase` (a re-centre, or a new stream,
+/// which starts from the last pose) it becomes the last absolute orientation, because that is where
+/// the earbuds just moved it.
 ///
-/// A hold starts a new frame, as a new stream does: after it the earbuds report relative to the
-/// head pose where the hold ended, which is not in the stream. Keeping the old reference would
-/// compose every later reading with whatever turn the user made during the hold (a turn of ~180°
-/// reads looking down as looking up).
+/// A hold starts a new frame instead: after it the earbuds report relative to the head pose where
+/// the hold ended, which is not in the stream. Keeping the old reference would compose every later
+/// reading with whatever turn the user made during the hold (a turn of ~180° reads looking down as
+/// looking up).
 struct Stitch {
     reference: Quat,
     last_abs: Quat,
@@ -353,8 +357,8 @@ impl Stitch {
 /// What the rebuilder hands out, in order.
 #[derive(Debug, PartialEq)]
 pub enum Rebuilt {
-    /// A released sample: received at `at`, with its absolute orientation (relative to the stream
-    /// start).
+    /// A released sample: received at `at`, with its absolute orientation (relative to the start
+    /// of the stream or of the last hold).
     Pose { at: Duration, orientation: Quat },
     /// The identity sample `seq` started a hold (see the module docs). Poses from here on are in a
     /// new orientation frame: the head pose where the hold ends.

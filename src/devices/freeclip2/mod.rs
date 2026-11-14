@@ -13,7 +13,8 @@
 //!   computer streams.
 //! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts_up`]).
 //! - While the user walks around, the earbuds hold the reading and lose the head's movement, so
-//!   tracking is unavailable until the reading moves again (`rebuild`).
+//!   tracking is unavailable until the reading moves again (`link`; `rebuild` finds where a hold
+//!   starts).
 
 mod link;
 mod mbb;

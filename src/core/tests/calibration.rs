@@ -20,25 +20,32 @@ fn secs(x: f64) -> Duration {
 const SAMPLE: Duration = Duration::from_millis(20);
 
 /// Check `cal` every 20 ms from `from` to `to`, first passing a pose of pitch `pitch(t)` when it
-/// gives one. Returns the first step other than `Wait`, and when it came.
+/// gives one. Returns the first output, and when it came.
 fn drive(
     cal: &mut Calibration,
     from: Duration,
     to: Duration,
     pitch: impl Fn(Duration) -> Option<f64>,
-) -> Option<(Duration, Step)> {
+) -> Option<(Duration, Output)> {
     let mut t = from;
     while t <= to {
         if let Some(p) = pitch(t) {
             cal.pose(t, tilt(p));
         }
-        match cal.check(t) {
-            Step::Wait => {}
-            step => return Some((t, step)),
+        if let Some(output) = cal.check(t) {
+            return Some((t, output));
         }
         t += SAMPLE;
     }
     None
+}
+
+/// The outcome of an attempt that ended, with its report.
+fn ended(output: Output) -> (Report, Outcome) {
+    match output {
+        Output::AttemptEnded { report, outcome } => (report, outcome),
+        other => panic!("no attempt ended: {other:?}"),
+    }
 }
 
 /// A head moving between 0° and 30° on every sample.
@@ -75,10 +82,11 @@ fn calibration_mean_handles_sign_flipped_quaternions() {
 #[test]
 fn steady_head_calibrates_after_three_seconds() {
     let mut cal = Calibration::new(Duration::ZERO);
-    let (at, step) = drive(&mut cal, SAMPLE, secs(10.0), |_| Some(10.0)).unwrap();
+    let (at, output) = drive(&mut cal, SAMPLE, secs(10.0), |_| Some(10.0)).unwrap();
     assert_eq!(at, SAMPLE + secs(3.0));
-    let Step::Calibrated { upright, report } = step else {
-        panic!("{step:?}");
+    let (report, outcome) = ended(output);
+    let Outcome::Calibrated(upright) = outcome else {
+        panic!("{outcome:?}");
     };
     assert!((upright.euler().pitch - 10.0).abs() < 1e-6);
     assert_eq!(report.attempt, 1);
@@ -90,8 +98,8 @@ fn steady_head_calibrates_after_three_seconds() {
 fn moving_then_holding_still_calibrates() {
     let mut cal = Calibration::new(Duration::ZERO);
     let pitch = |t| if t < secs(1.0) { wobble(t) } else { Some(0.0) };
-    let (at, step) = drive(&mut cal, SAMPLE, secs(10.0), pitch).unwrap();
-    assert!(matches!(step, Step::Calibrated { .. }), "{step:?}");
+    let (at, output) = drive(&mut cal, SAMPLE, secs(10.0), pitch).unwrap();
+    assert!(matches!(ended(output).1, Outcome::Calibrated(_)));
     assert!(at < SAMPLE + CALIBRATION_ATTEMPT, "calibrated at {at:?}");
 }
 
@@ -101,19 +109,19 @@ fn moving_then_holding_still_calibrates() {
 fn poses_from_before_the_start_do_not_count() {
     let mut cal = Calibration::new(secs(2.0));
     cal.pose(secs(1.0), tilt(0.0));
-    let (at, step) = drive(&mut cal, secs(2.0), secs(10.0), |_| None).unwrap();
-    assert_eq!((at, step), (secs(7.0), Step::Nudge));
+    let (at, output) = drive(&mut cal, secs(2.0), secs(10.0), |_| None).unwrap();
+    assert_eq!((at, output), (secs(7.0), Output::Nudge));
 }
 
 // The nudge comes 5 s after the start, then every 15 s after each nudge ends.
 #[test]
 fn nudges_repeat_while_no_pose_arrives() {
     let mut cal = Calibration::new(Duration::ZERO);
-    let (at, step) = drive(&mut cal, Duration::ZERO, secs(60.0), |_| None).unwrap();
-    assert_eq!((at, step), (secs(5.0), Step::Nudge));
-    cal.spoken(secs(9.0)); // the prompt took 4 s
-    let (at, step) = drive(&mut cal, secs(9.0), secs(60.0), |_| None).unwrap();
-    assert_eq!((at, step), (secs(24.0), Step::Nudge));
+    let (at, output) = drive(&mut cal, Duration::ZERO, secs(60.0), |_| None).unwrap();
+    assert_eq!((at, output), (secs(5.0), Output::Nudge));
+    cal.prompt_ended(secs(9.0)); // the prompt took 4 s
+    let (at, output) = drive(&mut cal, secs(9.0), secs(60.0), |_| None).unwrap();
+    assert_eq!((at, output), (secs(24.0), Output::Nudge));
 }
 
 // A head that keeps moving fails each attempt 5 s after its first pose, and calibration gives up
@@ -123,16 +131,20 @@ fn moving_head_fails_every_attempt_then_gives_up() {
     let mut cal = Calibration::new(Duration::ZERO);
     let mut t = Duration::ZERO;
     for attempt in 1..=CALIBRATION_TRIES {
-        let (at, step) = drive(&mut cal, t + SAMPLE, secs(100.0), wobble).unwrap();
+        let (at, output) = drive(&mut cal, t + SAMPLE, secs(100.0), wobble).unwrap();
         assert_eq!(at, t + SAMPLE + CALIBRATION_ATTEMPT);
-        match step {
-            Step::Moved(r) if attempt < CALIBRATION_TRIES => assert_eq!(r.attempt, attempt),
-            Step::GaveUp(r) if attempt == CALIBRATION_TRIES => assert_eq!(r.attempt, attempt),
-            other => panic!("attempt {attempt}: {other:?}"),
-        }
+        let (report, outcome) = ended(output);
+        assert_eq!(report.attempt, attempt);
+        let last = attempt == CALIBRATION_TRIES;
+        let want = if last {
+            Outcome::GaveUp
+        } else {
+            Outcome::Retry
+        };
+        assert_eq!(outcome, want, "attempt {attempt}");
         if attempt < CALIBRATION_TRIES {
             t = at + secs(1.0); // "you moved" takes 1 s
-            cal.spoken(t);
+            cal.prompt_ended(t);
         }
     }
 }
@@ -174,17 +186,34 @@ fn head_is_still_after_two_seconds_without_moving() {
 #[test]
 fn nudge_starts_measuring_afresh() {
     let mut cal = Calibration::new(Duration::ZERO);
-    let (at, step) = drive(&mut cal, Duration::ZERO, secs(60.0), |_| None).unwrap();
-    assert_eq!((at, step), (secs(5.0), Step::Nudge));
+    let (at, output) = drive(&mut cal, Duration::ZERO, secs(60.0), |_| None).unwrap();
+    assert_eq!((at, output), (secs(5.0), Output::Nudge));
     // The prompt plays from 5 s to 9 s while the head moves. Its poses are taken after it ends, as
     // the session does.
-    cal.spoken(secs(9.0));
+    cal.prompt_ended(secs(9.0));
     let mut t = secs(5.0) + SAMPLE;
     while t < secs(9.0) {
         cal.pose(t, tilt(wobble(t).unwrap()));
         t += SAMPLE;
     }
-    let (at, step) = drive(&mut cal, secs(9.0), secs(30.0), |_| Some(0.0)).unwrap();
-    assert!(matches!(step, Step::Calibrated { .. }), "{step:?}");
+    let (at, output) = drive(&mut cal, secs(9.0), secs(30.0), |_| Some(0.0)).unwrap();
+    assert!(matches!(ended(output).1, Outcome::Calibrated(_)));
     assert_eq!(at, secs(9.0) + secs(3.0));
+}
+
+// Every call is valid in every state: poses and checks while a prompt plays, or after calibration
+// is over, do nothing, and so does a prompt's end when none was asked for.
+#[test]
+fn calls_out_of_turn_do_nothing() {
+    let mut cal = Calibration::new(Duration::ZERO);
+    cal.prompt_ended(secs(1.0)); // no prompt playing
+    let (_, output) = drive(&mut cal, Duration::ZERO, secs(60.0), |_| None).unwrap();
+    assert_eq!(output, Output::Nudge);
+    cal.pose(secs(6.0), tilt(0.0)); // while the nudge plays
+    assert_eq!(cal.check(secs(6.0)), None);
+    cal.prompt_ended(secs(9.0));
+    let (_, output) = drive(&mut cal, secs(9.0), secs(30.0), |_| Some(0.0)).unwrap();
+    assert!(matches!(ended(output).1, Outcome::Calibrated(_)));
+    cal.pose(secs(20.0), tilt(0.0));
+    assert_eq!(cal.check(secs(20.0)), None); // over
 }

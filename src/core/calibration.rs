@@ -1,7 +1,8 @@
 //! Calibration: find the upright pose after the "sit upright" prompt.
 //!
 //! [`Calibration`] makes every decision without I/O. The session feeds it poses and the time,
-//! speaks what it asks for, and tells it when a prompt has finished.
+//! speaks what it asks for, and tells it when that prompt has ended. [`Stillness`] tells the
+//! session when a head has settled, before it asks the user to sit upright after tracking resumed.
 //!
 //! The rule: the head is upright once the posture since the prompt has stayed steady for
 //! CALIBRATION. The posture holds between poses, because a tracker with nothing to deliver means a
@@ -32,21 +33,27 @@ const NUDGE_EVERY: Duration = Duration::from_secs(15);
 
 /// What the session should do after [`Calibration::check`].
 #[derive(Debug, PartialEq)]
-pub enum Step {
-    /// Keep feeding poses.
-    Wait,
-    /// No pose has arrived: ask the user to move a little, then call [`Calibration::spoken`].
+pub enum Output {
+    /// No pose has arrived: ask the user to move a little, then call
+    /// [`Calibration::prompt_ended`].
     Nudge,
-    /// The attempt failed: tell the user they moved, then call [`Calibration::spoken`] to start
-    /// the next attempt.
-    Moved(Report),
-    /// The head held steady. `upright` is its mean pose.
-    Calibrated { upright: Quat, report: Report },
-    /// The last attempt failed: tell the user they moved. Calibration is over.
-    GaveUp(Report),
+    /// An attempt ended. Show `report`, then act on `outcome`.
+    AttemptEnded { report: Report, outcome: Outcome },
 }
 
-/// How an attempt ended, for the console.
+/// How an attempt ended.
+#[derive(Debug, PartialEq)]
+pub enum Outcome {
+    /// The head held steady; this is its mean pose, the upright pose.
+    Calibrated(Quat),
+    /// The head moved: tell the user, then call [`Calibration::prompt_ended`] to start the next
+    /// attempt.
+    Retry,
+    /// The last attempt failed: tell the user they moved. Calibration is over.
+    GaveUp,
+}
+
+/// An attempt's numbers, for the console.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Report {
     /// 1 for the first attempt.
@@ -64,18 +71,21 @@ pub struct Calibration {
 }
 
 enum State {
-    /// An attempt is running. `nudge_at` is when to ask the user to move if it has no pose yet.
-    Measuring {
-        attempt: Attempt,
-        nudge_at: Duration,
-    },
-    /// "Move a little" is playing. The same attempt measures afresh after it: the prompt asks the
-    /// user to move, so poses measured while it plays do not count.
-    Nudging,
-    /// "You moved" is playing. The next attempt starts after it.
-    Moved,
+    /// An attempt is measuring. `nudge_at` is when to ask the user to move if it has no pose yet.
+    Measuring { poses: Window, nudge_at: Duration },
+    /// A prompt asked for by an [`Output`] is playing. What follows it is in `then`.
+    Prompting { then: AfterPrompt },
     /// Calibrated or gave up.
     Done,
+}
+
+/// What a calibration prompt leads to once it ends. Either way measuring starts afresh then:
+/// poses measured while a prompt plays do not count.
+enum AfterPrompt {
+    /// "Move a little" ended: the same attempt goes on.
+    SameAttempt,
+    /// "You moved" ended: the next attempt starts.
+    NextAttempt,
 }
 
 impl Calibration {
@@ -83,111 +93,106 @@ impl Calibration {
     pub fn new(now: Duration) -> Self {
         Calibration {
             attempts: 1,
-            state: State::measuring(now),
+            state: State::measuring(now, NUDGE_AFTER),
         }
     }
 
-    /// A pose measured at `measured`. Panics unless an attempt is running.
+    /// A pose measured at `measured`. Poses that arrive while a prompt plays, or after the end,
+    /// are not measured.
     pub fn pose(&mut self, measured: Duration, q: Quat) {
-        let State::Measuring { attempt, .. } = &mut self.state else {
-            panic!("calibration got a pose while not measuring");
-        };
-        attempt.add(measured, q);
+        if let State::Measuring { poses, .. } = &mut self.state {
+            poses.add(measured, q);
+        }
     }
 
     /// Decide at `now`. Every pose measured before `now` must have been passed to
-    /// [`Calibration::pose`]. Panics unless an attempt is running.
-    pub fn check(&mut self, now: Duration) -> Step {
-        let State::Measuring { attempt, nudge_at } = &mut self.state else {
-            panic!("calibration checked while not measuring");
+    /// [`Calibration::pose`]. `None` means keep feeding poses (or a prompt is playing, or
+    /// calibration is over).
+    pub fn check(&mut self, now: Duration) -> Option<Output> {
+        let State::Measuring { poses, nudge_at } = &mut self.state else {
+            return None;
         };
-        let span = attempt.span(now);
+        let span = poses.span(now, CALIBRATION).map(|s| {
+            let (mean, p90) = mean_and_p90(&s);
+            (mean, p90, s.len())
+        });
         let report = Report {
             attempt: self.attempts,
-            samples: span.as_ref().map_or(0, |s| s.samples),
-            p90: span.as_ref().map_or(f64::NAN, |s| s.p90),
+            samples: span.as_ref().map_or(0, |s| s.2),
+            p90: span.as_ref().map_or(f64::NAN, |s| s.1),
         };
-        let (next, step) = match (span, attempt.first) {
-            (Some(span), _) if span.p90 < CALIBRATION_MAX_P90_DEG => (
-                State::Done,
-                Step::Calibrated {
-                    upright: span.mean,
-                    report,
-                },
-            ),
+        let (next, output) = match (span, poses.first()) {
+            (Some((mean, p90, _)), _) if p90 < CALIBRATION_MAX_P90_DEG => {
+                (State::Done, ended(report, Outcome::Calibrated(mean)))
+            }
             (_, Some(first)) if now >= first + CALIBRATION_ATTEMPT => {
                 if self.attempts == CALIBRATION_TRIES {
-                    (State::Done, Step::GaveUp(report))
+                    (State::Done, ended(report, Outcome::GaveUp))
                 } else {
-                    (State::Moved, Step::Moved(report))
+                    let then = AfterPrompt::NextAttempt;
+                    (State::Prompting { then }, ended(report, Outcome::Retry))
                 }
             }
-            (_, None) if now >= *nudge_at => (State::Nudging, Step::Nudge),
-            _ => return Step::Wait,
+            (_, None) if now >= *nudge_at => {
+                let then = AfterPrompt::SameAttempt;
+                (State::Prompting { then }, Output::Nudge)
+            }
+            _ => return None,
         };
         self.state = next;
-        step
+        Some(output)
     }
 
-    /// The prompt asked for by [`Step::Nudge`] or [`Step::Moved`] finished at `now`. Panics if
-    /// none was asked for.
-    pub fn spoken(&mut self, now: Duration) {
-        self.state = match std::mem::replace(&mut self.state, State::Done) {
-            State::Nudging => State::Measuring {
-                attempt: Attempt::start(now),
-                nudge_at: now + NUDGE_EVERY,
-            },
-            State::Moved => {
-                self.attempts += 1;
-                State::measuring(now)
-            }
-            State::Measuring { .. } | State::Done => panic!("no calibration prompt was playing"),
+    /// The prompt asked for by an [`Output`] ended at `now`. Does nothing if none was playing.
+    pub fn prompt_ended(&mut self, now: Duration) {
+        let State::Prompting { then } = &self.state else {
+            return;
         };
+        let wait = match then {
+            AfterPrompt::SameAttempt => NUDGE_EVERY,
+            AfterPrompt::NextAttempt => {
+                self.attempts += 1;
+                NUDGE_AFTER
+            }
+        };
+        self.state = State::measuring(now, wait);
     }
 }
 
+fn ended(report: Report, outcome: Outcome) -> Output {
+    Output::AttemptEnded { report, outcome }
+}
+
 impl State {
-    /// A new attempt starting at `now`.
-    fn measuring(now: Duration) -> State {
+    /// Measuring from `now`, asking the user to move if no pose has come `nudge_in` later.
+    fn measuring(now: Duration, nudge_in: Duration) -> State {
         State::Measuring {
-            attempt: Attempt::start(now),
-            nudge_at: now + NUDGE_AFTER,
+            poses: Window::new(now),
+            nudge_at: now + nudge_in,
         }
     }
 }
 
-/// One attempt: the poses measured since it started.
-///
-/// The span judged starts at the latest pose measured at least CALIBRATION before now, because
-/// the head stayed at that pose until the next one. That pose and every pose after it must lie
-/// within CALIBRATION_MAX_P90_DEG of their mean, at the 90th percentile.
-struct Attempt {
+/// The poses measured since `start`, for judging the head over the last stretch of time. A pose
+/// measured before `start` does not count: those measured during a prompt are delivered after it.
+struct Window {
     start: Duration,
     /// Poses (measurement time, orientation), oldest first. The first is the latest pose that can
     /// still begin a span.
     poses: VecDeque<(Duration, Quat)>,
-    /// When the attempt's first pose was measured.
+    /// When the first pose since `start` was measured.
     first: Option<Duration>,
 }
 
-/// A span of poses: their mean, the 90th-percentile angle (degrees) from it, and their number.
-struct Span {
-    mean: Quat,
-    p90: f64,
-    samples: usize,
-}
-
-impl Attempt {
-    fn start(start: Duration) -> Self {
-        Attempt {
+impl Window {
+    fn new(start: Duration) -> Self {
+        Window {
             start,
             poses: VecDeque::new(),
             first: None,
         }
     }
 
-    /// Add a pose measured at `measured`. Poses measured before the attempt started don't count:
-    /// those measured during a prompt are delivered after it.
     fn add(&mut self, measured: Duration, q: Quat) {
         if measured >= self.start {
             self.first.get_or_insert(measured);
@@ -195,65 +200,53 @@ impl Attempt {
         }
     }
 
-    /// The span of length CALIBRATION that ends at `now`, if poses cover it.
-    fn span(&mut self, now: Duration) -> Option<Span> {
-        let from = now.checked_sub(CALIBRATION)?;
+    fn first(&self) -> Option<Duration> {
+        self.first
+    }
+
+    /// The poses that cover the `len` before `now`, if poses do: the latest pose measured at least
+    /// `len` before `now` (the head stayed at it until the next one) and every pose after it.
+    fn span(&mut self, now: Duration, len: Duration) -> Option<Vec<Quat>> {
+        let from = now.checked_sub(len)?;
         let begin = self.poses.iter().rposition(|&(m, _)| m <= from)?;
         self.poses.drain(..begin);
-        let samples: Vec<Quat> = self.poses.iter().map(|&(_, q)| q).collect();
-        let (mean, p90) = mean_and_p90(&samples);
-        Some(Span {
-            mean,
-            p90,
-            samples: samples.len(),
-        })
+        Some(self.poses.iter().map(|&(_, q)| q).collect())
     }
 }
 
-/// How long the head must hold still before calibration asks the user to sit upright, when head
-/// tracking has just resumed.
+/// How long the head must hold still, once head tracking resumes, before calibration asks the user
+/// to sit upright.
 const STILL: Duration = Duration::from_secs(2);
 /// The largest angle (degrees) from their mean that poses may have while the head holds still.
 const STILL_MAX_DEG: f64 = 2.0;
 
-/// Whether the head holds still, judged on the poses since the wait started. The head holds
-/// still once its posture has stayed within STILL_MAX_DEG for STILL: the latest pose measured at
-/// least STILL ago and every pose after it are that close to their mean. With no pose at all for
-/// STILL since the wait started, the head holds still too: a tracker with nothing to deliver
-/// means a head that has not moved.
-pub struct Stillness {
-    start: Duration,
-    /// Poses (measurement time, orientation), oldest first. The first is the latest pose that can
-    /// still begin a span.
-    poses: VecDeque<(Duration, Quat)>,
-}
+/// Whether the head holds still, judged on the poses since the wait started. It does once its
+/// posture has stayed within STILL_MAX_DEG of the mean for STILL. With no pose at all for STILL
+/// since the wait started, it does too: a tracker with nothing to deliver means a head that has
+/// not moved.
+pub struct Stillness(Window);
 
 impl Stillness {
     /// Start waiting at `now`.
     pub fn new(now: Duration) -> Self {
-        Stillness {
-            start: now,
-            poses: VecDeque::new(),
-        }
+        Stillness(Window::new(now))
     }
 
     pub fn pose(&mut self, measured: Duration, q: Quat) {
-        self.poses.push_back((measured, q));
+        self.0.add(measured, q);
     }
 
     /// Whether the head has held still up to `now`. Every pose measured before `now` must have
     /// been passed to [`Stillness::pose`].
     pub fn check(&mut self, now: Duration) -> bool {
-        let Some(from) = now.checked_sub(STILL) else {
+        if self.0.first().is_none() {
+            return now >= self.0.start + STILL;
+        }
+        let Some(span) = self.0.span(now, STILL) else {
             return false;
         };
-        let Some(begin) = self.poses.iter().rposition(|&(m, _)| m <= from) else {
-            return self.poses.is_empty() && from >= self.start;
-        };
-        self.poses.drain(..begin);
-        let samples: Vec<Quat> = self.poses.iter().map(|&(_, q)| q).collect();
-        let mean = Quat::mean(&samples);
-        samples.iter().all(|q| q.angle_to(mean) <= STILL_MAX_DEG)
+        let mean = Quat::mean(&span);
+        span.iter().all(|q| q.angle_to(mean) <= STILL_MAX_DEG)
     }
 }
 

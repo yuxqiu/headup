@@ -877,13 +877,15 @@
   glide's end takes the glide model), the way `Message::parse` decodes the other messages; `Link` routes it to
   `Earbuds::on_hold_started`. `Earbuds::on_reading` ends the hold at the first 43/89 reading that is not identity,
   and re-wearing (a new stream) clears it. `Earbuds::view` makes tracking unavailable while holding, so a hold
-  reaches the session as `Available(false)` and its end as `Available(true)`: the slouch is dropped and headup
-  calibrates once, after the walk. The hold's samples still come out; the session ignores poses while tracking is
+  reaches the session as `Unavailable` (with the backend's `WALKING` reason, see "Resuming is a tracking state")
+  and its end as `Available`: the slouch is dropped and headup calibrates once, after the walk. The hold's samples still come out; the session ignores poses while tracking is
   unavailable. `Rebuilt::MissedGlide` became `Rebuilt::HoldStarted`; the raw-log record is `{"hold":SEQ}` (was
-  `{"missed_glide":SEQ}`). The session and the tracker interface are unchanged. Supersedes "It does not trigger
-  recalibration" in "Exact glide model, immediate release".
-- **A hold starts a new orientation frame** (`Stitch` resets its reference at `HoldStarted`), as a new stream
-  does: after a hold the earbuds report relative to the head pose where it ended, which is not in the stream.
+  `{"missed_glide":SEQ}`). The availability event and the session's resume state changed later the same day
+  ("Resuming is a tracking state"). Supersedes "It does not trigger recalibration" in "Exact glide model,
+  immediate release".
+- **A hold starts a new orientation frame** (`Stitch` resets its reference at `HoldStarted`), unlike a new
+  stream, which the earbuds start from the last pose (`Step::Rebase`): after a hold the earbuds report relative to
+  the head pose where it ended, which is not in the stream.
   Keeping the old reference composed every later reading with the user's turn during the walk: in the live check
   (data/walk3*.jsonl, fixture `walk_slouch.csv`) the user turned ~140° while walking, and afterwards looking down
   (+46° raw) read as −47°, so no tone played. Test: `looking_down_after_a_walk_still_cues_end_to_end` (fails
@@ -911,8 +913,10 @@
     start, mid-walk, so the user kept hearing "sit upright" ("I constantly get calibration prompt whether I am
     walking near laptop or not"). A stillness wait before the prompt did not help, because the held reading looks
     perfectly still.
-  - A flag in `Earbuds` set from the rebuilder's output (user: "a surgery fix by using this additional
-    variable"): it copied state the rebuilder owns.
+  - A flag in `Earbuds` fed with two booleans that `Link` worked out itself (whether a glide was missed, whether
+    the reading was identity), next to a hold mode the rebuilder also kept (user: "a surgery fix by using this
+    additional variable"). The kept design stores the hold once, in `Earbuds`, set by a named event the rebuilder
+    reports.
   - A stream mode in the glide filter that dropped the hold's samples (tried twice, user: "ugly and very
     error-prone", then "even harder to read"): dropping them is not needed, and it tangled the hold into the
     glide logic. A `following_head` bit in the rebuilder: a device mode inside the orientation algorithm, and
@@ -927,8 +931,9 @@
 - **What.**
   - The session's `Tracking` has a fourth state, `Resuming`: `Available` after `Unavailable`. Poses flow, but the
     head is not judged until it holds still (`calibration::Stillness`, 2 s within 2°); then the state becomes
-    `Available`. `TrackerStatus` makes the transitions, so `wait_for_tracking` just waits for `Available`, and
-    startup and re-wearing never pass through `Resuming`. Replaces the `resuming` flag and `if` in
+    `Available`. `TrackerStatus` makes the transitions, so `wait_for_tracking` just waits for `Available`. Startup passes
+    through `Resuming` only when the tracker reported `Unavailable` first (e.g. audio not playing at connect), and
+    then the first prompt also waits for a still head; harmless. Replaces the `resuming` flag and `if` in
     `wait_for_tracking` (user: the resume state was missing and blended in as `if`s).
   - `Event::Available(bool)` became `Event::Available` and `Event::Unavailable { reason }`. `reason` is the
     backend's own sentence, shown as is in "head tracking is unavailable (…)" and the "waiting for head tracking"
@@ -959,3 +964,32 @@
   event. With prompts excluding their own poses, calibration no longer depends on it, but monitoring does (poses
   queue while "calibrated" plays): `monitoring_judges_only_after_taking_every_queued_pose` (fails without draining:
   a tone for a 9 s slouch that already ended).
+- **Accepted risk** [inferred, from the thermos review]: a user who moves early in the nudge and is still by its
+  end may give no pose after it (the earbuds pause after ~4 s still), so the next nudge comes 15 s later. Counting
+  the poses measured during the prompt is what this entry removes.
+
+## 2026-11-13: Calibration outputs, one window type, review fixes (user, thermos review)
+- **Calibration API.** `Calibration::check(now) -> Option<Output>`, with `Output::Nudge` or
+  `Output::AttemptEnded { report, outcome }` and `Outcome { Calibrated(upright), Retry, GaveUp }`;
+  `prompt_ended(now)` replaces `spoken`. Every call is valid in every state: poses and checks while a prompt plays
+  or after the end do nothing, and `prompt_ended` with no prompt playing does nothing (they panicked before). The
+  console report sits on the one output that has it, an ended attempt (user: "super weird that a Report is carried
+  everywhere with Step"). Prompt state is internal (`State::Prompting { then: AfterPrompt }`). Rejected: a
+  `last_report()` getter (hidden state read at the right moment); dropping the report (it diagnosed the live
+  tests).
+- **One window.** `calibration::Window` holds the poses measured since a start and gives the span that covers the
+  last stretch of time; the calibration attempt (3 s, p90 < 8°) and `Stillness` (2 s, all within 2°) are criteria
+  over it. `Stillness` now ignores poses measured before tracking resumed, as attempts do.
+- **Session tidy-ups.** `Interrupt::Unavailable(reason)` carries the reason (the impossible fallback is gone);
+  `TrackerStatus::waiting_for` is the one place that says what the session waits for (none while resuming: data
+  flows); `JUDGE_EVERY` (200 ms) names how often calibration and the stillness wait judge; a second `Available`
+  while resuming keeps waiting for a still head. `link.rs`'s enum is `Availability` (the session has its own
+  `Tracking`).
+- **Wording.** `WALKING` now says tracking "resumes when you move your head after you stop": after a hold the
+  stream resumes only once the reading moves 4° (FINDINGS), not when the user is still.
+- **Tests.** Restored the off-model glide case as `glide_off_the_model_is_taken_for_a_hold` (the firmware cannot
+  produce one; the test records what the code decides). `looking_down_after_a_walk_still_cues_end_to_end` also
+  checks that no "sit upright" comes mid-walk. New: `calls_out_of_turn_do_nothing`.
+- **Known limits, accepted** [inferred]: a hold that starts together with a new stream (the user walks for 6 s and
+  re-wears or restarts audio) is not detected, because a stream's first identity run is normal; the session's log
+  does not record the unavailability reason or the console notes, so their wording is untested.

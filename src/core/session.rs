@@ -1,6 +1,6 @@
 //! Device-agnostic posture session: spoken calibration, then monitoring with cues.
 
-use super::calibration::{Calibration, Report, Step, Stillness};
+use super::calibration::{Calibration, Outcome, Output, Stillness};
 use super::cues::{CueSink, Phrase};
 use super::detector::{Config, Detector};
 use super::quat::Quat;
@@ -19,6 +19,9 @@ const TRACKING_WAIT_NOTE: Duration = Duration::from_secs(5);
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 /// How long to wait for a tracker event before re-checking timers.
 const POLL: Duration = Duration::from_secs(1);
+/// How often calibration and the wait for a still head judge the head. A prompt comes at most this
+/// long after the head meets its condition.
+const JUDGE_EVERY: Duration = Duration::from_millis(200);
 
 /// Why a cycle ended early. A cycle waits until the earbuds are worn, calibrates, then monitors.
 /// `?` carries the interrupt, so every wait in the session gives up the same way when the earbuds
@@ -30,8 +33,8 @@ enum Interrupt {
     /// resumed tracking may measure from a new pose. So the posture reference can't be trusted.
     /// The session drops the slouch state, so no reminder plays from stale data, and recalibrates
     /// once tracking resumes. Silence while tracking is available only means the head is still. It
-    /// never ends a cycle.
-    Unavailable,
+    /// never ends a cycle. Carries the tracker's reason.
+    Unavailable(&'static str),
     /// A tracker or output error. It ends the session.
     Fatal(anyhow::Error),
 }
@@ -105,7 +108,7 @@ enum Tracking {
     Available,
 }
 
-/// What the tracker has reported about itself.
+/// What the tracker has reported about itself, and whether the session can judge the head yet.
 struct TrackerStatus {
     worn: bool,
     tracking: Tracking,
@@ -136,10 +139,23 @@ impl TrackerStatus {
 
     /// `Available` arrived at `now`.
     fn available(&mut self, now: Duration) {
-        self.tracking = match self.tracking {
-            Tracking::Unavailable(_) => Tracking::Resuming(Stillness::new(now)),
-            Tracking::Starting | Tracking::Resuming(_) | Tracking::Available => Tracking::Available,
+        match self.tracking {
+            Tracking::Unavailable(_) => self.tracking = Tracking::Resuming(Stillness::new(now)),
+            Tracking::Starting => self.tracking = Tracking::Available,
+            Tracking::Resuming(_) | Tracking::Available => {}
+        }
+    }
+
+    /// Whether the session is waiting for the device, as a note suffix with what the user can do
+    /// (" (…)", or "" with no hint): at startup the tracker's hint, while unavailable its reason.
+    /// `None` while resuming, when data flows and only the head must settle.
+    fn waiting_for(&self, traits: TrackerTraits) -> Option<String> {
+        let hint = match self.tracking {
+            Tracking::Starting => traits.tracking_hint,
+            Tracking::Unavailable(reason) => Some(reason),
+            Tracking::Resuming(_) | Tracking::Available => return None,
         };
+        Some(hint.map_or(String::new(), |h| format!(" ({h})")))
     }
 
     /// `Unavailable` arrived, for `reason`. Returns `true` if the head was being judged and no
@@ -186,7 +202,9 @@ pub async fn run<T: HeadTracker, C: CueSink>(
     loop {
         match s.cycle().await {
             Ok(()) | Err(Interrupt::Removed) => {}
-            Err(Interrupt::Unavailable) => s.on_unavailable(),
+            Err(Interrupt::Unavailable(reason)) => s.rec.note(&format!(
+                "head tracking is unavailable ({reason}); will calibrate when it resumes"
+            )),
             Err(Interrupt::Fatal(e)) => return Err(e),
         }
     }
@@ -196,14 +214,6 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     /// Time since the session started; see [`Timeline`].
     fn now(&self) -> Duration {
         self.time.now()
-    }
-
-    /// The tracker's hint as a message suffix (" (hint)"), or "" if it has none.
-    fn tracking_hint_suffix(&self) -> String {
-        self.tracker
-            .traits()
-            .tracking_hint
-            .map_or(String::new(), |hint| format!(" ({hint})"))
     }
 
     /// One cycle: wait until worn, calibrate, then monitor (or back off after a failed
@@ -253,21 +263,11 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             Event::Unavailable { reason } => {
                 self.rec.event(LogEvent::TrackingUnavailable)?;
                 if self.status.unavailable(reason) {
-                    return Err(Interrupt::Unavailable);
+                    return Err(Interrupt::Unavailable(reason));
                 }
             }
         }
         Ok(None)
-    }
-
-    fn on_unavailable(&mut self) {
-        let reason = match self.status.tracking {
-            Tracking::Unavailable(reason) => format!(" ({reason})"),
-            _ => String::new(),
-        };
-        self.rec.note(&format!(
-            "head tracking is unavailable{reason}; will calibrate when it resumes"
-        ));
     }
 
     async fn wait_until_worn(&mut self) -> Flow<()> {
@@ -294,25 +294,25 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
 
     /// Wait until tracking is available (see [`Tracking`]). Tracking may not start until a device
     /// precondition is met (see `TrackerTraits`). That can take a while, so this waits without a
-    /// deadline. A note says so, with what the user can do, once the wait gets long.
+    /// deadline. A note says so, with what the user can do, once the wait for the device gets
+    /// long.
     async fn wait_for_tracking(&mut self) -> Flow<()> {
         let start = self.now();
         let mut noted = false;
         loop {
             self.status.settle(self.now());
-            let hint = match self.status.tracking {
-                Tracking::Available => return Ok(()),
-                Tracking::Starting => self.tracking_hint_suffix(),
-                Tracking::Unavailable(reason) => format!(" ({reason})"),
-                Tracking::Resuming(_) => String::new(),
-            };
-            if !noted && self.now() - start >= TRACKING_WAIT_NOTE {
-                self.rec.note(&format!(
-                    "waiting for head tracking from the earbuds{hint}…"
-                ));
-                noted = true;
+            if matches!(self.status.tracking, Tracking::Available) {
+                return Ok(());
             }
-            self.next(Duration::from_millis(200)).await?;
+            if !noted && self.now() - start >= TRACKING_WAIT_NOTE {
+                // While resuming, data flows: the session only waits for a still head.
+                if let Some(why) = self.status.waiting_for(self.tracker.traits()) {
+                    self.rec
+                        .note(&format!("waiting for head tracking from the earbuds{why}…"));
+                    noted = true;
+                }
+            }
+            self.next(JUDGE_EVERY).await?;
         }
     }
 
@@ -323,39 +323,37 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         self.cues.say(Phrase::SitUpright).await?;
         let mut cal = Calibration::new(self.now());
         loop {
-            for (measured, q) in self.next(Duration::from_millis(200)).await? {
+            for (measured, q) in self.next(JUDGE_EVERY).await? {
                 cal.pose(measured, q);
             }
             match cal.check(self.now()) {
-                Step::Wait => {}
-                Step::Nudge => {
+                None => {}
+                Some(Output::Nudge) => {
                     self.cues.say(Phrase::MoveHead).await?;
-                    cal.spoken(self.now());
+                    cal.prompt_ended(self.now());
                 }
-                Step::Moved(report) => {
-                    self.note_attempt(report);
-                    self.cues.say(Phrase::Moved).await?;
-                    cal.spoken(self.now());
-                }
-                Step::Calibrated { upright, report } => {
-                    self.note_attempt(report);
-                    self.cues.say(Phrase::Calibrated).await?;
-                    return Ok(Some(upright));
-                }
-                Step::GaveUp(report) => {
-                    self.note_attempt(report);
-                    self.cues.say(Phrase::Moved).await?;
-                    return Ok(None);
+                Some(Output::AttemptEnded { report, outcome }) => {
+                    self.rec.note(&format!(
+                        "calibration attempt {}: {} samples, p90 deviation {:.1}°",
+                        report.attempt, report.samples, report.p90
+                    ));
+                    match outcome {
+                        Outcome::Calibrated(upright) => {
+                            self.cues.say(Phrase::Calibrated).await?;
+                            return Ok(Some(upright));
+                        }
+                        Outcome::Retry => {
+                            self.cues.say(Phrase::Moved).await?;
+                            cal.prompt_ended(self.now());
+                        }
+                        Outcome::GaveUp => {
+                            self.cues.say(Phrase::Moved).await?;
+                            return Ok(None);
+                        }
+                    }
                 }
             }
         }
-    }
-
-    fn note_attempt(&mut self, r: Report) {
-        self.rec.note(&format!(
-            "calibration attempt {}: {} samples, p90 deviation {:.1}°",
-            r.attempt, r.samples, r.p90
-        ));
     }
 
     /// Monitor until interrupted: earbuds off, tracking unavailable, or an error.

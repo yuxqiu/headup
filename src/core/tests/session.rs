@@ -150,6 +150,13 @@ async fn simulate(script: Vec<Script>, sim: Sim) -> Outcome {
 
 use Script::*;
 
+/// The tracker reports head tracking unavailable, for a reason of its own.
+fn unavailable() -> Script {
+    Ev(Event::Unavailable {
+        reason: "audio stopped",
+    })
+}
+
 // Sitting back up "past" upright re-anchors only for trackers whose pose drifts.
 #[tokio::test(start_paused = true)]
 async fn reanchors_only_for_drifting_trackers() {
@@ -267,9 +274,7 @@ async fn unavailability_drops_the_slouch_and_recalibrates() {
     let script = vec![
         Poses(0.0, secs(4.0)),
         Poses(40.0, secs(2.0)),
-        Ev(Event::Unavailable {
-            reason: "audio stopped",
-        }),
+        unavailable(),
         Quiet(secs(20.0)),
         Ev(Event::Available),
         Poses(0.0, secs(4.0)),
@@ -288,9 +293,7 @@ async fn unavailability_drops_the_slouch_and_recalibrates() {
 async fn still_head_is_asked_to_move_when_tracking_resumes() {
     let script = vec![
         Poses(0.0, secs(4.0)),
-        Ev(Event::Unavailable {
-            reason: "audio stopped",
-        }),
+        unavailable(),
         Quiet(secs(10.0)),
         Ev(Event::Available),
         Quiet(secs(8.0)),
@@ -332,9 +335,7 @@ async fn still_head_is_asked_to_move_after_rewearing() {
 async fn nudge_repeats_while_no_pose_arrives() {
     let script = vec![
         Poses(0.0, secs(4.0)),
-        Ev(Event::Unavailable {
-            reason: "audio stopped",
-        }),
+        unavailable(),
         Ev(Event::Available),
         Quiet(secs(38.0)),
         Poses(0.0, secs(4.0)),
@@ -359,9 +360,7 @@ async fn startup_waits_silently_for_tracking() {
 async fn poses_after_unavailability_do_not_start_calibration() {
     let script = vec![
         Poses(0.0, secs(4.0)),
-        Ev(Event::Unavailable {
-            reason: "audio stopped",
-        }),
+        unavailable(),
         Poses(0.0, secs(1.0)),
         Quiet(secs(40.0)),
     ];
@@ -395,9 +394,7 @@ async fn failed_calibration_retries_later() {
 async fn prompt_after_tracking_resumes_waits_until_the_head_is_still() {
     let script = vec![
         Poses(0.0, secs(4.0)),
-        Ev(Event::Unavailable {
-            reason: "audio stopped",
-        }),
+        unavailable(),
         Ev(Event::Available),
         Wobble(0.0, 20.0, secs(5.0)),
         Poses(0.0, secs(8.0)),

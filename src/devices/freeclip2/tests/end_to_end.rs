@@ -119,12 +119,11 @@ async fn live_session_with_two_slouches_end_to_end() {
     );
 }
 
-// Four recorded walks (2026-11-13; FINDINGS "Instant resets while walking"). While the user walks,
-// the earbuds hold their reading and lose the head's movement, so the reference from before the
-// walk no longer applies. No reminder may come from it: each hold makes tracking unavailable, and
-// headup calibrates again once the user has stopped and held still, so no attempt fails ("you
-// moved") mid-walk. Before this, the first walk ended with a tone, a spoken reminder and a
-// notification while the user sat upright.
+// Three recorded walks (2026-11-13; FINDINGS "Instant resets while walking"). While the user
+// walks, the earbuds hold their reading and lose the head's movement, so the reference from before
+// the walk no longer applies. No reminder may come from it: each hold makes tracking unavailable,
+// and headup calibrates again once the user has stopped and held still, so no attempt fails ("you
+// moved") mid-walk.
 #[tokio::test(start_paused = true)]
 async fn walking_around_gives_no_reminder_end_to_end() {
     for name in ["walk_reconnect.csv", "turn_walk.csv", "walk_near_far.csv"] {
@@ -145,14 +144,30 @@ async fn walking_around_gives_no_reminder_end_to_end() {
     }
 }
 
-// data/walk3_raw.jsonl (2026-11-13): a live walk with the hold handling, then looking down at the
-// desk. In the raw readings the look-downs (from about 126 s and 158 s) are +46° like every other
-// look-down. They must read as looking down after the walk, so each one cues a tone and sitting up
-// plays the recovery cue. With the reference from before the hold kept, the user's turn during the
-// walk made them read as -47° (looking up), and nothing played.
+// data/walk3_raw.jsonl (2026-11-13): a live walk (24 s to about 102 s, turning ~140° on the way),
+// then looking down at the desk. In the raw readings the look-downs (from about 126 s and 158 s)
+// are +46° like every other look-down. After the walk "sit upright" comes only once the user is
+// back; the look-downs read as looking down, so each one cues a tone and sitting up plays the
+// recovery cue.
 #[tokio::test(start_paused = true)]
 async fn looking_down_after_a_walk_still_cues_end_to_end() {
-    let cues = session_cues("walk_slouch.csv").await;
+    let mut tracker = ReplayTracker::new(&read_csv("walk_slouch.csv"));
+    let run = run_session(&mut tracker, Duration::ZERO).await;
+    let prompts: Vec<Duration> = run
+        .cues
+        .iter()
+        .filter(|(name, _)| name == "say SitUpright")
+        .map(|&(_, t)| t)
+        .collect();
+    assert!(
+        prompts.iter().all(|&t| t < secs(24.0) || t > secs(100.0)),
+        "sit upright mid-walk: {prompts:?}"
+    );
+    let cues: Vec<_> = run
+        .cues
+        .into_iter()
+        .filter(|(name, _)| !name.starts_with("say "))
+        .collect();
     assert_eq!(
         kinds(&cues),
         ["Tone", "Recovered", "Tone", "Recovered"],
