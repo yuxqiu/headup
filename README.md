@@ -6,14 +6,14 @@ headup reads head tracking from supported earbuds on Linux. When you look down f
 example at a phone or a low laptop screen, it reminds you through your earbuds. It needs no camera
 and no cloud; everything runs locally.
 
-The earbuds only share head tracking while your computer is playing audio to them, so headup watches
-your posture while you listen to something on the computer.
+Earbuds share head tracking only under conditions of their own, such as audio playing on the computer.
+Each model's page below says what yours need.
 
 ## Supported earbuds
 
-| Earbuds | Status | Head tracking | Pauses when taken off | Tested firmware |
-|---|---|---|---|---|
-| HUAWEI FreeClip 2 | Supported | While the computer plays audio, both earbuds worn | Yes | HarmonyOS 7.0.0.526 |
+| Earbuds | Tested firmware | What to know |
+|---|---|---|
+| HUAWEI FreeClip 2 | HarmonyOS 7.0.0.526 | [docs/devices/freeclip2/README.md](docs/devices/freeclip2/README.md) |
 
 ## Requirements
 
@@ -71,9 +71,9 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
 
 ## What to expect
 
-1. **Calibration.** Once audio is playing, a voice asks you to sit upright and look straight ahead. Hold still for about
-   3 seconds. If you move, it asks again. If it hears nothing from the earbuds, it asks you to move your head a
-   little and then hold still.
+1. **Calibration.** Once your earbuds track your head, a voice asks you to sit upright and look straight ahead. Hold
+   still for about 3 seconds. If you move, it asks again. If it hears nothing from the earbuds, it asks you to move
+   your head a little and then hold still.
 2. **Monitoring.** Looking down counts. Looking up, or turning your head to another screen, does not.
    Short glances down are fine.
 3. **Reminders.** If you keep looking down (more than about 20°):
@@ -85,11 +85,11 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
    | 60 s | a desktop notification |
    | when you look up again | a short "tink" |
 
-4. **Taking an earbud off** pauses monitoring, because head tracking needs both earbuds. When both are
-   back on, headup calibrates again, because the earbuds sit slightly differently each time.
-5. **Pausing your audio**, or playing something on another device, pauses monitoring too: your head
-   may move while headup cannot see it. When you play something on this computer again, headup asks
-   you to sit upright once more. Skipping a track doesn't interrupt.
+4. **Taking your earbuds off** pauses monitoring. When they are back on, headup calibrates again, because they sit
+   slightly differently each time.
+5. **When your earbuds stop tracking your head**, monitoring pauses: your head may move while headup cannot see it.
+   When tracking comes back, headup waits until you hold still and asks you to sit upright once more. What makes
+   tracking stop depends on the earbuds; see your model's page.
 
 ## License
 

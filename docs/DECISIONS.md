@@ -993,3 +993,25 @@
 - **Known limits, accepted** [inferred]: a hold that starts together with a new stream (the user walks for 6 s and
   re-wears or restarts audio) is not detected, because a stream's first identity run is normal; the session's log
   does not record the unavailability reason or the console notes, so their wording is untested.
+
+## 2026-11-13: Sitting still after a walk waits for a head movement (user)
+- **What.** Accepted limit: after a walk, headup asks to sit upright only once the head moves. The earbuds resume
+  the stream after a hold only when the reading moves 4°, so a user who sits down and keeps perfectly still sends
+  nothing, the same as a user still walking; tracking stays unavailable. Documented in docs/devices/freeclip2/README.md ("Walking around")
+  and FINDINGS; `after_a_hold_only_a_head_movement_brings_a_prompt_end_to_end` pins what can be pinned
+  (a recorded walk with an extra minute of silence before the first moving reading: no prompt until then, one
+  within 5 s after). No recording can show sitting still itself: the earbuds send nothing then, the same as while
+  walking, which is the point. Observed live: 42 s of sitting perfectly still after a walk, no sample and no
+  prompt; the prompt came about 2 s after the user moved (FINDINGS, data/sitstill*.jsonl).
+- **Why.** No signal separates the two: during and after a hold the earbuds send nothing. The stillness wait after
+  resuming does not need movement (silence counts as still); only the resume does.
+- **Rejected.** A spoken "move your head a little" while a hold lasts: it would also play mid-walk, which is what
+  the hold handling removed.
+
+## 2026-11-13: The README is device-neutral; each model has a user page (user)
+- **What.** The root README describes headup for any earbuds (calibration, monitoring, reminders, pausing when the
+  earbuds stop tracking). FreeClip 2's conditions and quirks (audio on this computer, both earbuds worn, walking,
+  sitting still after a walk, drift) moved to docs/devices/freeclip2/README.md, linked from the supported-earbuds
+  table. AGENTS.md states the rule.
+- **Why.** User: the README described FreeClip 2 behaviour as headup's, which a second model would contradict.
+  `FINDINGS.md` stays the evidence; the model page is what users need.

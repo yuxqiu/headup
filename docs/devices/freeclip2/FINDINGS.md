@@ -913,6 +913,16 @@ identity sample as ground truth for each glide's end.
 - Earlier guess, now explained: the yaw error after the first walk (≈ −85° to −99°) is
   close to the sum of its two resets' yaw (−68° − 17°), which would fit a reset that does not move the reference
   to the head [inferred, one run].
+- **Sitting still after a walk keeps the stream silent.** After a hold the stream resumes only once the reading moves
+  4° (as after any pause), so a user who sits down and keeps perfectly still sends nothing, exactly like one who
+  is still walking. Live (data/walk3*.jsonl, last run): the stream was silent from the hold at 39.6 s to 98.8 s and
+  resumed with the user's deliberate head move (0° to 14° in 0.2 s). headup cannot tell the two apart; see
+  DECISIONS "Sitting still after a walk waits for a head movement".
+- Observed directly (data/sitstill*.jsonl, 2026-11-13, phases in data/sitstill_phases.tsv): hold at 33.9 s while
+  walking; the user sat down and kept perfectly still from the prompt at 82.3 s; no sample at all from 56.3 s until
+  129.6 s (73 s silent, 42 s of it sitting still); the stream resumed 5 s after "now move your head", 8.8° from
+  identity. headup stayed unavailable while still, prompted ~2 s after the move, and calibrated on the first
+  attempt (43 samples, p90 0.3°).
 - Recalibrating on every instant reset was tried and rejected: walking produced one about every 50 s, so the
   user kept hearing "sit upright", once mid-walk. headup models the hold instead: tracking is unavailable from
   its first identity sample to the first sample that is not identity (DECISIONS "The earbuds' hold makes tracking

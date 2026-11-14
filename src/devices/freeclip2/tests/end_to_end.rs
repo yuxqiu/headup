@@ -174,3 +174,38 @@ async fn looking_down_after_a_walk_still_cues_end_to_end() {
         "cues: {cues:?}"
     );
 }
+
+// After a hold the earbuds stay silent until the head moves (about 4°, FINDINGS "Instant resets
+// while walking"), whether the user is still walking or has sat down and keeps still: the stream
+// cannot tell the two apart, and neither can headup. So silence after a hold never brings a
+// prompt, however long it lasts, and the first moving reading does. Here walk_slouch.csv's last
+// hold (50.96 s) is followed by its recorded silence plus an extra minute before the first moving
+// reading. The recording does not show when the user sat down: the silence covers both.
+#[tokio::test(start_paused = true)]
+async fn after_a_hold_only_a_head_movement_brings_a_prompt_end_to_end() {
+    let delay = secs(60.0);
+    let mut rows = read_csv("walk_slouch.csv");
+    let resume = rows.iter().position(|r| r.seq == 5521).unwrap(); // first moving reading
+    let moved_at = rows[resume].t + delay;
+    for r in &mut rows[resume..] {
+        r.t += delay;
+    }
+    let mut tracker = ReplayTracker::new(&rows);
+    let run = run_session(&mut tracker, Duration::ZERO).await;
+    let prompts: Vec<Duration> = run
+        .cues
+        .iter()
+        .filter(|(name, _)| name == "say SitUpright" || name == "say MoveHead")
+        .map(|&(_, t)| t)
+        .collect();
+    assert!(
+        !prompts.iter().any(|&t| secs(51.0) < t && t < moved_at),
+        "prompted before the head moved at {moved_at:?}: {prompts:?}"
+    );
+    assert!(
+        prompts
+            .iter()
+            .any(|&t| moved_at < t && t < moved_at + secs(5.0)),
+        "no prompt soon after the head moved at {moved_at:?}: {prompts:?}"
+    );
+}

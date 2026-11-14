@@ -27,7 +27,7 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   I/O), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (a task that owns the socket and reads continuously). Its test-only modules are in
   `src/devices/<model>/tests/`.
 - `src/testing.rs`: test support shared across modules (run the real session on any tracker).
-- Per model, outside `src/`: `docs/devices/<model>/`, `tools/<model>/` (Python research scripts: `firmware/`,
+- Per model, outside `src/`: `docs/devices/<model>/` (`README.md`: what users of that model need to know; `FINDINGS.md`: the evidence), `tools/<model>/` (Python research scripts: `firmware/`,
   `device/` for the earbuds, `recordings/` for recorded data, `app/` for the vendor app) and
   `tests/fixtures/<model>/` (recordings the tests replay). FreeClip 2 shared modules: `device/mbb.py` (framing,
   connection, prompts), `device/runner.py` (scripted phase tests), `firmware/listing.py` (listing rows),
@@ -53,7 +53,9 @@ Run everything inside `nix develop`.
 ## Design rules
 
 - **`src/core/` never names a device.** Code and comments in core describe generic behaviour. Device facts
-  belong in the backend and in `docs/devices/<model>/`.
+  belong in the backend and in `docs/devices/<model>/`. The same holds for the root `README.md`: it describes
+  headup for any earbuds; a model's conditions and quirks go in `docs/devices/<model>/README.md`, linked from the
+  supported-earbuds table.
 - **Device quirks.** Absorb a quirk in the backend: re-centring, wear rules, the precondition behind
   `Event::Available`. Declare a quirk in `TrackerTraits` only when handling it needs session knowledge. Each new
   field defaults to "no quirk".
