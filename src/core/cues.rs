@@ -11,8 +11,8 @@ use super::wav::Pcm;
 use anyhow::{Context, Result, anyhow};
 use std::sync::Arc;
 
-/// Generates [`Phrase`] from `Variant => "clip"` pairs. Each clip is embedded from
-/// assets/voice/<clip>.wav.
+/// Generates [`Phrase`] and [`PhraseClips`] (one decoded clip per phrase) from `Variant => "clip"`
+/// pairs. Each clip is embedded from assets/voice/<clip>.wav.
 macro_rules! phrases {
     ($($phrase:ident => $clip:literal),+ $(,)?) => {
         /// Fixed spoken prompts. Their text is in tools/gen_voice.sh.
@@ -21,7 +21,29 @@ macro_rules! phrases {
             $($phrase),+
         }
 
+        /// Every phrase's clip, decoded.
+        #[allow(non_snake_case)] // one field per `Phrase` variant, named after it
+        struct PhraseClips {
+            $($phrase: Arc<Pcm>),+
+        }
+
+        impl PhraseClips {
+            /// Decode every embedded clip.
+            fn decode() -> Result<Self> {
+                Ok(PhraseClips {
+                    $($phrase: Arc::new(Phrase::$phrase.pcm()?)),+
+                })
+            }
+
+            fn get(&self, p: Phrase) -> Arc<Pcm> {
+                match p {
+                    $(Phrase::$phrase => self.$phrase.clone()),+
+                }
+            }
+        }
+
         impl Phrase {
+            #[cfg(test)]
             const ALL: &[Phrase] = &[$(Phrase::$phrase),+];
 
             /// WAV bytes of the phrase's clip.
@@ -62,17 +84,13 @@ pub trait CueSink {
 pub struct Cues {
     tone: Arc<Pcm>,
     tink: Arc<Pcm>,
-    /// Every phrase's clip, decoded once at startup, in `Phrase::ALL` order: a phrase's clip is
-    /// at its own index (`phrases!` lists the variants in declaration order).
-    phrases: Vec<Arc<Pcm>>,
+    /// Every phrase's clip, decoded once at startup.
+    phrases: PhraseClips,
 }
 
 impl Cues {
     pub fn new() -> Result<Self> {
-        let phrases = Phrase::ALL
-            .iter()
-            .map(|&p| Ok(Arc::new(p.pcm()?)))
-            .collect::<Result<_>>()?;
+        let phrases = PhraseClips::decode()?;
         Ok(Cues {
             tone: Arc::new(Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)])),
             tink: Arc::new(Pcm::tones(&[(880.0, 0.08), (1318.5, 0.14)])),
@@ -81,7 +99,7 @@ impl Cues {
     }
 
     fn phrase(&self, p: Phrase) -> Arc<Pcm> {
-        self.phrases[p as usize].clone()
+        self.phrases.get(p)
     }
 }
 

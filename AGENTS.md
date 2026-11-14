@@ -17,6 +17,7 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   - `tracker.rs`: the `HeadTracker` interface that backends implement.
   - `session.rs`: the session loop: waits, calibration prompts, monitoring.
   - `calibration.rs`: calibration decisions as a state machine without I/O (like `detector.rs`).
+  - `steady.rs`: whether the head holds steady over the last stretch of time (`Window`, `Stillness`).
   - `detector.rs`: slouch detection.
   - `cues.rs`, `audio.rs`, `wav.rs`: sounds and notifications (`audio.rs` plays a sound to the end).
   - `record.rs`: console output and logs.

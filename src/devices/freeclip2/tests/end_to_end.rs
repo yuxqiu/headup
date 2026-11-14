@@ -1,58 +1,53 @@
-//! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session. The
-//! re-anchoring test feeds the poses straight into the detector instead.
+//! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session.
 
 use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay, secs};
-use crate::core::detector::Detector;
-use crate::core::session::detector_config;
-use crate::devices::freeclip2::FreeClip2;
+use crate::core::cues::Phrase;
+use crate::core::detector::Cue::{self, Recovered, Speak, Tone};
+use crate::testing::Played::Prompt;
 use crate::testing::run_session;
 use std::time::Duration;
 
-// Ground truth (guided.py --slouch): five cycles of upright, then look down, then back to the
-// same screen point. The earbuds' re-centres add ~10° towards "looking up" per cycle. Without the
-// detector's re-anchoring, upright drifts to about -40° and the last look-down never counts as a
-// slouch.
-#[test]
-fn repeated_slouches_stay_detectable_end_to_end() {
+// Ground truth (guided.py --slouch): five cycles of upright, then look down (held ~25 s, the stream
+// going quiet after a few seconds), then back to the same screen point. The earbuds' re-centres add
+// ~10° towards "looking up" per cycle. Without the detector's re-anchoring, upright drifts to about
+// -40° and the later look-downs never count as slouches. Through the real session, every look-down
+// cues a tone, and every return to the screen after one plays the recovery cue.
+#[tokio::test(start_paused = true)]
+async fn repeated_slouches_stay_detectable_end_to_end() {
     let rows = read_csv("slouch_guided.csv");
     let ph = phases(&rows);
-    let mut det = Detector::new(detector_config(FreeClip2::TRAITS));
-    let mut state = vec![(false, 0.0); ph.len()]; // (slouched, last smoothed) per phase
-    for o in replay(&rows) {
-        det.update(o.t, o.abs.euler().pitch); // baseline = stream start (upright)
-        let s = &mut state[phase_at(&ph, o.t)];
-        s.0 |= det.slouching();
-        s.1 = det.smoothed().unwrap_or(0.0);
-    }
-    for ((name, _), (slouched, end)) in ph.iter().zip(&state) {
-        if name.starts_with("down") {
-            assert!(slouched, "{name}: look-down not detected; {state:?}");
-        } else {
-            assert!(
-                end.abs() < 6.0,
-                "{name}: upright ends at {end:.1}; {state:?}"
-            );
-        }
-    }
+    let cues = session_cues("slouch_guided.csv").await;
+    let in_phase = |cue: Cue| -> Vec<&str> {
+        cues.iter()
+            .filter(|&&(c, _)| c == cue)
+            .map(|&(_, t)| ph[phase_at(&ph, t)].0.as_str())
+            .collect()
+    };
+    let downs: Vec<&str> = ph
+        .iter()
+        .map(|(name, _)| name.as_str())
+        .filter(|name| name.starts_with("down"))
+        .collect();
+    assert_eq!(in_phase(Tone), downs, "cues: {cues:?}");
+    assert!(
+        in_phase(Recovered).iter().all(|&name| name == "upright"),
+        "cues: {cues:?}"
+    );
+    assert_eq!(in_phase(Recovered).len(), downs.len(), "cues: {cues:?}");
 }
 
 /// The cues (not prompts) the real session plays on a recording, each with when it played
 /// (since the recording began).
-async fn session_cues(name: &str) -> Vec<(String, Duration)> {
+async fn session_cues(name: &str) -> Vec<(Cue, Duration)> {
     let mut tracker = ReplayTracker::new(&read_csv(name));
-    let run = run_session(&mut tracker, Duration::ZERO).await;
-    run.cues
-        .into_iter()
-        .filter(|(name, _)| !name.starts_with("say "))
-        .collect()
+    run_session(&mut tracker, Duration::ZERO).await.reminders()
 }
 
-/// The cue names, without the spoken reminder (its timing depends on exactly how long a hold
-/// lasted).
-fn kinds(cues: &[(String, Duration)]) -> Vec<&str> {
+/// The cues, without the spoken reminder (its timing depends on exactly how long a hold lasted).
+fn kinds(cues: &[(Cue, Duration)]) -> Vec<Cue> {
     cues.iter()
-        .map(|(name, _)| name.as_str())
-        .filter(|name| *name != "Speak")
+        .map(|&(cue, _)| cue)
+        .filter(|&cue| cue != Speak)
         .collect()
 }
 
@@ -63,16 +58,16 @@ async fn long_holds_trigger_cues_end_to_end() {
     let rows = read_csv("hold_test.csv");
     let ph = phases(&rows);
     let cues = session_cues("hold_test.csv").await;
-    let key: Vec<(&str, &str)> = cues
+    let key: Vec<(Cue, &str)> = cues
         .iter()
-        .filter(|(name, _)| name != "Speak")
-        .map(|(name, t)| (name.as_str(), ph[phase_at(&ph, *t)].0.as_str()))
+        .filter(|&&(cue, _)| cue != Speak)
+        .map(|&(cue, t)| (cue, ph[phase_at(&ph, t)].0.as_str()))
         .collect();
     let want = [
-        ("Tone", "down"),
-        ("Recovered", "center"),
-        ("Tone", "down"),
-        ("Recovered", "center"),
+        (Tone, "down"),
+        (Recovered, "center"),
+        (Tone, "down"),
+        (Recovered, "center"),
     ];
     assert_eq!(key, want, "cues: {cues:?}");
 }
@@ -82,8 +77,8 @@ async fn long_holds_trigger_cues_end_to_end() {
 #[tokio::test(start_paused = true)]
 async fn stream_restart_end_to_end() {
     let cues = session_cues("stream_restart.csv").await;
-    assert_eq!(kinds(&cues), ["Tone", "Recovered"], "cues: {cues:?}");
-    let recovered_at = cues.iter().find(|(n, _)| n == "Recovered").unwrap().1;
+    assert_eq!(kinds(&cues), [Tone, Recovered], "cues: {cues:?}");
+    let recovered_at = cues.iter().find(|&&(cue, _)| cue == Recovered).unwrap().1;
     assert!(
         recovered_at >= secs(25.6),
         "recovered at {recovered_at:?}, before sitting up"
@@ -100,7 +95,7 @@ async fn live_35hz_session_end_to_end() {
     // Exactly each glide's 67 samples.
     assert_eq!(rows.len() - replay(&rows).len(), 4 * 67, "glides dropped");
     let cues = session_cues("live_35hz.csv").await;
-    assert_eq!(kinds(&cues), ["Tone", "Recovered"], "cues: {cues:?}");
+    assert_eq!(kinds(&cues), [Tone, Recovered], "cues: {cues:?}");
 }
 
 // data/live8_raw.jsonl (2026-11-13): headup reading its socket in its own task, two held
@@ -110,8 +105,8 @@ async fn live_35hz_session_end_to_end() {
 #[tokio::test(start_paused = true)]
 async fn live_session_with_two_slouches_end_to_end() {
     let cues = session_cues("live8.csv").await;
-    let names: Vec<&str> = cues.iter().map(|(name, _)| name.as_str()).collect();
-    assert_eq!(names, ["Tone", "Recovered", "Tone", "Speak", "Recovered"]);
+    let played: Vec<Cue> = cues.iter().map(|&(cue, _)| cue).collect();
+    assert_eq!(played, [Tone, Recovered, Tone, Speak, Recovered]);
     let reminder = cues[3].1 - cues[2].1;
     assert!(
         (secs(20.0)..secs(20.1)).contains(&reminder),
@@ -129,13 +124,10 @@ async fn walking_around_gives_no_reminder_end_to_end() {
     for name in ["walk_reconnect.csv", "turn_walk.csv", "walk_near_far.csv"] {
         let mut tracker = ReplayTracker::new(&read_csv(name));
         let run = run_session(&mut tracker, Duration::ZERO).await;
-        let reminders: Vec<_> = run
-            .cues
-            .iter()
-            .filter(|(n, _)| !n.starts_with("say "))
-            .collect();
+        let reminders = run.reminders();
         assert!(reminders.is_empty(), "{name}: {reminders:?}");
-        assert_eq!(run.count("say Moved"), 0, "{name}: {:?}", run.names());
+        let moved = run.count(Prompt(Phrase::Moved));
+        assert_eq!(moved, 0, "{name}: {:?}", run.played());
         assert!(
             run.events.contains(&"TrackingUnavailable".to_string()),
             "{name}: {:?}",
@@ -153,24 +145,15 @@ async fn walking_around_gives_no_reminder_end_to_end() {
 async fn looking_down_after_a_walk_still_cues_end_to_end() {
     let mut tracker = ReplayTracker::new(&read_csv("walk_slouch.csv"));
     let run = run_session(&mut tracker, Duration::ZERO).await;
-    let prompts: Vec<Duration> = run
-        .cues
-        .iter()
-        .filter(|(name, _)| name == "say SitUpright")
-        .map(|&(_, t)| t)
-        .collect();
+    let prompts = run.times(Prompt(Phrase::SitUpright));
     assert!(
         prompts.iter().all(|&t| t < secs(24.0) || t > secs(100.0)),
         "sit upright mid-walk: {prompts:?}"
     );
-    let cues: Vec<_> = run
-        .cues
-        .into_iter()
-        .filter(|(name, _)| !name.starts_with("say "))
-        .collect();
+    let cues = run.reminders();
     assert_eq!(
         kinds(&cues),
-        ["Tone", "Recovered", "Tone", "Recovered"],
+        [Tone, Recovered, Tone, Recovered],
         "cues: {cues:?}"
     );
 }
@@ -192,12 +175,8 @@ async fn after_a_hold_only_a_head_movement_brings_a_prompt_end_to_end() {
     }
     let mut tracker = ReplayTracker::new(&rows);
     let run = run_session(&mut tracker, Duration::ZERO).await;
-    let prompts: Vec<Duration> = run
-        .cues
-        .iter()
-        .filter(|(name, _)| name == "say SitUpright" || name == "say MoveHead")
-        .map(|&(_, t)| t)
-        .collect();
+    let mut prompts = run.times(Prompt(Phrase::SitUpright));
+    prompts.extend(run.times(Prompt(Phrase::MoveHead)));
     assert!(
         !prompts.iter().any(|&t| secs(51.0) < t && t < moved_at),
         "prompted before the head moved at {moved_at:?}: {prompts:?}"

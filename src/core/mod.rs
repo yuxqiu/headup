@@ -7,5 +7,6 @@ pub mod detector;
 pub mod quat;
 pub mod record;
 pub mod session;
+pub mod steady;
 pub mod tracker;
 pub mod wav;

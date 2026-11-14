@@ -7,6 +7,7 @@ use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use crate::devices::freeclip2::FreeClip2;
 use crate::devices::freeclip2::link::Link;
 use crate::devices::freeclip2::protocol::sample_frame;
+use crate::testing::wait_until_due;
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::collections::VecDeque;
@@ -144,18 +145,15 @@ impl ReplayTracker {
 
 impl HeadTracker for ReplayTracker {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        let deadline = Instant::now() + timeout;
         if self.pending.is_none() {
             self.pending = self.replay.next();
         }
         let Some((when, _)) = self.pending else {
             bail!("script finished");
         };
-        if when > deadline {
-            tokio::time::sleep_until(deadline).await;
+        if !wait_until_due(when, timeout).await {
             return Ok(None);
         }
-        tokio::time::sleep_until(when).await;
         Ok(self.pending.take().map(|(_, event)| event))
     }
 

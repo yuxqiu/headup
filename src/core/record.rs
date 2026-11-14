@@ -15,7 +15,6 @@ use super::detector::Cue;
 use super::quat::Euler;
 use anyhow::Result;
 use serde::Serialize;
-use std::fs::File;
 use std::io::{IsTerminal, Write};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::time::Instant;
@@ -33,8 +32,11 @@ fn unix_time_of(at: Instant) -> f64 {
     unix_now() - at.elapsed().as_secs_f64()
 }
 
+/// Where a log goes: a file in use, a buffer in tests.
+pub type LogSink = Box<dyn Write + Send>;
+
 /// Append `{"t":<t>, <fields>}` to `file` as one JSON line, in a single write. `t` is Unix time.
-fn write_line(file: &mut File, t: f64, fields: &impl Serialize) -> Result<()> {
+fn write_line(file: &mut dyn Write, t: f64, fields: &impl Serialize) -> Result<()> {
     #[derive(Serialize)]
     struct Line<'a, T> {
         t: f64,
@@ -97,14 +99,14 @@ impl LogEvent {
 }
 
 pub struct Recorder {
-    log: Option<File>,
+    log: Option<LogSink>,
     live: bool,
     /// A status line is on screen without a trailing newline.
     status_shown: bool,
 }
 
 impl Recorder {
-    pub fn new(log: Option<File>) -> Self {
+    pub fn new(log: Option<LogSink>) -> Self {
         Recorder {
             log,
             live: std::io::stdout().is_terminal(),
@@ -190,11 +192,11 @@ impl Recorder {
 /// A backend's log of raw device data for debugging it (`--raw-log`). Each record is one JSON line,
 /// `{"t":…, <fields>}`, with fields the backend chooses. Without a file, records are dropped.
 pub struct DeviceLog {
-    file: Option<File>,
+    file: Option<LogSink>,
 }
 
 impl DeviceLog {
-    pub fn new(file: Option<File>) -> Self {
+    pub fn new(file: Option<LogSink>) -> Self {
         DeviceLog { file }
     }
 
@@ -209,25 +211,18 @@ impl DeviceLog {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing::SharedBuf;
     use serde_json::{Value, json};
-    use std::path::PathBuf;
-
-    fn temp(name: &str) -> (PathBuf, File) {
-        let path = std::env::temp_dir().join(format!("headup-{name}-{}.jsonl", std::process::id()));
-        let file = File::create(&path).unwrap();
-        (path, file)
-    }
 
     /// Runs `write`, then checks every line it wrote starts with a wall-clock `t` taken during the
     /// write, and returns the lines without `t`.
-    fn lines_without_t(name: &str, write: impl FnOnce(File)) -> Vec<Value> {
-        let (path, file) = temp(name);
+    fn lines_without_t(write: impl FnOnce(LogSink)) -> Vec<Value> {
+        let buf = SharedBuf::default();
         let before = unix_now();
-        write(file);
+        write(Box::new(buf.clone()));
         let after = unix_now();
-        let text = std::fs::read_to_string(&path).unwrap();
-        std::fs::remove_file(&path).unwrap();
-        text.lines()
+        buf.text()
+            .lines()
             .map(|line| {
                 assert!(line.starts_with(r#"{"t":"#), "t is not first: {line}");
                 let mut v: Value = serde_json::from_str(line).unwrap();
@@ -244,7 +239,7 @@ mod tests {
 
     #[test]
     fn session_log_lines() {
-        let lines = lines_without_t("session-log", |f| {
+        let lines = lines_without_t(|f| {
             let mut rec = Recorder::new(Some(f));
             rec.pose(
                 Instant::now(),
@@ -276,7 +271,7 @@ mod tests {
             seq: u32,
             name: &'static str,
         }
-        let lines = lines_without_t("device-log", |f| {
+        let lines = lines_without_t(|f| {
             DeviceLog::new(Some(f))
                 .record(&Sample {
                     seq: 7,

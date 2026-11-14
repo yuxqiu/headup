@@ -1,10 +1,11 @@
 //! Device-agnostic posture session: spoken calibration, then monitoring with cues.
 
-use super::calibration::{Calibration, Outcome, Output, Stillness};
+use super::calibration::{Calibration, Outcome, Output};
 use super::cues::{CueSink, Phrase};
 use super::detector::{Config, Detector};
 use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
+use super::steady::Stillness;
 use super::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::{Context, Result, ensure};
 use std::convert::Infallible;
@@ -48,8 +49,14 @@ impl From<anyhow::Error> for Interrupt {
 /// A session step's outcome: its value, or why the cycle ended early.
 type Flow<T> = std::result::Result<T, Interrupt>;
 
-/// A delivered pose: when it was measured (since the session started) and the orientation.
-type Pose = (Duration, Quat);
+/// A delivered pose.
+struct Pose {
+    /// When it was measured, in session time.
+    measured: Duration,
+    /// When it was measured, as the tracker gave it (for logging).
+    at: Instant,
+    orientation: Quat,
+}
 
 /// The session's timeline. Session time is the time since the session started. It is monotonic,
 /// unlike log time, and counts exact integer nanoseconds.
@@ -85,11 +92,6 @@ impl Timeline {
         );
         self.measured = measured;
         Ok(measured)
-    }
-
-    /// The instant of session time `t`.
-    fn instant(&self, t: Duration) -> Instant {
-        self.start + t
     }
 }
 
@@ -146,16 +148,15 @@ impl TrackerStatus {
         }
     }
 
-    /// Whether the session is waiting for the device, as a note suffix with what the user can do
-    /// (" (…)", or "" with no hint): at startup the tracker's hint, while unavailable its reason.
-    /// `None` while resuming, when data flows and only the head must settle.
-    fn waiting_for(&self, traits: TrackerTraits) -> Option<String> {
-        let hint = match self.tracking {
-            Tracking::Starting => traits.tracking_hint,
-            Tracking::Unavailable(reason) => Some(reason),
-            Tracking::Resuming(_) | Tracking::Available => return None,
-        };
-        Some(hint.map_or(String::new(), |h| format!(" ({h})")))
+    /// Whether the session is waiting for the device, with what the user can do if anything is
+    /// known: at startup the tracker's hint, while unavailable its reason. `None` while resuming,
+    /// when data flows and only the head must settle.
+    fn waiting_for(&self, traits: TrackerTraits) -> Option<Option<&'static str>> {
+        match self.tracking {
+            Tracking::Starting => Some(traits.tracking_hint),
+            Tracking::Unavailable(reason) => Some(Some(reason)),
+            Tracking::Resuming(_) | Tracking::Available => None,
+        }
     }
 
     /// `Unavailable` arrived, for `reason`. Returns `true` if the head was being judged and no
@@ -249,7 +250,11 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             Event::Pose { at, orientation } => {
                 let measured = self.time.deliver(at)?;
                 self.status.pose_arrived(measured, orientation);
-                return Ok(Some((measured, orientation)));
+                return Ok(Some(Pose {
+                    measured,
+                    at,
+                    orientation,
+                }));
             }
             Event::Worn(w) => {
                 if self.status.worn_changed(w) {
@@ -306,9 +311,11 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             }
             if !noted && self.now() - start >= TRACKING_WAIT_NOTE {
                 // While resuming, data flows: the session only waits for a still head.
-                if let Some(why) = self.status.waiting_for(self.tracker.traits()) {
-                    self.rec
-                        .note(&format!("waiting for head tracking from the earbuds{why}…"));
+                if let Some(hint) = self.status.waiting_for(self.tracker.traits()) {
+                    let hint = hint.map_or(String::new(), |h| format!(" ({h})"));
+                    self.rec.note(&format!(
+                        "waiting for head tracking from the earbuds{hint}…"
+                    ));
                     noted = true;
                 }
             }
@@ -323,8 +330,8 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         self.cues.say(Phrase::SitUpright).await?;
         let mut cal = Calibration::new(self.now());
         loop {
-            for (measured, q) in self.next(JUDGE_EVERY).await? {
-                cal.pose(measured, q);
+            for pose in self.next(JUDGE_EVERY).await? {
+                cal.pose(pose.measured, pose.orientation);
             }
             match cal.check(self.now()) {
                 None => {}
@@ -333,10 +340,13 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                     cal.prompt_ended(self.now());
                 }
                 Some(Output::AttemptEnded { report, outcome }) => {
-                    self.rec.note(&format!(
-                        "calibration attempt {}: {} samples, p90 deviation {:.1}°",
-                        report.attempt, report.samples, report.p90
-                    ));
+                    let spread = report
+                        .spread
+                        .map_or("poses never covered the span".into(), |s| {
+                            format!("{} samples, p90 deviation {:.1}°", s.samples, s.p90)
+                        });
+                    self.rec
+                        .note(&format!("calibration attempt {}: {spread}", report.attempt));
                     match outcome {
                         Outcome::Calibrated(upright) => {
                             self.cues.say(Phrase::Calibrated).await?;
@@ -366,21 +376,22 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             let wait = det
                 .next_due()
                 .map_or(POLL, |due| due.saturating_sub(self.now()).min(POLL));
-            let mut cues = Vec::new();
-            for (measured, q) in self.next(wait).await? {
-                let angles = (baseline.conj() * q).euler();
-                self.rec.pose(self.time.instant(measured), angles)?;
-                let update = det.update(measured, angles.pitch);
+            let mut updates = Vec::new();
+            for pose in self.next(wait).await? {
+                let angles = (baseline.conj() * pose.orientation).euler();
+                self.rec.pose(pose.at, angles)?;
+                updates.push(det.update(pose.measured, angles.pitch));
+            }
+            let t = self.now();
+            updates.push(det.tick(t));
+            for update in updates {
                 if let Some(upright) = update.reanchored {
                     self.rec.event(LogEvent::Reanchored { upright })?;
                 }
-                cues.extend(update.cues);
-            }
-            let t = self.now();
-            cues.extend(det.tick(t));
-            for cue in cues {
-                self.rec.event(LogEvent::Cue(cue))?;
-                self.cues.play(cue);
+                for cue in update.cues {
+                    self.rec.event(LogEvent::Cue(cue))?;
+                    self.cues.play(cue);
+                }
             }
             if last_status.is_none_or(|last| t - last >= STATUS_EVERY) {
                 last_status = Some(t);
@@ -391,7 +402,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
 }
 
 /// Detector settings for a tracker: the defaults, plus corrections for what it declares.
-pub(crate) fn detector_config(traits: TrackerTraits) -> Config {
+fn detector_config(traits: TrackerTraits) -> Config {
     Config {
         reanchor_after_recovery: traits.pose_drifts_up,
         ..Config::default()

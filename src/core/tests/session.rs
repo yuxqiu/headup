@@ -2,8 +2,11 @@
 
 use super::*;
 use crate::core::calibration::CALIBRATION_TRIES;
+use crate::core::cues::Phrase::*;
+use crate::core::detector::Cue::*;
 use crate::core::tracker::TrackerTraits;
-use crate::testing::{Outcome, run_session};
+use crate::testing::Played::{self, Prompt, Reminder};
+use crate::testing::{Outcome, run_session, wait_until_due};
 use anyhow::bail;
 use std::collections::VecDeque;
 
@@ -101,22 +104,15 @@ fn pose(at: Instant, pitch: f64) -> Event {
 
 impl HeadTracker for FakeTracker {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        let deadline = Instant::now() + timeout;
         let Some(&(due, event)) = self.events.front() else {
-            let end = self.start + self.end;
-            if end > deadline {
-                tokio::time::sleep_until(deadline).await;
-                return Ok(None);
+            if wait_until_due(self.start + self.end, timeout).await {
+                bail!("script finished");
             }
-            tokio::time::sleep_until(end).await;
-            bail!("script finished");
+            return Ok(None);
         };
-        let due = self.start + due;
-        if due > deadline {
-            tokio::time::sleep_until(deadline).await;
+        if !wait_until_due(self.start + due, timeout).await {
             return Ok(None);
         }
-        tokio::time::sleep_until(due).await;
         self.events.pop_front();
         Ok(Some(event))
     }
@@ -188,8 +184,13 @@ async fn sustained_slouch_cues_even_while_head_is_still() {
     ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(
-        run.names(),
-        ["say SitUpright", "say Calibrated", "Tone", "Speak"]
+        run.played(),
+        [
+            Prompt(SitUpright),
+            Prompt(Calibrated),
+            Reminder(Tone),
+            Reminder(Speak)
+        ]
     );
 }
 
@@ -204,7 +205,7 @@ async fn tone_is_on_time_while_head_is_still() {
     ];
     let run = simulate(script, Sim::default()).await;
     // The slouch starts at 4 s; smoothing crosses the threshold within 0.1 s of that.
-    let tone = run.first("Tone");
+    let tone = run.first(Reminder(Tone));
     assert!(
         (secs(14.0)..secs(14.15)).contains(&tone),
         "tone at {tone:?}"
@@ -226,7 +227,7 @@ async fn calibration_ignores_poses_measured_during_the_prompt() {
         ..Sim::default()
     };
     let run = simulate(script, sim).await;
-    assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
+    assert_eq!(run.played(), [Prompt(SitUpright), Prompt(Calibrated)]);
 }
 
 // The head moves throughout a 4 s "move your head" prompt, as it asks, and a little after it,
@@ -247,8 +248,8 @@ async fn poses_measured_during_the_nudge_do_not_count() {
     };
     let run = simulate(script, sim).await;
     assert_eq!(
-        run.names(),
-        ["say SitUpright", "say MoveHead", "say Calibrated"]
+        run.played(),
+        [Prompt(SitUpright), Prompt(MoveHead), Prompt(Calibrated)]
     );
 }
 
@@ -263,7 +264,7 @@ async fn taking_earbuds_off_pauses_then_recalibrates() {
     ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(run.events, ["Paused", "Resumed"]);
-    assert_eq!(run.count("say SitUpright"), 2, "{:?}", run.names());
+    assert_eq!(run.count(Prompt(SitUpright)), 2, "{:?}", run.played());
 }
 
 // The slouch starts at about 4 s. Tracking becomes unavailable at 6 s, before the tone is due
@@ -281,8 +282,13 @@ async fn unavailability_drops_the_slouch_and_recalibrates() {
     ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(run.events, ["TrackingUnavailable", "TrackingAvailable"]);
-    let prompts = run.count("say SitUpright");
-    assert_eq!(prompts, 2, "recalibrates after resuming: {:?}", run.names());
+    let prompts = run.count(Prompt(SitUpright));
+    assert_eq!(
+        prompts,
+        2,
+        "recalibrates after resuming: {:?}",
+        run.played()
+    );
 }
 
 // A still head sends no poses. When tracking resumes, headup asks the user to sit upright once the
@@ -302,13 +308,13 @@ async fn still_head_is_asked_to_move_when_tracking_resumes() {
     ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(
-        run.names(),
+        run.played(),
         [
-            "say SitUpright",
-            "say Calibrated",
-            "say SitUpright",
-            "say MoveHead",
-            "say Calibrated"
+            Prompt(SitUpright),
+            Prompt(Calibrated),
+            Prompt(SitUpright),
+            Prompt(MoveHead),
+            Prompt(Calibrated)
         ]
     );
 }
@@ -326,8 +332,8 @@ async fn still_head_is_asked_to_move_after_rewearing() {
         Poses(0.0, secs(4.0)),
     ];
     let run = simulate(script, Sim::default()).await;
-    assert_eq!(run.count("say MoveHead"), 1, "{:?}", run.names());
-    assert_eq!(run.count("say Calibrated"), 2, "{:?}", run.names());
+    assert_eq!(run.count(Prompt(MoveHead)), 1, "{:?}", run.played());
+    assert_eq!(run.count(Prompt(Calibrated)), 2, "{:?}", run.played());
 }
 
 // The nudge repeats while nothing arrives.
@@ -342,7 +348,7 @@ async fn nudge_repeats_while_no_pose_arrives() {
     ];
     let run = simulate(script, Sim::default()).await;
     // The prompt comes 2 s after tracking resumes; nudges at 5, 20 and 35 s after it.
-    assert_eq!(run.count("say MoveHead"), 3, "{:?}", run.names());
+    assert_eq!(run.count(Prompt(MoveHead)), 3, "{:?}", run.played());
 }
 
 // At startup no pose has arrived yet, so silence may mean tracking has not started (e.g. a
@@ -351,7 +357,7 @@ async fn nudge_repeats_while_no_pose_arrives() {
 async fn startup_waits_silently_for_tracking() {
     let script = vec![Quiet(secs(30.0)), Poses(0.0, secs(4.0))];
     let run = simulate(script, Sim::default()).await;
-    assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
+    assert_eq!(run.played(), [Prompt(SitUpright), Prompt(Calibrated)]);
 }
 
 // Poses can still arrive after the tracker becomes unavailable (data measured before it, or
@@ -366,7 +372,7 @@ async fn poses_after_unavailability_do_not_start_calibration() {
     ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(run.events, ["TrackingUnavailable"]);
-    assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
+    assert_eq!(run.played(), [Prompt(SitUpright), Prompt(Calibrated)]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -378,13 +384,13 @@ async fn failed_calibration_retries_later() {
     ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(run.events, ["CalibrationFailed"]);
-    let expected: Vec<&str> = ["say SitUpright"]
+    let expected: Vec<Played> = [Prompt(SitUpright)]
         .into_iter()
-        .chain(["say Moved"; CALIBRATION_TRIES])
+        .chain([Prompt(Moved); CALIBRATION_TRIES])
         // The retry prompts at once; the head is still and silent, so it is asked to move.
-        .chain(["say SitUpright", "say MoveHead", "say Calibrated"])
+        .chain([Prompt(SitUpright), Prompt(MoveHead), Prompt(Calibrated)])
         .collect();
-    assert_eq!(run.names(), expected);
+    assert_eq!(run.played(), expected);
 }
 
 // Tracking resumes while the user is still on the move (a device can stop tracking while the
@@ -400,13 +406,8 @@ async fn prompt_after_tracking_resumes_waits_until_the_head_is_still() {
         Poses(0.0, secs(8.0)),
     ];
     let run = simulate(script, Sim::default()).await;
-    let prompts: Vec<Duration> = run
-        .cues
-        .iter()
-        .filter(|(name, _)| name == "say SitUpright")
-        .map(|&(_, t)| t)
-        .collect();
-    assert_eq!(prompts.len(), 2, "{:?}", run.names());
+    let prompts = run.times(Prompt(SitUpright));
+    assert_eq!(prompts.len(), 2, "{:?}", run.played());
     assert!(
         (secs(11.0)..secs(11.3)).contains(&prompts[1]),
         "prompt at {:?}",
@@ -430,5 +431,5 @@ async fn monitoring_judges_only_after_taking_every_queued_pose() {
         ..Sim::default()
     };
     let run = simulate(script, sim).await;
-    assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
+    assert_eq!(run.played(), [Prompt(SitUpright), Prompt(Calibrated)]);
 }

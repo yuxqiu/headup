@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use clap::Parser;
-use headup::core::record::{DeviceLog, Recorder};
+use headup::core::record::{DeviceLog, LogSink, Recorder};
 use headup::core::{cues::Cues, session, tracker::HeadTracker};
 use headup::devices::bluetooth::{Address, Host};
 use headup::devices::{self, AnyTracker};
@@ -30,15 +30,16 @@ const RETRY: Duration = Duration::from_secs(5);
 
 type CtrlC = Pin<Box<dyn Future<Output = std::io::Result<()>>>>;
 
-fn open_append(p: &Path) -> Result<std::fs::File> {
+fn open_append(p: &Path) -> Result<LogSink> {
     if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
         std::fs::create_dir_all(dir).with_context(|| format!("create {dir:?}"))?;
     }
-    std::fs::OpenOptions::new()
+    let file = std::fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(p)
-        .with_context(|| format!("open {p:?}"))
+        .with_context(|| format!("open {p:?}"))?;
+    Ok(Box::new(file))
 }
 
 /// Sleep for `d`; `true` if Ctrl-C arrived instead.

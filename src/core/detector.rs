@@ -20,7 +20,7 @@
 //! upright, not beyond it. So a reading above upright after a recovery is accumulated tracker
 //! error. Drift the other way is not corrected.
 
-use std::collections::VecDeque;
+use super::steady::Window;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -73,33 +73,19 @@ impl Default for Config {
     }
 }
 
-/// When the head counts as holding still, for the re-anchor. The pitch samples of the last
-/// `SETTLE_WINDOW` must span at least `SETTLE_MIN`. They must also all lie within
-/// `SETTLE_RANGE_DEG` of each other.
-const SETTLE_WINDOW: Duration = Duration::from_secs(1);
-const SETTLE_MIN: Duration = Duration::from_millis(800);
+/// When the head counts as holding still, for the re-anchor: its pitch has stayed within
+/// `SETTLE_RANGE_DEG` for `SETTLE` (see [`Window`]: silence counts as still).
+const SETTLE: Duration = Duration::from_secs(1);
 const SETTLE_RANGE_DEG: f64 = 2.0;
 
-/// Recent (time, pitch) while waiting for the head to settle after a recovery.
-#[derive(Default)]
-struct Settling(VecDeque<(Duration, f64)>);
-
-impl Settling {
-    /// Add a sample; true once the head has held still (see `SETTLE_*`).
-    fn settled(&mut self, t: Duration, pitch: f64) -> bool {
-        let w = &mut self.0;
-        w.push_back((t, pitch));
-        while w.front().is_some_and(|&(t0, _)| t - t0 > SETTLE_WINDOW) {
-            w.pop_front();
-        }
-        let span = t - w.front().map_or(t, |&(t0, _)| t0);
-        let (lo, hi) = w
-            .iter()
-            .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &(_, x)| {
-                (lo.min(x), hi.max(x))
-            });
-        span >= SETTLE_MIN && hi - lo < SETTLE_RANGE_DEG
-    }
+/// Whether the pitch samples of `span` lie within `SETTLE_RANGE_DEG` of each other.
+fn steady(span: &[f64]) -> bool {
+    let (lo, hi) = span
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), &x| {
+            (lo.min(x), hi.max(x))
+        });
+    hi - lo < SETTLE_RANGE_DEG
 }
 
 /// Exponential smoothing with a time constant, so it behaves the same at any sample rate.
@@ -196,24 +182,31 @@ impl Episode {
 ///   above upright, upright is re-anchored there.
 enum State {
     Upright,
-    /// Just recovered from a slouch; waiting for the head to hold still, to re-anchor upright.
-    Settling(Settling),
+    /// Just recovered from a slouch; waiting for the head to hold still, to re-anchor upright. The
+    /// window holds the unsmoothed pitch (relative to upright) since the recovery.
+    Settling(Window<f64>),
     Slouching(Episode),
 }
 
 impl State {
-    /// Feed a sample to a `Settling` state. `p` is the unsmoothed pitch relative to upright. Once
-    /// the head holds still, the state becomes `Upright`. If the head settled above upright
-    /// (`p` < 0), this returns `p`. Otherwise it returns `None`.
-    fn settle(&mut self, t: Duration, p: f64) -> Option<f64> {
-        let State::Settling(settling) = self else {
+    /// In a `Settling` state, take the pitch `p` (unsmoothed, relative to upright) measured at `t`,
+    /// if there is a new sample, and judge the head at `t`. Once it holds still, the state becomes
+    /// `Upright`. If the head settled above upright (its last pitch < 0), this returns that pitch.
+    /// Otherwise it returns `None`.
+    fn settle(&mut self, t: Duration, p: Option<f64>) -> Option<f64> {
+        let State::Settling(window) = self else {
             return None;
         };
-        if !settling.settled(t, p) {
+        if let Some(p) = p {
+            window.add(t, p);
+        }
+        let span = window.span(t, SETTLE)?;
+        if !steady(&span) {
             return None;
         }
+        let last = *span.last().expect("a span holds at least one sample");
         *self = State::Upright;
-        (p < 0.0).then_some(p)
+        (last < 0.0).then_some(last)
     }
 
     /// Step on smoothed pitch `s` (relative to upright) at time `t`. Returns the next state and
@@ -228,7 +221,7 @@ impl State {
             }
             State::Slouching(episode) if s < cfg.off_deg => {
                 let next = if cfg.reanchor_after_recovery {
-                    State::Settling(Settling::default())
+                    State::Settling(Window::new(t))
                 } else {
                     State::Upright
                 };
@@ -284,21 +277,29 @@ impl Detector {
     /// backwards.
     pub fn update(&mut self, t: Duration, pitch: f64) -> Update {
         let smoothed = self.smoother.smooth(t, pitch);
-        let reanchored = self.state.settle(t, pitch - self.upright).map(|p| {
-            self.upright += p;
-            self.upright
-        });
+        let reanchored = self.reanchor(t, Some(pitch - self.upright));
         let cues = self.transition(t, smoothed - self.upright);
         Update { cues, reanchored }
     }
 
+    /// Re-anchor upright if the head has settled by `t` (see [`State::settle`]). Returns the new
+    /// upright.
+    fn reanchor(&mut self, t: Duration, p: Option<f64>) -> Option<f64> {
+        self.state.settle(t, p).map(|p| {
+            self.upright += p;
+            self.upright
+        })
+    }
+
     /// Advance the timers to `t` without a new sample. If `t` is at or after `next_due()`, the due
     /// reminder always fires, because times are exact.
-    pub fn tick(&mut self, t: Duration) -> Vec<Cue> {
-        match &mut self.state {
+    pub fn tick(&mut self, t: Duration) -> Update {
+        let reanchored = self.reanchor(t, None);
+        let cues = match &mut self.state {
             State::Slouching(episode) => episode.fire(t),
             _ => vec![],
-        }
+        };
+        Update { cues, reanchored }
     }
 
     /// When the next reminder falls due if the slouch goes on. It uses the same clock as `update`
@@ -318,199 +319,5 @@ impl Detector {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// `x` seconds.
-    fn s(x: f64) -> Duration {
-        Duration::from_secs_f64(x)
-    }
-
-    fn reanchoring() -> Config {
-        Config {
-            reanchor_after_recovery: true,
-            ..Config::default()
-        }
-    }
-
-    /// Feed `pitch` at 50 Hz from `t0` for `secs`, collecting the uprights re-anchored to.
-    fn reanchors(d: &mut Detector, t0: f64, secs: f64, pitch: f64, out: &mut Vec<f64>) -> f64 {
-        let mut t = t0;
-        while t < t0 + secs {
-            out.extend(d.update(s(t), pitch).reanchored);
-            t += 0.02;
-        }
-        t
-    }
-
-    /// Feed `pitch` at 50 Hz from `t0` for `secs`, collecting (time, cue).
-    fn run(d: &mut Detector, t0: f64, secs: f64, pitch: f64, out: &mut Vec<(f64, Cue)>) -> f64 {
-        let mut t = t0;
-        while t < t0 + secs {
-            out.extend(d.update(s(t), pitch).cues.into_iter().map(|c| (t, c)));
-            t += 0.02;
-        }
-        t
-    }
-
-    #[test]
-    fn upright_and_brief_glances_never_cue() {
-        let mut d = Detector::new(Config::default());
-        let mut cues = vec![];
-        let mut t = run(&mut d, 0.0, 30.0, 5.0, &mut cues);
-        t = run(&mut d, t, 6.0, 40.0, &mut cues); // look at phone for 6 s < 10 s dwell
-        run(&mut d, t, 30.0, 5.0, &mut cues);
-        assert!(cues.is_empty(), "{cues:?}");
-    }
-
-    #[test]
-    fn sustained_slouch_escalates_then_recovers() {
-        let mut d = Detector::new(Config::default());
-        let mut cues = vec![];
-        let t = run(&mut d, 0.0, 200.0, 30.0, &mut cues);
-        run(&mut d, t, 5.0, 0.0, &mut cues);
-        let kinds: Vec<Cue> = cues.iter().map(|c| c.1).collect();
-        assert_eq!(
-            kinds,
-            [
-                Cue::Tone,
-                Cue::Speak,
-                Cue::Notify,
-                Cue::Speak,
-                Cue::Recovered
-            ]
-        );
-        assert!((cues[0].0 - 10.0).abs() < 0.5, "tone at {}", cues[0].0);
-        assert!(
-            (cues[3].0 - cues[1].0 - 120.0).abs() < 0.5,
-            "re-nudge after {}",
-            cues[3].0 - cues[1].0
-        );
-    }
-
-    #[test]
-    fn silence_keeps_timers_running() {
-        let mut d = Detector::new(Config::default());
-        let mut cues = vec![];
-        let t = run(&mut d, 0.0, 3.0, 30.0, &mut cues); // device then goes quiet: head held still
-        let mut t2 = t;
-        while t2 < 35.0 {
-            cues.extend(d.tick(s(t2)).into_iter().map(|c| (t2, c)));
-            t2 += 1.0;
-        }
-        let kinds: Vec<Cue> = cues.iter().map(|c| c.1).collect();
-        assert_eq!(kinds, [Cue::Tone, Cue::Speak]);
-    }
-
-    #[test]
-    fn next_due_tracks_the_next_reminder() {
-        let mut d = Detector::new(Config::default());
-        assert_eq!(d.next_due(), None);
-        let t = run(&mut d, 0.0, 1.0, 30.0, &mut vec![]);
-        let tone = d.next_due().unwrap();
-        assert!(
-            (tone.as_secs_f64() - 10.0).abs() < 0.1,
-            "tone due at {tone:?}"
-        );
-        assert_eq!(d.tick(tone - Duration::from_nanos(1)), []);
-        assert_eq!(d.tick(tone), [Cue::Tone]);
-        assert_eq!(d.next_due(), Some(tone + s(20.0)), "speak next");
-        run(&mut d, t + 10.0, 1.0, 0.0, &mut vec![]);
-        assert_eq!(d.next_due(), None);
-    }
-
-    #[test]
-    fn hysteresis_keeps_episode_between_thresholds() {
-        let mut d = Detector::new(Config::default());
-        let mut cues = vec![];
-        let t = run(&mut d, 0.0, 12.0, 25.0, &mut cues); // tone at ~10 s
-        run(&mut d, t, 30.0, 17.0, &mut cues); // between off(15) and on(20): still slouching
-        assert!(d.slouching());
-        assert!(cues.iter().all(|c| c.1 != Cue::Recovered), "{cues:?}");
-    }
-
-    // Sitting back up "past" upright (tracker error) re-anchors upright, so the next slouch counts
-    // in full: from the new upright at -10°, a look down to +12° is 22° and must cue.
-    #[test]
-    fn recovery_past_upright_reanchors() {
-        let mut d = Detector::new(reanchoring());
-        let mut re = vec![];
-        let mut t = reanchors(&mut d, 0.0, 15.0, 40.0, &mut re);
-        t = reanchors(&mut d, t, 3.0, -10.0, &mut re);
-        assert!(
-            re.len() == 1 && (re[0] + 10.0).abs() < 0.5,
-            "re-anchored {re:?}"
-        );
-        let mut cues = vec![];
-        run(&mut d, t, 15.0, 12.0, &mut cues);
-        assert!(cues.iter().any(|c| c.1 == Cue::Tone), "{cues:?}");
-    }
-
-    #[test]
-    fn looking_up_without_a_slouch_keeps_upright() {
-        let mut d = Detector::new(reanchoring());
-        let mut re = vec![];
-        reanchors(&mut d, 0.0, 30.0, -30.0, &mut re);
-        assert!(re.is_empty(), "re-anchored {re:?}");
-    }
-
-    #[test]
-    fn partial_recovery_keeps_upright() {
-        let mut d = Detector::new(reanchoring());
-        let mut re = vec![];
-        let t = reanchors(&mut d, 0.0, 15.0, 40.0, &mut re);
-        reanchors(&mut d, t, 5.0, 10.0, &mut re); // below off (15), still above upright
-        assert!(re.is_empty(), "re-anchored {re:?}");
-    }
-
-    // Only the first settle after a recovery counts; a later look up must not move upright again.
-    #[test]
-    fn reanchors_once_per_recovery() {
-        let mut d = Detector::new(reanchoring());
-        let mut re = vec![];
-        let mut t = reanchors(&mut d, 0.0, 15.0, 40.0, &mut re);
-        t = reanchors(&mut d, t, 3.0, -5.0, &mut re);
-        reanchors(&mut d, t, 10.0, -30.0, &mut re);
-        assert!(
-            re.len() == 1 && (re[0] + 5.0).abs() < 0.5,
-            "re-anchored {re:?}"
-        );
-    }
-
-    #[test]
-    fn no_reanchoring_unless_enabled() {
-        let mut d = Detector::new(Config::default());
-        let mut re = vec![];
-        let t = reanchors(&mut d, 0.0, 15.0, 40.0, &mut re);
-        reanchors(&mut d, t, 3.0, -10.0, &mut re);
-        assert!(re.is_empty(), "re-anchored {re:?}");
-    }
-
-    // The same head movement smooths the same at any sample rate: 0.24 s after a step from 0° to
-    // 30°, a 25 Hz and a 100 Hz tracker agree.
-    #[test]
-    fn smoothing_is_independent_of_sample_rate() {
-        let after_step = |hz: f64| {
-            let mut d = Detector::new(Config::default());
-            d.update(Duration::ZERO, 0.0);
-            let steps = (0.24 * hz).round() as u32;
-            for i in 1..=steps {
-                d.update(s(f64::from(i) / hz), 30.0);
-            }
-            d.smoothed().unwrap()
-        };
-        let (slow, fast) = (after_step(25.0), after_step(100.0));
-        assert!(
-            (slow - fast).abs() < 0.01,
-            "25 Hz {slow:.2} vs 100 Hz {fast:.2}"
-        );
-    }
-
-    #[test]
-    fn looking_up_is_not_slouching() {
-        let mut d = Detector::new(Config::default());
-        let mut cues = vec![];
-        run(&mut d, 0.0, 60.0, -40.0, &mut cues);
-        assert!(cues.is_empty());
-    }
-}
+#[path = "tests/detector.rs"]
+mod tests;

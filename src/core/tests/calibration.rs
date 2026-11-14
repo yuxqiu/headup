@@ -149,38 +149,6 @@ fn moving_head_fails_every_attempt_then_gives_up() {
     }
 }
 
-// With nothing delivered, the head counts as still once 2 s have passed since the wait began.
-#[test]
-fn silence_counts_as_still() {
-    let mut still = Stillness::new(secs(1.0));
-    assert!(!still.check(secs(2.9)));
-    assert!(still.check(secs(3.0)));
-}
-
-// A moving head is not still; it is once its posture has stayed within 2° for 2 s.
-#[test]
-fn head_is_still_after_two_seconds_without_moving() {
-    let mut still = Stillness::new(Duration::ZERO);
-    let mut t = SAMPLE;
-    while t <= secs(5.0) {
-        still.pose(t, tilt(wobble(t).unwrap()));
-        assert!(!still.check(t), "moving head still at {t:?}");
-        t += SAMPLE;
-    }
-    let stopped = t - SAMPLE;
-    loop {
-        still.pose(t, tilt(1.0));
-        if still.check(t) {
-            break;
-        }
-        t += SAMPLE;
-    }
-    assert!(
-        (stopped + secs(2.0)..stopped + secs(2.1)).contains(&t),
-        "still at {t:?}, stopped at {stopped:?}"
-    );
-}
-
 // After a nudge the attempt measures afresh: poses measured while the nudge played (the user moving,
 // as asked) do not count, and the 5 s limit runs from the first pose after it.
 #[test]

@@ -1067,3 +1067,38 @@
 - **Rejected.** A pure step function returning effects: it would replace the fact/view/report pattern in AGENTS.md
   for little more clarity.
 - A refactor: every test is unchanged (the link's tests import `Duration` themselves now).
+
+## 2026-11-14: Review fixes; one steady-head primitive; re-anchoring settles on silence (user, thermos review)
+- **Frame rules guarded.** Each rule that keeps one orientation frame per stretch of tracking now has a test that
+  fails without it: readings are not rebuilt while unavailable (`readings_while_unavailable_leave_no_frame`),
+  re-wearing ends the frame (`rewearing_starts_a_new_frame`) and ends a hold
+  (`rewearing_during_a_hold_ends_it_and_starts_a_new_frame`). Rejected: also ending the frame when tracking
+  becomes available. A reading can be what makes it available (the first reading, a hold's end), so the frame has
+  just started with it; ending it lost that reading (hold detection then missed its start, and the 35 Hz replay
+  leaked glide samples).
+- **Event order at a hold's end, kept.** The reading that ends a hold gives the new frame's first pose just before
+  the `Available` it causes. The session ignores poses while unavailable, so it only goes unused; reporting before
+  rebuilding would need a second `report` mid-frame, the hidden control flow removed earlier. Documented on
+  `Link::on_reading`.
+- **`core/steady.rs`.** `Window<T>` (generic over the sample) and `Stillness` moved out of `calibration.rs`;
+  calibration, `Stillness` and the detector's settling are criteria over a window.
+- **Re-anchoring settles on silence (behaviour change).** The detector's `Settling` kept its own buffer and needed
+  0.8 s of samples within the last second, so a head that went silent right after sitting up never settled,
+  against "silence means the pitch is unchanged" (detector and tracker docs). It is now a `Window<f64>` from the
+  recovery: settled once the pitch has stayed within 2° for 1 s, silence included, and `Detector::tick` can
+  re-anchor (it returns an `Update`). Measured: all 19 fixtures give the same session events (tones, recoveries,
+  re-anchors, calibrations) as v0.4.2. New test `silent_head_after_a_recovery_reanchors` (fails without it); two
+  detector tests read `tick(..).cues` now.
+- **Smaller.** Calibration `Report { attempt, spread: Option<Spread> }` (no `0`/`NaN` sentinel; built only when an
+  attempt ends); `Earbuds::request_switch` (was `send`, which sent nothing); `TrackerStatus::waiting_for` returns
+  the hint, formatted at the call site; the session's `Pose` keeps the tracker's `Instant` (no round trip through
+  `Timeline`); `phrases!` generates one clip field per phrase (no lookup by index); `Recorder`/`DeviceLog` take a
+  `LogSink` (`Box<dyn Write + Send>`), so tests use an in-memory buffer instead of temp files; the link and detector
+  tests moved to `tests/`; the two test trackers share `testing::wait_until_due`; tests record `Played`
+  (prompt or reminder) instead of strings; `repeated_slouches_stay_detectable_end_to_end` runs through the real
+  session instead of copying the monitor loop (fails without re-anchoring: 3 of 5 look-downs cue).
+- **Accepted limit** [inferred]: a hold that starts while the stream is already paused (the head steady within 10°
+  for ~4 s while walking, then the walking detector engages) would go unseen, leaving tracking available and the
+  frame stale. In the recordings every pause during a walk began with a detected hold (8 of 8: turn_test, walk2,
+  walk3, sitstill).
+- **Not done.** Tracker status as one level event instead of edges: worth it only with a second backend.
