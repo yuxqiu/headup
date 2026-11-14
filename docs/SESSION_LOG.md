@@ -560,3 +560,11 @@
 - Live check (data/walk3*.jsonl, audio playing before connect): no prompt mid-walk, "sit upright" after sitting
   down, tone and tink on a look-down (user heard all three). 99 tests pass. Fixtures: turn_walk, walk_reconnect,
   walk_near_far, walk_slouch.
+
+## 2026-11-14 02:20 UTC
+- Released 0.4.1 (walking holds, resume wait, backend-worded reasons, the no-43/54-at-connect fix, nudge re-measure).
+- Since: any interruption starts a new orientation frame (`PoseFrame`, one stretch of tracking), because the earbuds
+  keep tracking and re-centring unseen while headup gets nothing; `Link` split into `Earbuds`, `PoseFrame`,
+  `reported: View` and `Outputs`. README made device-neutral; FreeClip 2 user page added.
+- Live checks: sitting perfectly still after a walk keeps the stream silent until a head move (data/sitstill*);
+  pause, walk, sit, play, look down cues correctly (data/pausewalk*). 105 tests pass.

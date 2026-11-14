@@ -883,7 +883,8 @@
   `{"missed_glide":SEQ}`). The availability event and the session's resume state changed later the same day
   ("Resuming is a tracking state"). Supersedes "It does not trigger recalibration" in "Exact glide model,
   immediate release".
-- **A hold starts a new orientation frame** (`Stitch` resets its reference at `HoldStarted`), unlike a new
+- **A hold starts a new orientation frame** (superseded by "Any interruption starts a new orientation frame": the
+  link now starts a new rebuilder when tracking resumes) (`Stitch` resets its reference at `HoldStarted`), unlike a new
   stream, which the earbuds start from the last pose (`Step::Rebase`): after a hold the earbuds report relative to
   the head pose where it ended, which is not in the stream.
   Keeping the old reference composed every later reading with the user's turn during the walk: in the live check
@@ -949,6 +950,15 @@
     fail without the fix.
 - **Rejected.** A `Cause { Precondition, Moving }` enum in core (above). Showing the startup hint for every
   unavailability: it told a walking user to play audio.
+- **One resume rule for every interruption** (user, after asking whether a phone takeover should resume differently
+  from a walk). The session cannot tell why tracking stopped: both reach it as `Unavailable` then `Available`, and
+  the reason is text for the user, never something the session branches on. Telling them apart would need extra
+  information: a cause the session acts on (rejected above), a `TrackerTraits` field, or session states fed by one
+  of those. The wait for a still head is right after any interruption (the user may still be moving) and costs at
+  most about 2 s when they are already still (silence counts as still), so nothing distinguishes them. The real
+  difference, that the earbuds resume only after a head movement after a walk, is the firmware's and is on the
+  model's page. If a future model needs different session behaviour after some interruption, add a
+  `TrackerTraits` field that defaults to "no quirk" (AGENTS.md "Device quirks").
 
 ## 2026-11-13: A nudge measures afresh, like every other prompt (user)
 - **What.** After "move your head a little" (`Step::Nudge`), `Calibration::spoken` starts the attempt's
@@ -1015,3 +1025,45 @@
   table. AGENTS.md states the rule.
 - **Why.** User: the README described FreeClip 2 behaviour as headup's, which a second model would contradict.
   `FINDINGS.md` stays the evidence; the model page is what users need.
+
+## 2026-11-14: Any interruption starts a new orientation frame (user)
+- **What.** A frame lives for one stretch of available tracking. `Link::rebuild` is `Option<Rebuilder>`: the first
+  reading while tracking is available creates it (`rebuild_reading`), readings while it is unavailable are not
+  rebuilt, and `report` drops the frame when tracking becomes unavailable (re-wearing drops it too). `Stitch` no
+  longer resets at a hold. Supersedes "A hold starts a new
+  orientation frame" in "The earbuds' hold makes tracking unavailable". The tracker contract already allowed it
+  ("the frame may change when tracking resumes after `Unavailable`; the session recalibrates").
+- **Why.** The earbuds keep tracking while headup gets no readings: in data/live7_raw.jsonl the sequence counted on
+  at 52/s through an audio pause (43/54 `03` at 40.0 s, `09` at 43.0 s). So during any interruption (audio paused,
+  the phone current, a hold) they can re-centre or hold unseen, and when readings resume they are relative to a
+  reference headup does not know. A stale reference multiplies every orientation on the right by the mismatch,
+  which rotates the axes movements are measured about; recalibrating removes an offset, not that rotation. Seen
+  live: after a walk headup recalibrated, yet looking down read −47° (fixture `walk_slouch.csv`). The user asked
+  about pausing audio, walking, sitting down and playing again: the same mismatch, with no hold for headup to see.
+  Since the session recalibrates after every interruption, a new frame costs nothing.
+- **Order.** The new frame starts at the first reading after tracking resumes, not when it stops, because the
+  earbuds may re-centre unseen while it is unavailable; the reading that ends a hold is that first reading. A first
+  version started the frame inside `report` and had to call it in the middle of sample handling (user: hidden
+  control flow, hard to audit); making the frame lazy and dropping it when tracking stops removes the ordering, and
+  `report` runs once per frame. Readings while unavailable no longer come out as poses (the session ignored them).
+- **Tests.** `tracking_resuming_starts_a_new_frame` (a frame moved by a new stream, then audio paused and played:
+  the next reading is the new frame's origin) and `looking_down_after_a_walk_still_cues_end_to_end` fail without
+  it.
+- **Live check** (data/pausewalk*.jsonl, 2026-11-14): audio paused at 39.8 s, the user walked to another room and
+  back, audio played again at 110.6 s (a new stream). After the new frame and recalibration, both look-downs read
+  +49° to +52° and each cued a tone and a recovery cue; the user heard all four.
+
+## 2026-11-14: `Link` coordinates three small parts (user)
+- **What.** `Link`'s nine fields became six: the decoder, the adapter address, `Earbuds` (the device's facts),
+  `PoseFrame` (the orientation frame of the current stretch of tracking: the optional `Rebuilder` and its time
+  zero; `push` starts a frame lazily and converts times, `end` drops it), `reported: View` (the view as last reported
+  to the session; `View::update_to(current)` updates it and returns the events that report the change, so no
+  wrapper type is needed) and `Outputs` (the
+  event, send and log queues). `on_frame`
+  is one pass: log, update the facts (a reading also goes into the frame), send what they ask for, report.
+- **Why.** User: `Link` had become a state machine that many functions mutated in various scenarios. Each part now
+  owns one invariant (frame lifetime and time base, events only on change, ordered outputs), and `Link` no longer
+  touches their insides.
+- **Rejected.** A pure step function returning effects: it would replace the fact/view/report pattern in AGENTS.md
+  for little more clarity.
+- A refactor: every test is unchanged (the link's tests import `Duration` themselves now).

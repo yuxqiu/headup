@@ -13,41 +13,34 @@ use crate::devices::bluetooth::Address;
 use anyhow::Result;
 use serde::Serialize;
 use std::collections::VecDeque;
-use std::time::Duration;
 use tokio::time::Instant;
 
 pub struct Link {
     decoder: Decoder,
-    rebuild: Rebuilder,
-    /// Time zero for `rebuild`, which works in durations since it.
-    epoch: Instant,
     /// This computer's adapter address, to pick its entry out of 43/54 pushes.
     adapter: Address,
     earbuds: Earbuds,
-    /// What the session has been told so far.
-    told: View,
-    /// `--raw-log` records, oldest first.
-    log: Vec<LogRecord>,
-    /// Events for the session, in order.
-    events: VecDeque<Event>,
-    /// Frames to send to the earbuds.
-    outbox: Vec<Frame>,
+    frame: PoseFrame,
+    /// The earbuds' view as last reported to the session.
+    reported: View,
+    out: Outputs,
 }
 
 impl Link {
     /// A link to earbuds just connected at `now`. It starts by asking for the wear state and
     /// switching the pose stream on.
     pub fn new(adapter: Address, now: Instant) -> Self {
+        let mut out = Outputs::default();
+        for f in [wear_query(), capability_query(), stream_switch(true)] {
+            out.send(f);
+        }
         Link {
             decoder: Decoder::default(),
-            rebuild: Rebuilder::default(),
-            epoch: now,
             adapter,
             earbuds: Earbuds::default(),
-            told: View::default(),
-            log: Vec::new(),
-            events: VecDeque::new(),
-            outbox: vec![wear_query(), capability_query(), stream_switch(true)],
+            frame: PoseFrame::new(now),
+            reported: View::default(),
+            out,
         }
     }
 
@@ -62,34 +55,32 @@ impl Link {
 
     /// The next event for the session, in order.
     pub fn next_event(&mut self) -> Option<Event> {
-        self.events.pop_front()
+        self.out.events.pop_front()
     }
 
     /// Frames waiting to be sent, oldest first.
     pub fn take_outbox(&mut self) -> Vec<Frame> {
-        std::mem::take(&mut self.outbox)
+        std::mem::take(&mut self.out.outbox)
     }
 
     /// `--raw-log` records waiting to be written, oldest first.
     pub fn take_log(&mut self) -> Vec<LogRecord> {
-        std::mem::take(&mut self.log)
+        std::mem::take(&mut self.out.log)
     }
 
     /// Switch the pose stream off, leaving the earbuds as they were before headup.
     pub fn stop(&mut self) {
-        self.outbox.push(stream_switch(false));
+        self.out.send(stream_switch(false));
     }
 
-    /// Log the frame and update the earbuds' state with it. Send what the state asks for, then
-    /// tell the session what changed.
+    /// Log the frame, update the earbuds' facts with it (a reading also goes into the pose
+    /// frame), send what the facts ask for, then tell the session what changed.
     fn on_frame(&mut self, now: Instant, f: &Frame) -> Result<()> {
         let msg = Message::parse(f);
-        match msg {
-            Ok(Message::Sample { seq, raw }) => {
-                self.log.push(LogRecord::Sample(RawSample::new(seq, raw)))
-            }
-            _ => self.log.push(LogRecord::Frame(RawFrame::from(f))), // even if malformed, for debugging
-        }
+        self.out.log(match msg {
+            Ok(Message::Sample { seq, raw }) => LogRecord::Sample(RawSample::new(seq, raw)),
+            _ => LogRecord::Frame(RawFrame::from(f)), // even if malformed, for debugging
+        });
         let request = match msg? {
             Message::Wear { both_worn } => self.earbuds.on_wear(both_worn),
             Message::DeviceAudio { address, streaming } => {
@@ -97,28 +88,16 @@ impl Link {
             }
             Message::StreamSwitch(reply) => self.earbuds.on_reply(reply),
             Message::Sample { seq, raw } => {
-                self.earbuds.on_reading(raw);
-                for out in self.rebuild.push(self.since_epoch(now), seq, raw) {
-                    match out {
-                        Rebuilt::Pose { at, orientation } => {
-                            let at = self.epoch + at;
-                            self.events.push_back(Event::Pose { at, orientation });
-                        }
-                        Rebuilt::HoldStarted { seq } => {
-                            self.log.push(LogRecord::Hold(Hold { hold: seq }));
-                            self.earbuds.on_hold_started();
-                        }
-                    }
-                }
+                self.on_reading(now, seq, raw);
                 None
             }
             Message::Other => None,
         };
         match request {
-            Some(Request::SwitchOn) => self.outbox.push(stream_switch(true)),
+            Some(Request::SwitchOn) => self.out.send(stream_switch(true)),
             Some(Request::Restart) => {
-                self.rebuild = Rebuilder::default();
-                self.outbox.push(stream_switch(true));
+                self.frame.end();
+                self.out.send(stream_switch(true));
             }
             None => {}
         }
@@ -126,23 +105,114 @@ impl Link {
         Ok(())
     }
 
-    /// Tell the session each part of the earbuds' view that changed since it was last told.
-    fn report(&mut self) {
-        let view = self.earbuds.view();
-        if let Some(worn) = changed(&mut self.told.worn, view.worn) {
-            self.events.push_back(Event::Worn(worn));
+    /// A 43/89 reading: a fact about the earbuds, and, while tracking is available, a pose in the
+    /// current frame. While it is unavailable, readings say nothing usable about the head (held
+    /// identity, or trailing data the session ignores) and are not rebuilt.
+    fn on_reading(&mut self, now: Instant, seq: u32, raw: Quat) {
+        self.earbuds.on_reading(raw);
+        if let Some(Availability::Unavailable { .. }) = self.earbuds.availability() {
+            return;
         }
-        if let Some(availability) = changed(&mut self.told.availability, view.availability) {
-            self.events.push_back(match availability {
-                Availability::Available => Event::Available,
-                Availability::Unavailable { reason } => Event::Unavailable { reason },
-            });
+        for out in self.frame.push(now, seq, raw) {
+            match out {
+                FrameOut::Pose(pose) => self.out.event(pose),
+                FrameOut::HoldStarted { seq } => {
+                    self.out.log(LogRecord::Hold(Hold { hold: seq }));
+                    self.earbuds.on_hold_started();
+                }
+            }
         }
     }
 
-    fn since_epoch(&self, now: Instant) -> Duration {
-        now.checked_duration_since(self.epoch)
-            .expect("time went backwards past the link's start")
+    /// Tell the session what changed. When tracking stops, the pose frame ends (see
+    /// [`PoseFrame`]).
+    fn report(&mut self) {
+        for event in self.reported.update_to(self.earbuds.view()) {
+            if let Event::Unavailable { .. } = event {
+                self.frame.end();
+            }
+            self.out.event(event);
+        }
+    }
+}
+
+/// The orientation frame of the current stretch of available tracking: a [`Rebuilder`], created at
+/// the stretch's first reading and ended when tracking stops or the earbuds start a new stream.
+///
+/// While tracking is unavailable the earbuds keep tracking and re-centring unseen (they also hold
+/// while the user walks), so their reference may end up anywhere. A frame kept across that would
+/// rotate the axes later movements are measured about (a reference off by ~180° reads looking down
+/// as looking up), which recalibrating does not undo. So each stretch gets a new frame, and the
+/// session recalibrates in it.
+struct PoseFrame {
+    /// Time zero for the rebuilder, which works in durations since it.
+    epoch: Instant,
+    rebuilder: Option<Rebuilder>,
+}
+
+/// What a reading gives, in the link's terms.
+enum FrameOut {
+    /// An `Event::Pose`.
+    Pose(Event),
+    /// See [`Rebuilt::HoldStarted`].
+    HoldStarted { seq: u32 },
+}
+
+impl PoseFrame {
+    fn new(epoch: Instant) -> Self {
+        PoseFrame {
+            epoch,
+            rebuilder: None,
+        }
+    }
+
+    /// Rebuild a reading received at `now`, starting a frame if there is none.
+    fn push(&mut self, now: Instant, seq: u32, raw: Quat) -> Vec<FrameOut> {
+        let t = now
+            .checked_duration_since(self.epoch)
+            .expect("time went backwards past the link's start");
+        let rebuilt = self
+            .rebuilder
+            .get_or_insert_with(Rebuilder::default)
+            .push(t, seq, raw);
+        rebuilt
+            .into_iter()
+            .map(|out| match out {
+                Rebuilt::Pose { at, orientation } => FrameOut::Pose(Event::Pose {
+                    at: self.epoch + at,
+                    orientation,
+                }),
+                Rebuilt::HoldStarted { seq } => FrameOut::HoldStarted { seq },
+            })
+            .collect()
+    }
+
+    /// End the frame: the next reading starts a new one.
+    fn end(&mut self) {
+        self.rebuilder = None;
+    }
+}
+
+/// What the link hands out, each in order: events for the session, frames to send to the
+/// earbuds, and `--raw-log` records.
+#[derive(Default)]
+struct Outputs {
+    events: VecDeque<Event>,
+    outbox: Vec<Frame>,
+    log: Vec<LogRecord>,
+}
+
+impl Outputs {
+    fn event(&mut self, event: Event) {
+        self.events.push_back(event);
+    }
+
+    fn send(&mut self, frame: Frame) {
+        self.outbox.push(frame);
+    }
+
+    fn log(&mut self, record: LogRecord) {
+        self.log.push(record);
     }
 }
 
@@ -162,15 +232,15 @@ pub struct Hold {
     hold: u32,
 }
 
-/// Returns `now` if it is known and differs from `told`, and stores it in `told`. Returns `None`
-/// otherwise.
-fn changed<T: Copy + PartialEq>(told: &mut Option<T>, now: Option<T>) -> Option<T> {
-    let now = now?;
-    (told.replace(now) != Some(now)).then_some(now)
+/// Returns `current` if it is known and differs from `reported`, and stores it in `reported`.
+/// Returns `None` otherwise.
+fn changed<T: Copy + PartialEq>(reported: &mut Option<T>, current: Option<T>) -> Option<T> {
+    let current = current?;
+    (reported.replace(current) != Some(current)).then_some(current)
 }
 
 /// What the session sees of the earbuds. Each field is `None` while unknown.
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct View {
     /// Both earbuds are in the ears.
     worn: Option<bool>,
@@ -178,7 +248,25 @@ struct View {
     availability: Option<Availability>,
 }
 
-/// Whether head tracking flows, as the session is told it.
+impl View {
+    /// Update this view (the one last reported) to `current`, and return the events that report
+    /// the change: one for each part of `current` that is known and differs.
+    fn update_to(&mut self, current: View) -> Vec<Event> {
+        let mut events = Vec::new();
+        if let Some(worn) = changed(&mut self.worn, current.worn) {
+            events.push(Event::Worn(worn));
+        }
+        if let Some(availability) = changed(&mut self.availability, current.availability) {
+            events.push(match availability {
+                Availability::Available => Event::Available,
+                Availability::Unavailable { reason } => Event::Unavailable { reason },
+            });
+        }
+        events
+    }
+}
+
+/// Whether head tracking flows, as reported to the session.
 #[derive(Clone, Copy, PartialEq)]
 enum Availability {
     Available,
@@ -198,8 +286,8 @@ const WALKING: &str = "FreeClip 2 does not track your head while you walk around
 enum Request {
     /// Switch the pose stream on.
     SwitchOn,
-    /// A new pose stream: start a fresh orientation frame (a new [`Rebuilder`], the stream's state)
-    /// and switch the stream on.
+    /// A new pose stream: start a fresh orientation frame (drop the [`Rebuilder`], the stream's
+    /// state) and switch the stream on.
     Restart,
 }
 
@@ -365,6 +453,7 @@ mod tests {
     use super::super::protocol::sample_frame;
     use super::*;
     use crate::core::quat::Quat;
+    use std::time::Duration;
 
     fn pc() -> Address {
         "AA:BB:CC:DD:EE:02".parse().unwrap()
@@ -605,6 +694,38 @@ mod tests {
         let walking = Event::Unavailable { reason: WALKING };
         assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
         assert_eq!(reading(&mut link, 400, turned()), [Event::Available]);
+    }
+
+    // While tracking was unavailable the earbuds kept re-centring where headup could not see it, so
+    // when it resumes a new orientation frame starts: the first reading afterwards is the frame's
+    // origin, whatever frame came before. Here the frame before had moved its reference to a turned
+    // pose (a new stream starts from the last pose).
+    #[test]
+    fn tracking_resuming_starts_a_new_frame() {
+        let now = Instant::now();
+        let mut link = link(now);
+        let orientations = |link: &mut Link, seq, raw| -> Vec<Quat> {
+            link.on_bytes(now, &sample_frame(seq, raw).encode())
+                .unwrap();
+            events(link)
+                .into_iter()
+                .filter_map(|e| match e {
+                    Event::Pose { orientation, .. } => Some(orientation),
+                    _ => None,
+                })
+                .collect()
+        };
+        orientations(&mut link, 1, turned());
+        orientations(&mut link, 2, turned());
+        orientations(&mut link, 1, Quat::IDENTITY); // a new stream, from the turned pose
+        link.on_bytes(now, &audio(pc(), 0x03)).unwrap(); // audio paused: unavailable
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap(); // playing again: available
+        orientations(&mut link, 50, Quat::IDENTITY);
+        let after = orientations(&mut link, 51, Quat::IDENTITY);
+        assert_eq!(
+            after.first().map(|q| q.angle_to(Quat::IDENTITY) < 1e-9),
+            Some(true)
+        );
     }
 
     #[test]

@@ -913,6 +913,9 @@ identity sample as ground truth for each glide's end.
 - Earlier guess, now explained: the yaw error after the first walk (≈ −85° to −99°) is
   close to the sum of its two resets' yaw (−68° − 17°), which would fit a reset that does not move the reference
   to the head [inferred, one run].
+- **The earbuds keep tracking while they send nothing to this computer.** In data/live7_raw.jsonl the sequence
+  number counted on at 52/s through an audio pause (43/54 `03` at 40.0 s, `09` at 43.0 s), so re-centres and holds
+  go on unseen during any interruption; headup starts a new orientation frame when tracking resumes.
 - **Sitting still after a walk keeps the stream silent.** After a hold the stream resumes only once the reading moves
   4° (as after any pause), so a user who sits down and keeps perfectly still sends nothing, exactly like one who
   is still walking. Live (data/walk3*.jsonl, last run): the stream was silent from the hold at 39.6 s to 98.8 s and

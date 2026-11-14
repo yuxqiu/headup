@@ -13,8 +13,8 @@
 //! to identity with no glide and stays there, the stream pauses, and it resumes relative to
 //! wherever the head is once the user has been quiet (FINDINGS "Instant resets while walking"). The
 //! head movement in between never reaches the stream, so a hold cannot be undone. The rebuilder
-//! reports where one starts ([`Rebuilt::HoldStarted`]) and starts a new orientation frame there;
-//! what the hold means for the session is decided by the link, which keeps the earbuds' state.
+//! reports where one starts ([`Rebuilt::HoldStarted`]); the link keeps the earbuds' state and
+//! starts a new rebuilder when tracking resumes.
 //!
 //! A glide is not head movement, so it must not come out. `Rebuilder` has two parts:
 //!
@@ -316,14 +316,10 @@ impl GlideFilter {
 /// Turns released samples into absolute orientations: `absolute = raw × reference`. The earbuds
 /// report `raw = q ⊗ conj(ref)` (firmware `0x600fa53c`, FINDINGS "Re-centre and stillness"), so
 /// the reference goes on the right. `reference` is the earbuds' reference pose, in the frame of the
-/// start of the stream or of the last hold. At a `Step::Rebase` (a re-centre, or a new stream,
-/// which starts from the last pose) it becomes the last absolute orientation, because that is where
-/// the earbuds just moved it.
-///
-/// A hold starts a new frame instead: after it the earbuds report relative to the head pose where
-/// the hold ended, which is not in the stream. Keeping the old reference would compose every later
-/// reading with whatever turn the user made during the hold (a turn of ~180° reads looking down as
-/// looking up).
+/// rebuilder's first sample. At a `Step::Rebase` (a re-centre, or a new stream, which starts from
+/// the last pose) it becomes the last absolute orientation, because that is where the earbuds just
+/// moved it. A hold moves the earbuds' reference where the stream cannot see it; the link starts a
+/// new rebuilder when tracking resumes.
 struct Stitch {
     reference: Quat,
     last_abs: Quat,
@@ -343,11 +339,7 @@ impl Stitch {
                     });
                 }
                 Step::Rebase => self.reference = self.last_abs,
-                Step::HoldStarted(seq) => {
-                    self.reference = Quat::IDENTITY;
-                    self.last_abs = Quat::IDENTITY;
-                    out.push(Rebuilt::HoldStarted { seq });
-                }
+                Step::HoldStarted(seq) => out.push(Rebuilt::HoldStarted { seq }),
             }
         }
         out
@@ -357,11 +349,11 @@ impl Stitch {
 /// What the rebuilder hands out, in order.
 #[derive(Debug, PartialEq)]
 pub enum Rebuilt {
-    /// A released sample: received at `at`, with its absolute orientation (relative to the start
-    /// of the stream or of the last hold).
+    /// A released sample: received at `at`, with its absolute orientation (relative to the
+    /// rebuilder's first sample).
     Pose { at: Duration, orientation: Quat },
-    /// The identity sample `seq` started a hold (see the module docs). Poses from here on are in a
-    /// new orientation frame: the head pose where the hold ends.
+    /// The identity sample `seq` started a hold (see the module docs). Poses after the hold are
+    /// relative to a reference this rebuilder does not know.
     HoldStarted { seq: u32 },
 }
 
