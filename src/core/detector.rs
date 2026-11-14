@@ -23,7 +23,7 @@
 use super::steady::Window;
 use std::time::Duration;
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
 pub enum Cue {
     /// Soft tone in the earbuds after the dwell time.
     Tone,

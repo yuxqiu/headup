@@ -133,7 +133,7 @@ impl Link {
     /// Tell the session what changed. When tracking stops, the pose frame ends; since readings are
     /// not rebuilt while it is unavailable, the next stretch starts a new one (see [`PoseFrame`]).
     fn report(&mut self) {
-        for event in self.reported.update_to(self.earbuds.view()) {
+        if let Some(event) = self.reported.update_to(self.earbuds.view()) {
             if let Event::Unavailable { .. } = event {
                 self.frame.end();
             }
@@ -214,30 +214,24 @@ fn changed<T: Copy + PartialEq>(reported: &mut Option<T>, current: Option<T>) ->
     (reported.replace(current) != Some(current)).then_some(current)
 }
 
-/// What the session sees of the earbuds. Each field is `None` while unknown.
+/// What the session sees of the earbuds. `None` while unknown.
 #[derive(Clone, Copy, Default)]
 struct View {
-    /// Both earbuds are in the ears.
-    worn: Option<bool>,
     /// Whether poses that follow the head can flow to this computer.
     availability: Option<Availability>,
 }
 
 impl View {
-    /// Update this view (the one last reported) to `current`, and return the events that report
-    /// the change: one for each part of `current` that is known and differs.
-    fn update_to(&mut self, current: View) -> Vec<Event> {
-        let mut events = Vec::new();
-        if let Some(worn) = changed(&mut self.worn, current.worn) {
-            events.push(Event::Worn(worn));
-        }
-        if let Some(availability) = changed(&mut self.availability, current.availability) {
-            events.push(match availability {
-                Availability::Available => Event::Available,
-                Availability::Unavailable { reason } => Event::Unavailable { reason },
-            });
-        }
-        events
+    /// Update this view (the one last reported) to `current`, and return the event that reports
+    /// the change, if `current` is known and differs.
+    fn update_to(&mut self, current: View) -> Option<Event> {
+        let availability = changed(&mut self.availability, current.availability)?;
+        Some(match availability {
+            Availability::Available => Event::Available,
+            Availability::Unavailable(blocker) => Event::Unavailable {
+                reason: blocker.reason(),
+            },
+        })
     }
 }
 
@@ -245,16 +239,35 @@ impl View {
 #[derive(Clone, Copy, PartialEq)]
 enum Availability {
     Available,
-    Unavailable { reason: &'static str },
+    Unavailable(Blocker),
 }
 
-/// Why head tracking is unavailable, for the console: this computer is not the earbuds' current
-/// device, or the switch was refused.
-const NOT_STREAMING: &str =
-    "play audio on this computer; FreeClip 2 only tracks your head while it is playing";
-/// Why head tracking is unavailable, for the console: the earbuds hold (see [`Earbuds::holding`]).
-const WALKING: &str = "FreeClip 2 does not track your head while you walk around; \
-    it resumes when you move your head after you stop";
+/// Why FreeClip 2 cannot deliver head tracking.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Blocker {
+    /// An earbud is out (43/37); tracking needs both.
+    NotWorn,
+    /// This computer is not the earbuds' current device, or the switch was refused (43/54, 43/88).
+    NotStreaming,
+    /// The earbuds hold while the user walks around (see [`Earbuds::holding`]).
+    Walking,
+}
+
+impl Blocker {
+    /// The sentence the session shows and logs.
+    fn reason(self) -> &'static str {
+        match self {
+            Blocker::NotWorn => "put both earbuds in; FreeClip 2 tracks your head only with both",
+            Blocker::NotStreaming => {
+                "play audio on this computer; FreeClip 2 only tracks your head while it is playing"
+            }
+            Blocker::Walking => {
+                "FreeClip 2 does not track your head while you walk around; \
+                 it resumes when you move your head after you stop"
+            }
+        }
+    }
+}
 
 /// What the earbuds' state asks the link to send.
 #[derive(Debug, PartialEq)]
@@ -387,24 +400,25 @@ impl Earbuds {
 
     fn view(&self) -> View {
         View {
-            worn: self.worn,
             availability: self.availability(),
         }
     }
 
-    /// Poses flow to this computer while it streams, unless the switch was refused. They follow
-    /// the head unless the earbuds hold. `None` while it is unknown whether this computer streams.
+    /// Poses follow the head while both earbuds are worn and this computer streams (unless the
+    /// switch was refused), and the earbuds do not hold. A removed earbud comes first: nothing
+    /// else matters until it is back. `None` while it is unknown whether this computer streams.
     fn availability(&self) -> Option<Availability> {
+        if self.worn == Some(false) {
+            return Some(Availability::Unavailable(Blocker::NotWorn));
+        }
         let flowing = match self.switch {
             Switch::Refused => false,
             Switch::Unconfirmed | Switch::Accepted => self.streaming?,
         };
         Some(if !flowing {
-            Availability::Unavailable {
-                reason: NOT_STREAMING,
-            }
+            Availability::Unavailable(Blocker::NotStreaming)
         } else if self.holding {
-            Availability::Unavailable { reason: WALKING }
+            Availability::Unavailable(Blocker::Walking)
         } else {
             Availability::Available
         })

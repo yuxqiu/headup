@@ -24,17 +24,15 @@ const POLL: Duration = Duration::from_secs(1);
 /// long after the head meets its condition.
 const JUDGE_EVERY: Duration = Duration::from_millis(200);
 
-/// Why a cycle ended early. A cycle waits until the earbuds are worn, calibrates, then monitors.
-/// `?` carries the interrupt, so every wait in the session gives up the same way when the earbuds
-/// come off.
+/// Why a cycle ended early. A cycle waits for tracking, calibrates, then monitors. `?` carries the
+/// interrupt, so every wait in the session gives up the same way when tracking stops.
 enum Interrupt {
-    /// The earbuds were taken off.
-    Removed,
-    /// The tracker became unavailable. The head may move unseen until tracking resumes, and
-    /// resumed tracking may measure from a new pose. So the posture reference can't be trusted.
-    /// The session drops the slouch state, so no reminder plays from stale data, and recalibrates
-    /// once tracking resumes. Silence while tracking is available only means the head is still. It
-    /// never ends a cycle. Carries the tracker's reason.
+    /// The tracker became unavailable, for this reason (the earbuds taken off, a device
+    /// precondition, ...). The head may move unseen until tracking resumes, and resumed tracking
+    /// may measure in a new frame. So the posture reference can't be trusted: the session drops
+    /// the slouch state, so no reminder plays from stale data, and recalibrates once tracking
+    /// resumes. Silence while tracking is available only means the head is still; it never ends a
+    /// cycle.
     Unavailable(&'static str),
     /// A tracker or output error. It ends the session.
     Fatal(anyhow::Error),
@@ -95,101 +93,73 @@ impl Timeline {
     }
 }
 
-/// Whether head tracking flows, as the tracker has shown it.
+/// What the session's head tracking is doing, from what the tracker reported. Two paths lead to
+/// `Live`: at startup from `NotStarted`, and after each interruption from `Interrupted` through
+/// `Settling`. Only the tracker's `Available` and `Unavailable` move between them; poses never do.
 enum Tracking {
-    /// Nothing heard yet: silence may mean tracking has not started, not a still head.
-    Starting,
-    /// `Unavailable` before tracking ever started, with the tracker's reason. Poses do not end it;
-    /// `Available` does, at once: there is no posture yet that the user could have moved away from.
+    /// Tracking has not started, for this reason. Silence here may mean "not yet", not a still
+    /// head. `Available` makes it `Live` at once: there is no posture yet that the user could have
+    /// moved away from.
     NotStarted(&'static str),
-    /// `Unavailable`, with the tracker's reason: the head may move unseen. Poses may still arrive:
-    /// data measured before, or trailing data. They do not end this state. Only `Available` does.
-    Unavailable(&'static str),
-    /// `Available` after `Unavailable` (tracking had started). Poses flow, but the user may still
-    /// be on the move (a device can stop tracking while the user walks around), so the head is not
-    /// judged until it holds still ([`Stillness`]).
-    Resuming(Stillness),
-    /// Poses flow and the head can be judged. Silence means the head is still.
-    Available,
+    /// Tracking had started, then the tracker said it stopped, for this reason. The head may move
+    /// unseen. `Available` makes it `Settling`.
+    Interrupted(&'static str),
+    /// Back after an interruption. Poses flow, but the user may still be on the move (a device
+    /// can stop tracking while the user walks around), so the head is not judged until it holds
+    /// still ([`Stillness`]); then `Live`.
+    Settling(Stillness),
+    /// The head can be judged. Silence means the head is still.
+    Live,
 }
+
+/// The reason tracking has not started before the tracker reports anything.
+const NOT_REPORTED: &str = "the earbuds have not reported yet";
 
 impl Tracking {
-    /// Whether the session waits for the device: tracking has not started or is unavailable.
-    /// While resuming, data flows, and only the head must settle.
-    fn waits_for_device(&self) -> bool {
-        match self {
-            Tracking::Starting | Tracking::NotStarted(_) | Tracking::Unavailable(_) => true,
-            Tracking::Resuming(_) | Tracking::Available => false,
-        }
-    }
-
-    /// Why tracking is unavailable, in the tracker's words, once it has said.
+    /// Why tracking has not started or has stopped, in the tracker's words. `None` while settling
+    /// or live, when the session waits for nothing from the device.
     fn reason(&self) -> Option<&'static str> {
         match self {
-            Tracking::NotStarted(reason) | Tracking::Unavailable(reason) => Some(reason),
-            Tracking::Starting | Tracking::Resuming(_) | Tracking::Available => None,
-        }
-    }
-}
-
-/// What the tracker has reported about itself, and whether the session can judge the head yet.
-struct TrackerStatus {
-    worn: bool,
-    tracking: Tracking,
-}
-
-impl TrackerStatus {
-    /// Assume worn until told otherwise.
-    fn new() -> Self {
-        TrackerStatus {
-            worn: true,
-            tracking: Tracking::Starting,
-        }
-    }
-
-    /// Record the reported wear state. Returns `true` if the earbuds were just taken off.
-    fn worn_changed(&mut self, worn: bool) -> bool {
-        std::mem::replace(&mut self.worn, worn) && !worn
-    }
-
-    /// A pose measured at `measured` arrived. At startup it means tracking has started.
-    fn pose_arrived(&mut self, measured: Duration, q: Quat) {
-        match &mut self.tracking {
-            Tracking::Starting => self.tracking = Tracking::Available,
-            Tracking::Resuming(still) => still.pose(measured, q),
-            Tracking::NotStarted(_) | Tracking::Unavailable(_) | Tracking::Available => {}
+            Tracking::NotStarted(reason) | Tracking::Interrupted(reason) => Some(reason),
+            Tracking::Settling(_) | Tracking::Live => None,
         }
     }
 
     /// `Available` arrived at `now`.
     fn available(&mut self, now: Duration) {
-        match self.tracking {
-            Tracking::Unavailable(_) => self.tracking = Tracking::Resuming(Stillness::new(now)),
-            Tracking::Starting | Tracking::NotStarted(_) => self.tracking = Tracking::Available,
-            Tracking::Resuming(_) | Tracking::Available => {}
+        match self {
+            Tracking::NotStarted(_) => *self = Tracking::Live,
+            Tracking::Interrupted(_) => *self = Tracking::Settling(Stillness::new(now)),
+            Tracking::Settling(_) | Tracking::Live => {}
         }
     }
 
     /// `Unavailable` arrived, for `reason`. Returns `true` if the head was being judged and no
     /// longer can be.
     fn unavailable(&mut self, reason: &'static str) -> bool {
-        let next = match self.tracking {
-            Tracking::Starting | Tracking::NotStarted(_) => Tracking::NotStarted(reason),
-            Tracking::Unavailable(_) | Tracking::Resuming(_) | Tracking::Available => {
-                Tracking::Unavailable(reason)
+        let next = match self {
+            Tracking::NotStarted(_) => Tracking::NotStarted(reason),
+            Tracking::Interrupted(_) | Tracking::Settling(_) | Tracking::Live => {
+                Tracking::Interrupted(reason)
             }
         };
-        let was = std::mem::replace(&mut self.tracking, next);
-        matches!(was, Tracking::Available)
+        matches!(std::mem::replace(self, next), Tracking::Live)
     }
 
-    /// Advance to `now`: a resuming tracker becomes available once the head holds still. Every
-    /// pose measured before `now` must have been passed to [`TrackerStatus::pose_arrived`].
+    /// A pose measured at `measured` arrived: while settling, it counts towards stillness.
+    fn pose_arrived(&mut self, measured: Duration, q: Quat) {
+        if let Tracking::Settling(still) = self {
+            still.pose(measured, q);
+        }
+    }
+
+    /// Advance to `now`: settling ends once the head holds still. Every pose measured before `now`
+    /// must have been passed to [`Tracking::pose_arrived`].
     fn settle(&mut self, now: Duration) {
-        if let Tracking::Resuming(still) = &mut self.tracking
+        if let Tracking::Settling(still) = self
             && still.check(now)
         {
-            self.tracking = Tracking::Available;
+            *self = Tracking::Live;
         }
     }
 }
@@ -199,12 +169,12 @@ struct Session<'a, T: HeadTracker, C: CueSink> {
     cues: &'a C,
     rec: &'a mut Recorder,
     time: Timeline,
-    status: TrackerStatus,
+    tracking: Tracking,
 }
 
-/// Calibrate, then monitor. Pause while the earbuds are off. Recalibrate when they are put back
-/// on, because reseating changes how the earbud sits. Also recalibrate after tracking was
-/// unavailable. Returns only with a tracker or output error. The caller handles Ctrl-C.
+/// Calibrate, then monitor. Pause while tracking is unavailable (for example while the earbuds are
+/// off), and recalibrate when it resumes: the head may have moved unseen, and reseated earbuds sit
+/// differently. Returns only with a tracker or output error. The caller handles Ctrl-C.
 pub async fn run<T: HeadTracker, C: CueSink>(
     tracker: &mut T,
     cues: &C,
@@ -215,11 +185,11 @@ pub async fn run<T: HeadTracker, C: CueSink>(
         cues,
         rec,
         time: Timeline::new(),
-        status: TrackerStatus::new(),
+        tracking: Tracking::NotStarted(NOT_REPORTED),
     };
     loop {
         match s.cycle().await {
-            Ok(()) | Err(Interrupt::Removed) => {}
+            Ok(()) => {}
             Err(Interrupt::Unavailable(reason)) => s.rec.note(&format!(
                 "head tracking is unavailable ({reason}); will calibrate when it resumes"
             )),
@@ -234,10 +204,8 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         self.time.now()
     }
 
-    /// One cycle: wait until worn, calibrate, then monitor (or back off after a failed
-    /// calibration).
+    /// One cycle: calibrate, then monitor (or back off after a failed calibration).
     async fn cycle(&mut self) -> Flow<()> {
-        self.wait_until_worn().await?;
         match self.calibrate().await? {
             Some(baseline) => self.monitor(baseline).await,
             None => {
@@ -266,42 +234,25 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         match event {
             Event::Pose { at, orientation } => {
                 let measured = self.time.deliver(at)?;
-                self.status.pose_arrived(measured, orientation);
+                self.tracking.pose_arrived(measured, orientation);
                 return Ok(Some(Pose {
                     measured,
                     at,
                     orientation,
                 }));
             }
-            Event::Worn(w) => {
-                if self.status.worn_changed(w) {
-                    return Err(Interrupt::Removed);
-                }
-            }
             Event::Available => {
                 self.rec.event(LogEvent::TrackingAvailable)?;
-                self.status.available(self.time.now());
+                self.tracking.available(self.time.now());
             }
             Event::Unavailable { reason } => {
                 self.rec.event(LogEvent::TrackingUnavailable { reason })?;
-                if self.status.unavailable(reason) {
+                if self.tracking.unavailable(reason) {
                     return Err(Interrupt::Unavailable(reason));
                 }
             }
         }
         Ok(None)
-    }
-
-    async fn wait_until_worn(&mut self) -> Flow<()> {
-        if self.status.worn {
-            return Ok(());
-        }
-        self.rec.event(LogEvent::Paused)?;
-        self.rec.note("paused until the earbuds are worn");
-        while !self.status.worn {
-            self.next(POLL).await?;
-        }
-        Ok(self.rec.event(LogEvent::Resumed)?)
     }
 
     /// Consume events for `period`. Interrupts as [`Session::next`] does.
@@ -314,26 +265,24 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         Ok(())
     }
 
-    /// Wait until tracking is available (see [`Tracking`]). Tracking may not start until a device
-    /// precondition is met (the tracker's `Unavailable` reason says which). That can take a while,
-    /// so this waits without a deadline. A note says so, with that reason once the tracker has
-    /// given one, once the wait for the device gets long.
+    /// Wait until the head can be judged ([`Tracking::Live`]). Tracking may not start until a
+    /// device precondition is met (the tracker's reason says which). That can take a while, so this
+    /// waits without a deadline; a note gives the reason once the wait for the device gets long.
     async fn wait_for_tracking(&mut self) -> Flow<()> {
         let start = self.now();
         let mut noted = false;
         loop {
-            self.status.settle(self.now());
-            if matches!(self.status.tracking, Tracking::Available) {
+            self.tracking.settle(self.now());
+            if matches!(self.tracking, Tracking::Live) {
                 return Ok(());
             }
-            let tracking = &self.status.tracking;
-            if !noted && tracking.waits_for_device() && self.now() - start >= TRACKING_WAIT_NOTE {
-                let reason = tracking
-                    .reason()
-                    .map_or(String::new(), |r| format!(" ({r})"));
-                self.rec.note(&format!(
-                    "waiting for head tracking from the earbuds{reason}…"
-                ));
+            // While settling, data flows: the session waits only for a still head.
+            if let Some(reason) = self.tracking.reason()
+                && !noted
+                && self.now() - start >= TRACKING_WAIT_NOTE
+            {
+                self.rec
+                    .note(&format!("waiting for head tracking ({reason})…"));
                 noted = true;
             }
             self.next(JUDGE_EVERY).await?;
@@ -406,7 +355,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                     self.rec.event(LogEvent::Reanchored { upright })?;
                 }
                 for cue in update.cues {
-                    self.rec.event(LogEvent::Cue(cue))?;
+                    self.rec.event(LogEvent::Cue { cue })?;
                     self.cues.play(cue);
                 }
             }

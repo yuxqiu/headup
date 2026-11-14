@@ -4,7 +4,7 @@
 //! - 43/89 carries the poses as relative quaternions. They re-centre themselves and restart with
 //!   each new stream. `rebuild` makes them continuous.
 //! - 43/37 reports the wear state of each earbud. The earbuds push it on change and answer it when
-//!   queried. Tracking stops when either earbud is off, so [`Event::Worn`] means both are worn.
+//!   queried. Tracking stops when either earbud is off, so then tracking is [`Event::Unavailable`].
 //! - 43/54 reports the audio state of each connected source device. Head tracking only flows to
 //!   the earbuds' current device, which is the last one to start streaming audio. Whether this
 //!   computer is that device becomes [`Event::Available`] or [`Event::Unavailable`]. The earbuds

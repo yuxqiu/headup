@@ -121,7 +121,6 @@ pub fn replay(rows: &[Row]) -> Vec<Out> {
                 abs: orientation,
             }),
             Event::Available | Event::Unavailable { .. } => None,
-            other => panic!("a recording of samples produced {other:?}"),
         })
         .collect()
 }

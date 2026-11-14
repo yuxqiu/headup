@@ -1160,3 +1160,53 @@
   7.0.0.526: the only changes are "77 entries (registered), followed directly by 11 entries of another table" and
   43/37's single handler; every check still passes. Baseline `anchors-526.txt` updated. FINDINGS' earlier note
   naming `0x70395996` the 43/44 setter is corrected (it is the touch-pad switch setter in the internal table).
+
+## 2026-11-14: One availability concept; four session phases; the tracker contract in three rules (user)
+- **Interface.** `Event::Worn` is removed: a backend reports "not worn" as `Unavailable { reason }`, like any
+  other cause. Events are `Pose`, `Available`, `Unavailable { reason }`. `tracker.rs` states the contract as three
+  rules: availability (report `Available` as soon as poses can follow the head, `Unavailable` with a sentence for
+  any cause; only `Available` ends it; until a tracker reports `Available` the session does not judge the head),
+  silence (while available, nothing to deliver means a still head; a backend whose silence can mean a stall
+  reports `Unavailable`, after a timeout derived from its report interval), frames (fixed while available; may
+  change across an `Unavailable`). Supersedes "Until told otherwise, assume tracking is available".
+- **Session.** `Tracking { NotStarted(reason), Interrupted(reason), Settling(Stillness), Live }`, moved only by
+  the tracker's `Available`/`Unavailable` (poses never move it): `Available` makes `NotStarted` live at once and
+  `Interrupted` settle; `Unavailable` keeps `NotStarted` (new reason) and makes everything else `Interrupted`,
+  interrupting the cycle when it was live. The initial reason is core's "the earbuds have not reported yet".
+  `TrackerStatus`, its `worn` flag, `Interrupt::Removed` and the separate wait until worn are gone: one
+  interruption path for every cause. The `Paused`/`Resumed` log events are gone; the `TrackingUnavailable` reason
+  says why (log format change).
+- **Behaviour changes.** Re-wearing settles like any other interruption (up to 2 s before "sit upright"). Poses
+  without a prior `Available` do not start tracking (`poses_before_available_do_not_start_tracking`).
+- **FreeClip 2.** `Earbuds::availability` folds the wear state in, first: `Blocker { NotWorn, NotStreaming,
+  Walking }`, typed, with `Blocker::reason()` giving the sentence only when the event is built, so the change check
+  compares enums, not text. `View` keeps only availability.
+- **Tests.** Scripted sessions start with `Ev(Event::Available)` (the contract made visible); wear scripts use
+  `unavailable()`/`Available`; event-list expectations gain the initial `TrackingAvailable`; link wear tests expect
+  `Unavailable { NotWorn }` and `Available`. Every replay through the real backend is unchanged.
+- **Why.** User asked whether the session states and the event interface are general. A survey of other earbuds
+  (AirPods' reverse-engineered protocol, Galaxy Buds, Android's head-tracker HID protocol, Sony, Bose,
+  eSense/OpenEarable; sources in the 2026-11-14 session) found every family maps onto pose plus availability with
+  a reason; wear, audio gating, walking holds, HID stalls and "sensor stuck" are all reasons. Core never acted
+  differently on wear and unavailability, so keeping them apart only made combinations (an earlier proposal needed
+  `NotWornAndUnavailable`).
+- **Rejected.** Facts beside the phase (`worn`, `unavailable` fields next to it: state valid only while blocked,
+  stored always); `NotStarted(Option<reason>)` (one type meaning "nothing said" and "said why"); a frame id on each
+  pose instead of a later `FrameChanged` event (an interruption is needed anyway, because the head moved unseen).
+- **Planned, not built:** `Event::FrameChanged` (`Live` → `Settling`) for the first backend whose frame changes
+  while available (Android's head-tracker HID discontinuity counter; AirPods bud failover [inferred]).
+
+## 2026-11-14: Log lines are derived from `LogEvent`; one `JsonLog` for both logs (user)
+- **What.** `LogEvent` derives `Serialize` with `#[serde(tag = "event")]`, so the log line follows the enum: the
+  variant is the `"event"` name and its fields are the line's fields (`upright` rounded to two places through
+  `serialize_with`). The hand-written `EventFields` and its name strings are gone. A reminder cue is now one
+  variant, `Cue { cue }`, logged as `{"event":"Cue","cue":"Tone"}` instead of `{"event":"Tone"}` (log format
+  change). The console line is `LogEvent`'s `Display`, a short sentence instead of the variant name.
+  `JsonLog(Option<LogSink>)` is the one "optional JSON-lines sink" type: `Recorder` holds one, and `DeviceLog` is
+  an alias for it.
+- **Tests.** `session_log_lines` expects the cue line in the new shape. `reanchors_only_for_drifting_trackers`
+  reads `Cue` in the event list and checks which cues played through `Outcome::reminders`.
+- **Why.** User asked whether `record.rs` was general and elegant. Event names lived in a table that had to match
+  the enum by hand, and the sink pattern (`if let Some(f) = …`) was written three times.
+- **Rejected.** Keeping cue names as top-level events (`{"event":"Tone"}`): it needs a hand-written serialiser or
+  one variant per cue, so the enum and the log can drift apart again. No tool in the repo reads cue events.

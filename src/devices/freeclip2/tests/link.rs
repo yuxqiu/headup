@@ -90,20 +90,25 @@ fn starts_by_querying_and_switching_the_stream_on() {
     assert_eq!(link.take_outbox(), [stream_switch(false)]);
 }
 
-// Putting the earbuds back on starts a new orientation frame and switches the stream on
-// again. The first wear report and repeated reports send nothing.
+// Taking an earbud off makes tracking unavailable. Putting it back on starts a new orientation
+// frame and switches the stream on again. The first wear report and repeated reports send nothing.
 #[test]
 fn rewearing_restarts_the_stream() {
     let now = Instant::now();
     let mut link = link();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     link.on_bytes(now, &wear(1, 1)).unwrap();
-    assert_eq!(events(&mut link), [Event::Worn(true)]);
     assert_eq!(link.take_outbox(), []);
+    link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    assert_eq!(events(&mut link), [Event::Available]);
+    link.take_outbox();
     link.on_bytes(now, &wear(0, 1)).unwrap();
-    assert_eq!(events(&mut link), [Event::Worn(false)]);
+    let not_worn = Event::Unavailable {
+        reason: Blocker::NotWorn.reason(),
+    };
+    assert_eq!(events(&mut link), [not_worn]);
     link.on_bytes(now, &wear(1, 1)).unwrap();
-    assert_eq!(events(&mut link), [Event::Worn(true)]);
+    assert_eq!(events(&mut link), [Event::Available]);
     assert_eq!(link.take_outbox(), [stream_switch(true)]);
 }
 
@@ -132,19 +137,17 @@ fn rewearing_during_a_hold_ends_it_and_starts_a_new_frame() {
     let now = Instant::now();
     let mut link = link();
     link.on_bytes(now, &wear(1, 1)).unwrap();
-    assert_eq!(
-        reading(&mut link, 1, turned()),
-        [Event::Worn(true), Event::Available]
-    );
-    let walking = Event::Unavailable { reason: WALKING };
+    assert_eq!(reading(&mut link, 1, turned()), [Event::Available]);
+    let walking = Event::Unavailable {
+        reason: Blocker::Walking.reason(),
+    };
     assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
     link.on_bytes(now, &wear(0, 1)).unwrap();
     link.on_bytes(now, &wear(1, 1)).unwrap();
-    let events = events(&mut link);
-    assert_eq!(
-        events,
-        [Event::Worn(false), Event::Worn(true), Event::Available]
-    );
+    let not_worn = Event::Unavailable {
+        reason: Blocker::NotWorn.reason(),
+    };
+    assert_eq!(events(&mut link), [not_worn, Event::Available]);
     let first = first_orientation(&mut link, [(1, turned()), (2, turned())]);
     assert!(first.angle_to(turned()) < 1e-4, "{first:?}");
 }
@@ -165,7 +168,7 @@ fn this_computer_starting_audio_rearms_the_stream() {
     assert_eq!(
         events(&mut link),
         [Event::Unavailable {
-            reason: NOT_STREAMING
+            reason: Blocker::NotStreaming.reason()
         }]
     );
     assert_eq!(link.take_outbox(), []);
@@ -182,7 +185,7 @@ fn refused_stream_switch_waits_for_this_computer_to_stream() {
     assert_eq!(
         events(&mut link),
         [Event::Unavailable {
-            reason: NOT_STREAMING
+            reason: Blocker::NotStreaming.reason()
         }]
     );
     link.on_bytes(now, &reply(2)).unwrap();
@@ -212,7 +215,7 @@ fn audio_resuming_after_an_accepted_switch_keeps_the_stream() {
         [
             Event::Available,
             Event::Unavailable {
-                reason: NOT_STREAMING
+                reason: Blocker::NotStreaming.reason()
             },
             Event::Available
         ]
@@ -258,20 +261,19 @@ fn rewearing_after_a_refusal_makes_tracking_available_again() {
     assert_eq!(
         events(&mut link),
         [
-            Event::Worn(true),
             Event::Available,
             Event::Unavailable {
-                reason: NOT_STREAMING
+                reason: Blocker::NotStreaming.reason()
             }
         ]
     );
     link.take_outbox();
     link.on_bytes(now, &wear(0, 1)).unwrap();
     link.on_bytes(now, &wear(1, 1)).unwrap();
-    assert_eq!(
-        events(&mut link),
-        [Event::Worn(false), Event::Worn(true), Event::Available]
-    );
+    let not_worn = Event::Unavailable {
+        reason: Blocker::NotWorn.reason(),
+    };
+    assert_eq!(events(&mut link), [not_worn, Event::Available]);
     assert_eq!(link.take_outbox(), [stream_switch(true)]);
     link.on_bytes(now, &reply(0)).unwrap();
     assert_eq!(events(&mut link), []);
@@ -287,7 +289,9 @@ fn a_hold_makes_tracking_unavailable_until_the_reading_moves() {
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(events(&mut link), [Event::Available]);
     assert_eq!(reading(&mut link, 1, turned()), []);
-    let walking = Event::Unavailable { reason: WALKING };
+    let walking = Event::Unavailable {
+        reason: Blocker::Walking.reason(),
+    };
     assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
     assert_eq!(reading(&mut link, 3, Quat::IDENTITY), []);
     assert_eq!(reading(&mut link, 400, turned()), [Event::Available]);
@@ -300,7 +304,9 @@ fn a_hold_makes_tracking_unavailable_until_the_reading_moves() {
 fn readings_show_this_computer_streams_when_no_audio_push_came() {
     let mut link = link();
     assert_eq!(reading(&mut link, 1, turned()), [Event::Available]);
-    let walking = Event::Unavailable { reason: WALKING };
+    let walking = Event::Unavailable {
+        reason: Blocker::Walking.reason(),
+    };
     assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
     assert_eq!(reading(&mut link, 400, turned()), [Event::Available]);
 }

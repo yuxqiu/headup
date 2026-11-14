@@ -58,13 +58,10 @@ fn round(x: f64, places: i32) -> f64 {
     (x * scale).round() / scale
 }
 
-/// Everything that appears as `{"t":…,"event":"<name>"}` in the log.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// A session event, logged as `{"t":…,"event":"<variant>", <its fields>}`.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+#[serde(tag = "event")]
 pub enum LogEvent {
-    /// Earbuds no longer worn well enough for tracking: monitoring paused.
-    Paused,
-    /// Earbuds worn again: monitoring resumes after recalibration.
-    Resumed,
     /// The head kept moving on every calibration attempt; headup asks again later.
     CalibrationFailed,
     /// The device can deliver head tracking again.
@@ -74,51 +71,62 @@ pub enum LogEvent {
     TrackingUnavailable { reason: &'static str },
     /// After a recovery the head settled above upright, so upright was re-anchored to this pitch
     /// (relative to calibration).
-    Reanchored { upright: f64 },
+    Reanchored {
+        #[serde(serialize_with = "two_places")]
+        upright: f64,
+    },
     /// A reminder cue was played.
-    Cue(Cue),
+    Cue { cue: Cue },
 }
 
-/// A log line's fields for a [`LogEvent`]: its name, and the value it carries if any.
-#[derive(Serialize)]
-struct EventFields {
-    event: &'static str,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    upright: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<&'static str>,
+/// Serialise an angle rounded to two decimals, so log lines stay short.
+fn two_places<S: serde::Serializer>(x: &f64, s: S) -> std::result::Result<S::Ok, S::Error> {
+    s.serialize_f64(round(*x, 2))
 }
 
-impl LogEvent {
-    fn fields(self) -> EventFields {
-        let named = |event| EventFields {
-            event,
-            upright: None,
-            reason: None,
-        };
+impl std::fmt::Display for LogEvent {
+    /// The console line for the event. The reason for unavailable tracking is shown in the
+    /// session's own note, so it is left out here.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            LogEvent::Paused => named("Paused"),
-            LogEvent::Resumed => named("Resumed"),
-            LogEvent::CalibrationFailed => named("CalibrationFailed"),
-            LogEvent::TrackingAvailable => named("TrackingAvailable"),
-            LogEvent::TrackingUnavailable { reason } => EventFields {
-                reason: Some(reason),
-                ..named("TrackingUnavailable")
-            },
-            LogEvent::Reanchored { upright } => EventFields {
-                upright: Some(round(upright, 2)),
-                ..named("Reanchored")
-            },
-            LogEvent::Cue(Cue::Tone) => named("Tone"),
-            LogEvent::Cue(Cue::Speak) => named("Speak"),
-            LogEvent::Cue(Cue::Notify) => named("Notify"),
-            LogEvent::Cue(Cue::Recovered) => named("Recovered"),
+            LogEvent::CalibrationFailed => write!(f, "calibration failed; will ask again later"),
+            LogEvent::TrackingAvailable => write!(f, "head tracking available"),
+            LogEvent::TrackingUnavailable { .. } => write!(f, "head tracking unavailable"),
+            LogEvent::Reanchored { upright } => write!(f, "upright re-anchored to {upright:.1}°"),
+            LogEvent::Cue { cue } => write!(f, "cue: {cue:?}"),
         }
     }
 }
 
+/// An optional JSON-lines log. Each line is `{"t":…, <fields>}`; without a sink, lines are
+/// dropped.
+pub struct JsonLog(Option<LogSink>);
+
+impl JsonLog {
+    pub fn new(sink: Option<LogSink>) -> Self {
+        JsonLog(sink)
+    }
+
+    /// Log `fields` at the current wall-clock time.
+    pub fn record(&mut self, fields: &impl Serialize) -> Result<()> {
+        self.record_at(unix_now(), fields)
+    }
+
+    /// Log `fields` at Unix time `t`.
+    fn record_at(&mut self, t: f64, fields: &impl Serialize) -> Result<()> {
+        match self.0.as_mut() {
+            Some(sink) => write_line(sink, t, fields),
+            None => Ok(()),
+        }
+    }
+}
+
+/// A backend's log of raw device data for debugging it (`--raw-log`), with fields the backend
+/// chooses.
+pub type DeviceLog = JsonLog;
+
 pub struct Recorder {
-    log: Option<LogSink>,
+    log: JsonLog,
     live: bool,
     /// A status line is on screen without a trailing newline.
     status_shown: bool,
@@ -127,7 +135,7 @@ pub struct Recorder {
 impl Recorder {
     pub fn new(log: Option<LogSink>) -> Self {
         Recorder {
-            log,
+            log: JsonLog::new(log),
             live: std::io::stdout().is_terminal(),
             status_shown: false,
         }
@@ -155,16 +163,8 @@ impl Recorder {
 
     /// A session event that happens now. It is shown and logged.
     pub fn event(&mut self, event: LogEvent) -> Result<()> {
-        let fields = event.fields();
-        // The reason is shown in the session's own note, so the console line names the event only.
-        let shown = fields
-            .upright
-            .map_or(String::new(), |u| format!(" (upright {u:.1}°)"));
-        self.note(&format!("{}{shown}", fields.event));
-        if let Some(f) = self.log.as_mut() {
-            write_line(f, unix_now(), &fields)?;
-        }
-        Ok(())
+        self.note(&event.to_string());
+        self.log.record(&event)
     }
 
     /// Head orientation relative to the calibrated upright pose, measured at `at`. It is logged,
@@ -176,15 +176,12 @@ impl Recorder {
             roll: f64,
             yaw: f64,
         }
-        if let Some(f) = self.log.as_mut() {
-            let fields = Fields {
-                pitch: round(e.pitch, 2),
-                roll: round(e.roll, 2),
-                yaw: round(e.yaw, 2),
-            };
-            write_line(f, unix_time_of(at), &fields)?;
-        }
-        Ok(())
+        let fields = Fields {
+            pitch: round(e.pitch, 2),
+            roll: round(e.roll, 2),
+            yaw: round(e.yaw, 2),
+        };
+        self.log.record_at(unix_time_of(at), &fields)
     }
 
     /// Overwrite the live status line (terminals only).
@@ -197,25 +194,6 @@ impl Recorder {
         print!("\rpitch {pitch}  {state}   ");
         std::io::stdout().flush()?;
         self.status_shown = true;
-        Ok(())
-    }
-}
-
-/// A backend's log of raw device data for debugging it (`--raw-log`). Each record is one JSON line,
-/// `{"t":…, <fields>}`, with fields the backend chooses. Without a file, records are dropped.
-pub struct DeviceLog {
-    file: Option<LogSink>,
-}
-
-impl DeviceLog {
-    pub fn new(file: Option<LogSink>) -> Self {
-        DeviceLog { file }
-    }
-
-    pub fn record(&mut self, fields: &impl Serialize) -> Result<()> {
-        if let Some(f) = self.file.as_mut() {
-            write_line(f, unix_now(), fields)?;
-        }
         Ok(())
     }
 }
@@ -262,7 +240,7 @@ mod tests {
                 },
             )
             .unwrap();
-            rec.event(LogEvent::Cue(Cue::Tone)).unwrap();
+            rec.event(LogEvent::Cue { cue: Cue::Tone }).unwrap();
             rec.event(LogEvent::Reanchored { upright: -3.6049 })
                 .unwrap();
             rec.event(LogEvent::TrackingUnavailable {
@@ -274,7 +252,7 @@ mod tests {
             lines,
             [
                 json!({"pitch": 25.5, "roll": 1.0, "yaw": -3.0}),
-                json!({"event": "Tone"}),
+                json!({"event": "Cue", "cue": "Tone"}),
                 json!({"event": "Reanchored", "upright": -3.6}),
                 json!({"event": "TrackingUnavailable", "reason": "play audio"}),
             ]

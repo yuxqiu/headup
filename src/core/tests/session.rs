@@ -157,6 +157,7 @@ fn unavailable() -> Script {
 async fn reanchors_only_for_drifting_trackers() {
     let script = || {
         vec![
+            Ev(Event::Available),
             Poses(0.0, secs(4.0)),
             Poses(40.0, secs(15.0)),
             Poses(-10.0, secs(3.0)),
@@ -167,9 +168,15 @@ async fn reanchors_only_for_drifting_trackers() {
         ..Sim::default()
     };
     let run = simulate(script(), drifting).await;
-    assert_eq!(run.events, ["Tone", "Recovered", "Reanchored"]);
+    let cues = |run: &Outcome| run.reminders().iter().map(|&(c, _)| c).collect::<Vec<_>>();
+    assert_eq!(
+        run.events,
+        ["TrackingAvailable", "Cue", "Cue", "Reanchored"]
+    );
+    assert_eq!(cues(&run), [Tone, Recovered]);
     let run = simulate(script(), Sim::default()).await;
-    assert_eq!(run.events, ["Tone", "Recovered"]);
+    assert_eq!(run.events, ["TrackingAvailable", "Cue", "Cue"]);
+    assert_eq!(cues(&run), [Tone, Recovered]);
 }
 
 #[tokio::test(start_paused = true)]
@@ -177,6 +184,7 @@ async fn sustained_slouch_cues_even_while_head_is_still() {
     // Upright (calibration), then look down and hold still: the device goes quiet, but timers
     // keep running on the last pose.
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
         Poses(40.0, secs(2.0)),
         Quiet(secs(35.0)),
@@ -198,6 +206,7 @@ async fn sustained_slouch_cues_even_while_head_is_still() {
 #[tokio::test(start_paused = true)]
 async fn tone_is_on_time_while_head_is_still() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
         Poses(40.0, secs(2.0)),
         Quiet(secs(15.0)),
@@ -217,6 +226,7 @@ async fn tone_is_on_time_while_head_is_still() {
 #[tokio::test(start_paused = true)]
 async fn calibration_ignores_poses_measured_during_the_prompt() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(0.1)),
         Wobble(0.0, 30.0, secs(2.0)),
         Poses(0.0, secs(6.0)),
@@ -236,6 +246,7 @@ async fn calibration_ignores_poses_measured_during_the_prompt() {
 #[tokio::test(start_paused = true)]
 async fn poses_measured_during_the_nudge_do_not_count() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(0.02)),
         Quiet(secs(9.0)), // "sit upright" (4 s), then 5 s without a pose
         Wobble(0.0, 30.0, secs(4.5)),
@@ -252,17 +263,27 @@ async fn poses_measured_during_the_nudge_do_not_count() {
     );
 }
 
+// Taking the earbuds off reaches the session as tracking unavailable, like any interruption:
+// monitoring pauses, and putting them back on recalibrates.
 #[tokio::test(start_paused = true)]
 async fn taking_earbuds_off_pauses_then_recalibrates() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
-        Ev(Event::Worn(false)),
+        unavailable(),
         Quiet(secs(10.0)),
-        Ev(Event::Worn(true)),
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
     ];
     let run = simulate(script, Sim::default()).await;
-    assert_eq!(run.events, ["Paused", "Resumed"]);
+    assert_eq!(
+        run.events,
+        [
+            "TrackingAvailable",
+            "TrackingUnavailable",
+            "TrackingAvailable"
+        ]
+    );
     assert_eq!(run.count(Prompt(SitUpright)), 2, "{:?}", run.played());
 }
 
@@ -272,6 +293,7 @@ async fn taking_earbuds_off_pauses_then_recalibrates() {
 #[tokio::test(start_paused = true)]
 async fn unavailability_drops_the_slouch_and_recalibrates() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
         Poses(40.0, secs(2.0)),
         unavailable(),
@@ -280,7 +302,14 @@ async fn unavailability_drops_the_slouch_and_recalibrates() {
         Poses(0.0, secs(4.0)),
     ];
     let run = simulate(script, Sim::default()).await;
-    assert_eq!(run.events, ["TrackingUnavailable", "TrackingAvailable"]);
+    assert_eq!(
+        run.events,
+        [
+            "TrackingAvailable",
+            "TrackingUnavailable",
+            "TrackingAvailable"
+        ]
+    );
     let prompts = run.count(Prompt(SitUpright));
     assert_eq!(
         prompts,
@@ -297,6 +326,7 @@ async fn unavailability_drops_the_slouch_and_recalibrates() {
 #[tokio::test(start_paused = true)]
 async fn still_head_is_asked_to_move_when_tracking_resumes() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
         unavailable(),
         Quiet(secs(10.0)),
@@ -323,11 +353,12 @@ async fn still_head_is_asked_to_move_when_tracking_resumes() {
 #[tokio::test(start_paused = true)]
 async fn still_head_is_asked_to_move_after_rewearing() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
-        Ev(Event::Worn(false)),
+        unavailable(),
         Quiet(secs(5.0)),
-        Ev(Event::Worn(true)),
-        Quiet(secs(6.0)),
+        Ev(Event::Available),
+        Quiet(secs(8.0)),
         Poses(0.0, secs(4.0)),
     ];
     let run = simulate(script, Sim::default()).await;
@@ -339,6 +370,7 @@ async fn still_head_is_asked_to_move_after_rewearing() {
 #[tokio::test(start_paused = true)]
 async fn nudge_repeats_while_no_pose_arrives() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
         unavailable(),
         Ev(Event::Available),
@@ -354,7 +386,11 @@ async fn nudge_repeats_while_no_pose_arrives() {
 // device precondition is not met). headup waits without prompting or nudging.
 #[tokio::test(start_paused = true)]
 async fn startup_waits_silently_for_tracking() {
-    let script = vec![Quiet(secs(30.0)), Poses(0.0, secs(4.0))];
+    let script = vec![
+        Quiet(secs(30.0)),
+        Ev(Event::Available),
+        Poses(0.0, secs(4.0)),
+    ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(run.played(), [Prompt(SitUpright), Prompt(Calibrated)]);
 }
@@ -364,25 +400,27 @@ async fn startup_waits_silently_for_tracking() {
 #[tokio::test(start_paused = true)]
 async fn poses_after_unavailability_do_not_start_calibration() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
         unavailable(),
         Poses(0.0, secs(1.0)),
         Quiet(secs(40.0)),
     ];
     let run = simulate(script, Sim::default()).await;
-    assert_eq!(run.events, ["TrackingUnavailable"]);
+    assert_eq!(run.events, ["TrackingAvailable", "TrackingUnavailable"]);
     assert_eq!(run.played(), [Prompt(SitUpright), Prompt(Calibrated)]);
 }
 
 #[tokio::test(start_paused = true)]
 async fn failed_calibration_retries_later() {
     let script = vec![
+        Ev(Event::Available),
         Wobble(0.0, 30.0, secs(30.0)), // keeps moving through all 4 attempts
         Quiet(CALIBRATION_RETRY + secs(1.0)),
         Poses(0.0, secs(4.0)),
     ];
     let run = simulate(script, Sim::default()).await;
-    assert_eq!(run.events, ["CalibrationFailed"]);
+    assert_eq!(run.events, ["TrackingAvailable", "CalibrationFailed"]);
     let expected: Vec<Played> = [Prompt(SitUpright)]
         .into_iter()
         .chain([Prompt(Moved); CALIBRATION_TRIES])
@@ -398,6 +436,7 @@ async fn failed_calibration_retries_later() {
 #[tokio::test(start_paused = true)]
 async fn prompt_after_tracking_resumes_waits_until_the_head_is_still() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
         unavailable(),
         Ev(Event::Available),
@@ -421,6 +460,7 @@ async fn prompt_after_tracking_resumes_waits_until_the_head_is_still() {
 #[tokio::test(start_paused = true)]
 async fn monitoring_judges_only_after_taking_every_queued_pose() {
     let script = vec![
+        Ev(Event::Available),
         Poses(0.0, secs(19.0)),
         Poses(40.0, secs(9.0)),
         Poses(0.0, secs(20.0)),
@@ -451,4 +491,13 @@ async fn startup_unavailability_needs_no_settling() {
         (secs(10.0)..secs(10.3)).contains(&prompt),
         "prompt at {prompt:?}"
     );
+}
+
+// Until the tracker reports `Available`, the session does not judge the head: poses alone do not
+// start tracking (tracker contract, rule 1).
+#[tokio::test(start_paused = true)]
+async fn poses_before_available_do_not_start_tracking() {
+    let script = vec![Poses(0.0, secs(4.0)), Quiet(secs(20.0))];
+    let run = simulate(script, Sim::default()).await;
+    assert_eq!(run.played(), []);
 }
