@@ -882,6 +882,21 @@
   unavailable. `Rebuilt::MissedGlide` became `Rebuilt::HoldStarted`; the raw-log record is `{"hold":SEQ}` (was
   `{"missed_glide":SEQ}`). The session and the tracker interface are unchanged. Supersedes "It does not trigger
   recalibration" in "Exact glide model, immediate release".
+- **A hold starts a new orientation frame** (`Stitch` resets its reference at `HoldStarted`), as a new stream
+  does: after a hold the earbuds report relative to the head pose where it ended, which is not in the stream.
+  Keeping the old reference composed every later reading with the user's turn during the walk: in the live check
+  (data/walk3*.jsonl, fixture `walk_slouch.csv`) the user turned ~140° while walking, and afterwards looking down
+  (+46° raw) read as −47°, so no tone played. Test: `looking_down_after_a_walk_still_cues_end_to_end` (fails
+  without the reset).
+- **After tracking resumes from unavailability, "sit upright" waits until the head holds still**
+  (`calibration::Stillness`: posture within 2° of its mean for 2 s, or nothing delivered for 2 s;
+  `Session::wait_for_tracking`). In the same live check the earbuds released the hold while the user paused in
+  another room, and headup prompted mid-walk. Replayed, the four walks now prompt only after the user stopped, and
+  no attempt fails mid-walk (`walking_around_gives_no_reminder_end_to_end` checks both). Only resuming waits: at
+  startup and after re-wearing there is no sign of a moving user. Behaviour change in two tests: the prompt after
+  resuming comes 2 s later, so `still_head_is_asked_to_move_when_tracking_resumes` and
+  `nudge_repeats_while_no_pose_arrives` stay silent 2 s longer; new: `prompt_after_tracking_resumes_waits_until_the_head_is_still`
+  and the `Stillness` tests.
 - **Why.** Firmware 7.0.0.526 (FINDINGS "Instant resets while walking", checked in the disassembly): an activity
   detector on the accelerometer raises a flag after ~6 s of sustained motion; while it is up the re-centre stage
   outputs identity and copies the head pose into the reference every sample, then the stream pauses until the
@@ -907,3 +922,40 @@
     the head's movement during the hold is lost, so no correction matches the walks' ground truth in pitch.
   - The weak-link explanation: holds happened with RSSI 0 to −9 in the same room; far away the stream slowed
     (~8.5 samples/s) but lost nothing.
+
+## 2026-11-13: Resuming is a tracking state; the backend words why tracking is unavailable (user)
+- **What.**
+  - The session's `Tracking` has a fourth state, `Resuming`: `Available` after `Unavailable`. Poses flow, but the
+    head is not judged until it holds still (`calibration::Stillness`, 2 s within 2°); then the state becomes
+    `Available`. `TrackerStatus` makes the transitions, so `wait_for_tracking` just waits for `Available`, and
+    startup and re-wearing never pass through `Resuming`. Replaces the `resuming` flag and `if` in
+    `wait_for_tracking` (user: the resume state was missing and blended in as `if`s).
+  - `Event::Available(bool)` became `Event::Available` and `Event::Unavailable { reason }`. `reason` is the
+    backend's own sentence, shown as is in "head tracking is unavailable (…)" and the "waiting for head tracking"
+    note. FreeClip 2: `NOT_STREAMING` (also its startup `tracking_hint`) and `WALKING` for a hold. User: a `Cause`
+    enum in core "leaks the reason to the core; it should be backend determined". Core never acted on the cause,
+    only printed it.
+  - **Bug fixed:** the earbuds send no 43/54 on connect while audio already plays (13 of 22 raw logs in `data/`),
+    so `Earbuds::streaming` stayed unknown, and after a hold ended the view had no availability to report: the
+    session stayed unavailable until the audio state changed. A 43/89 reading now fills an unknown `streaming` with
+    "this computer streams" (readings arrive only at the current device). The replay helper sent an artificial
+    43/54 at the start, which hid the bug; it is gone, so replays take the real path. Tests:
+    `readings_show_this_computer_streams_when_no_audio_push_came` and `walking_around_gives_no_reminder_end_to_end`
+    fail without the fix.
+- **Rejected.** A `Cause { Precondition, Moving }` enum in core (above). Showing the startup hint for every
+  unavailability: it told a walking user to play audio.
+
+## 2026-11-13: A nudge measures afresh, like every other prompt (user)
+- **What.** After "move your head a little" (`Step::Nudge`), `Calibration::spoken` starts the attempt's
+  measurement at the end of the prompt, as "sit upright" and "you moved" already did; the attempt number is
+  unchanged. Poses measured while the nudge played, the user moving as it asks, no longer count, and the 5 s limit
+  runs from the first pose after it.
+- **Why.** User: nudges may use the data measured while speaking. They did: the nudged attempt kept its original
+  start, so a user who moved during the nudge started the 5 s clock and could fail with "you moved" after holding
+  still. `calibration_sees_every_pose_queued_during_a_prompt` expected exactly that ("sit upright, move head, you
+  moved, calibrated"); it is now `poses_measured_during_the_nudge_do_not_count` ("sit upright, move head,
+  calibrated"). New: `nudge_starts_measuring_afresh`. Both fail with the old start.
+- **Draining.** That test was also the only one that failed if the session judged before taking every queued
+  event. With prompts excluding their own poses, calibration no longer depends on it, but monitoring does (poses
+  queue while "calibrated" plays): `monitoring_judges_only_after_taking_every_queued_pose` (fails without draining:
+  a tone for a 9 s slouch that already ended).

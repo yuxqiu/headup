@@ -69,9 +69,9 @@ enum State {
         attempt: Attempt,
         nudge_at: Duration,
     },
-    /// "Move a little" is playing. The attempt that started at `start` goes on after it; it has no
-    /// pose yet.
-    Nudging { start: Duration },
+    /// "Move a little" is playing. The same attempt measures afresh after it: the prompt asks the
+    /// user to move, so poses measured while it plays do not count.
+    Nudging,
     /// "You moved" is playing. The next attempt starts after it.
     Moved,
     /// Calibrated or gave up.
@@ -122,12 +122,7 @@ impl Calibration {
                     (State::Moved, Step::Moved(report))
                 }
             }
-            (_, None) if now >= *nudge_at => (
-                State::Nudging {
-                    start: attempt.start,
-                },
-                Step::Nudge,
-            ),
+            (_, None) if now >= *nudge_at => (State::Nudging, Step::Nudge),
             _ => return Step::Wait,
         };
         self.state = next;
@@ -138,8 +133,8 @@ impl Calibration {
     /// none was asked for.
     pub fn spoken(&mut self, now: Duration) {
         self.state = match std::mem::replace(&mut self.state, State::Done) {
-            State::Nudging { start } => State::Measuring {
-                attempt: Attempt::start(start),
+            State::Nudging => State::Measuring {
+                attempt: Attempt::start(now),
                 nudge_at: now + NUDGE_EVERY,
             },
             State::Moved => {
@@ -212,6 +207,53 @@ impl Attempt {
             p90,
             samples: samples.len(),
         })
+    }
+}
+
+/// How long the head must hold still before calibration asks the user to sit upright, when head
+/// tracking has just resumed.
+const STILL: Duration = Duration::from_secs(2);
+/// The largest angle (degrees) from their mean that poses may have while the head holds still.
+const STILL_MAX_DEG: f64 = 2.0;
+
+/// Whether the head holds still, judged on the poses since the wait started. The head holds
+/// still once its posture has stayed within STILL_MAX_DEG for STILL: the latest pose measured at
+/// least STILL ago and every pose after it are that close to their mean. With no pose at all for
+/// STILL since the wait started, the head holds still too: a tracker with nothing to deliver
+/// means a head that has not moved.
+pub struct Stillness {
+    start: Duration,
+    /// Poses (measurement time, orientation), oldest first. The first is the latest pose that can
+    /// still begin a span.
+    poses: VecDeque<(Duration, Quat)>,
+}
+
+impl Stillness {
+    /// Start waiting at `now`.
+    pub fn new(now: Duration) -> Self {
+        Stillness {
+            start: now,
+            poses: VecDeque::new(),
+        }
+    }
+
+    pub fn pose(&mut self, measured: Duration, q: Quat) {
+        self.poses.push_back((measured, q));
+    }
+
+    /// Whether the head has held still up to `now`. Every pose measured before `now` must have
+    /// been passed to [`Stillness::pose`].
+    pub fn check(&mut self, now: Duration) -> bool {
+        let Some(from) = now.checked_sub(STILL) else {
+            return false;
+        };
+        let Some(begin) = self.poses.iter().rposition(|&(m, _)| m <= from) else {
+            return self.poses.is_empty() && from >= self.start;
+        };
+        self.poses.drain(..begin);
+        let samples: Vec<Quat> = self.poses.iter().map(|&(_, q)| q).collect();
+        let mean = Quat::mean(&samples);
+        samples.iter().all(|q| q.angle_to(mean) <= STILL_MAX_DEG)
     }
 }
 

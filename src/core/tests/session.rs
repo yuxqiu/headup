@@ -222,12 +222,12 @@ async fn calibration_ignores_poses_measured_during_the_prompt() {
     assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
 }
 
-// The head moves throughout a 4 s "move your head" prompt and a little after it, then holds
-// still. When the prompt ends, all the poses measured during it are waiting. Calibration judges
-// only once it has taken them all, so it sees the movement: the attempt fails, and the next one
-// calibrates on the still head.
+// The head moves throughout a 4 s "move your head" prompt, as it asks, and a little after it,
+// then holds still. The poses measured while the prompt played are not calibrated on, and the
+// attempt starts afresh when it ends, so the head that holds still after it calibrates without
+// "you moved".
 #[tokio::test(start_paused = true)]
-async fn calibration_sees_every_pose_queued_during_a_prompt() {
+async fn poses_measured_during_the_nudge_do_not_count() {
     let script = vec![
         Poses(0.0, secs(0.02)),
         Quiet(secs(9.0)), // "sit upright" (4 s), then 5 s without a pose
@@ -241,12 +241,7 @@ async fn calibration_sees_every_pose_queued_during_a_prompt() {
     let run = simulate(script, sim).await;
     assert_eq!(
         run.names(),
-        [
-            "say SitUpright",
-            "say MoveHead",
-            "say Moved",
-            "say Calibrated"
-        ]
+        ["say SitUpright", "say MoveHead", "say Calibrated"]
     );
 }
 
@@ -272,9 +267,11 @@ async fn unavailability_drops_the_slouch_and_recalibrates() {
     let script = vec![
         Poses(0.0, secs(4.0)),
         Poses(40.0, secs(2.0)),
-        Ev(Event::Available(false)),
+        Ev(Event::Unavailable {
+            reason: "audio stopped",
+        }),
         Quiet(secs(20.0)),
-        Ev(Event::Available(true)),
+        Ev(Event::Available),
         Poses(0.0, secs(4.0)),
     ];
     let run = simulate(script, Sim::default()).await;
@@ -283,17 +280,20 @@ async fn unavailability_drops_the_slouch_and_recalibrates() {
     assert_eq!(prompts, 2, "recalibrates after resuming: {:?}", run.names());
 }
 
-// A still head sends no poses. When tracking resumes, headup asks the user to sit upright at
-// once. With no pose 5 s later, it asks them to move a little. It then calibrates on the poses
-// that follow. Moving, then holding still, does not count as "you moved".
+// A still head sends no poses. When tracking resumes, headup asks the user to sit upright once the
+// head has held still for 2 s (here at once: the silence means it is still). With no pose 5 s
+// after the prompt, it asks them to move a little. It then calibrates on the poses that follow.
+// Moving, then holding still, does not count as "you moved".
 #[tokio::test(start_paused = true)]
 async fn still_head_is_asked_to_move_when_tracking_resumes() {
     let script = vec![
         Poses(0.0, secs(4.0)),
-        Ev(Event::Available(false)),
+        Ev(Event::Unavailable {
+            reason: "audio stopped",
+        }),
         Quiet(secs(10.0)),
-        Ev(Event::Available(true)),
-        Quiet(secs(6.0)),
+        Ev(Event::Available),
+        Quiet(secs(8.0)),
         Wobble(0.0, 20.0, secs(1.0)),
         Poses(0.0, secs(4.0)),
     ];
@@ -332,13 +332,15 @@ async fn still_head_is_asked_to_move_after_rewearing() {
 async fn nudge_repeats_while_no_pose_arrives() {
     let script = vec![
         Poses(0.0, secs(4.0)),
-        Ev(Event::Available(false)),
-        Ev(Event::Available(true)),
-        Quiet(secs(36.0)),
+        Ev(Event::Unavailable {
+            reason: "audio stopped",
+        }),
+        Ev(Event::Available),
+        Quiet(secs(38.0)),
         Poses(0.0, secs(4.0)),
     ];
     let run = simulate(script, Sim::default()).await;
-    // Nudges at 5, 20 and 35 s after the prompt.
+    // The prompt comes 2 s after tracking resumes; nudges at 5, 20 and 35 s after it.
     assert_eq!(run.count("say MoveHead"), 3, "{:?}", run.names());
 }
 
@@ -352,12 +354,14 @@ async fn startup_waits_silently_for_tracking() {
 }
 
 // Poses can still arrive after the tracker becomes unavailable (data measured before it, or
-// trailing data). They do not start a calibration: that waits for `Available(true)`.
+// trailing data). They do not start a calibration: that waits for `Available`.
 #[tokio::test(start_paused = true)]
 async fn poses_after_unavailability_do_not_start_calibration() {
     let script = vec![
         Poses(0.0, secs(4.0)),
-        Ev(Event::Available(false)),
+        Ev(Event::Unavailable {
+            reason: "audio stopped",
+        }),
         Poses(0.0, secs(1.0)),
         Quiet(secs(40.0)),
     ];
@@ -382,4 +386,52 @@ async fn failed_calibration_retries_later() {
         .chain(["say SitUpright", "say MoveHead", "say Calibrated"])
         .collect();
     assert_eq!(run.names(), expected);
+}
+
+// Tracking resumes while the user is still on the move (a device can stop tracking while the
+// user walks around). "Sit upright" waits until the head has held still for 2 s: here the head
+// moves for 5 s after tracking resumes at 4 s.
+#[tokio::test(start_paused = true)]
+async fn prompt_after_tracking_resumes_waits_until_the_head_is_still() {
+    let script = vec![
+        Poses(0.0, secs(4.0)),
+        Ev(Event::Unavailable {
+            reason: "audio stopped",
+        }),
+        Ev(Event::Available),
+        Wobble(0.0, 20.0, secs(5.0)),
+        Poses(0.0, secs(8.0)),
+    ];
+    let run = simulate(script, Sim::default()).await;
+    let prompts: Vec<Duration> = run
+        .cues
+        .iter()
+        .filter(|(name, _)| name == "say SitUpright")
+        .map(|&(_, t)| t)
+        .collect();
+    assert_eq!(prompts.len(), 2, "{:?}", run.names());
+    assert!(
+        (secs(11.0)..secs(11.3)).contains(&prompts[1]),
+        "prompt at {:?}",
+        prompts[1]
+    );
+}
+
+// Poses queue while "calibrated" plays (15 s here). During it the head goes down for 9 s and
+// comes back up, short of the 10 s the tone needs. Monitoring takes every queued pose before it
+// judges, so it sees the sit-up and plays nothing; judging after the first pose would play a tone
+// for a slouch that already ended.
+#[tokio::test(start_paused = true)]
+async fn monitoring_judges_only_after_taking_every_queued_pose() {
+    let script = vec![
+        Poses(0.0, secs(19.0)),
+        Poses(40.0, secs(9.0)),
+        Poses(0.0, secs(20.0)),
+    ];
+    let sim = Sim {
+        prompt: secs(15.0),
+        ..Sim::default()
+    };
+    let run = simulate(script, sim).await;
+    assert_eq!(run.names(), ["say SitUpright", "say Calibrated"]);
 }

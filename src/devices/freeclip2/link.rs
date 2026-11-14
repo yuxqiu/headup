@@ -132,8 +132,11 @@ impl Link {
         if let Some(worn) = changed(&mut self.told.worn, view.worn) {
             self.events.push_back(Event::Worn(worn));
         }
-        if let Some(available) = changed(&mut self.told.available, view.available) {
-            self.events.push_back(Event::Available(available));
+        if let Some(tracking) = changed(&mut self.told.tracking, view.tracking) {
+            self.events.push_back(match tracking {
+                Tracking::Available => Event::Available,
+                Tracking::Unavailable { reason } => Event::Unavailable { reason },
+            });
         }
     }
 
@@ -161,7 +164,7 @@ pub struct Hold {
 
 /// Returns `now` if it is known and differs from `told`, and stores it in `told`. Returns `None`
 /// otherwise.
-fn changed(told: &mut Option<bool>, now: Option<bool>) -> Option<bool> {
+fn changed<T: Copy + PartialEq>(told: &mut Option<T>, now: Option<T>) -> Option<T> {
     let now = now?;
     (told.replace(now) != Some(now)).then_some(now)
 }
@@ -171,9 +174,24 @@ fn changed(told: &mut Option<bool>, now: Option<bool>) -> Option<bool> {
 struct View {
     /// Both earbuds are in the ears.
     worn: Option<bool>,
-    /// Poses can flow to this computer.
-    available: Option<bool>,
+    /// Whether poses that follow the head can flow to this computer.
+    tracking: Option<Tracking>,
 }
+
+/// Whether head tracking flows, as the session is told it.
+#[derive(Clone, Copy, PartialEq)]
+enum Tracking {
+    Available,
+    Unavailable { reason: &'static str },
+}
+
+/// Why head tracking is unavailable, for the console: this computer is not the earbuds' current
+/// device, or the switch was refused.
+pub(super) const NOT_STREAMING: &str =
+    "play audio on this computer; FreeClip 2 only tracks your head while it is playing";
+/// Why head tracking is unavailable, for the console: the earbuds hold (see [`Earbuds::holding`]).
+const WALKING: &str =
+    "FreeClip 2 does not track your head while you walk around; it resumes once you are still";
 
 /// What the earbuds' state asks the link to send.
 #[derive(Debug, PartialEq)]
@@ -255,8 +273,12 @@ impl Earbuds {
         self.holding = true;
     }
 
-    /// 43/89: a reading that is not identity follows the head again, so it ends a hold.
+    /// 43/89. The earbuds send readings only to their current device, so a reading also tells
+    /// that this computer streams, if no 43/54 has said so yet (the earbuds send none on connect
+    /// while audio is already playing). A reading that is not identity follows the head again, so
+    /// it ends a hold.
     fn on_reading(&mut self, raw: Quat) {
+        self.streaming.get_or_insert(true);
         if raw != Quat::IDENTITY {
             self.holding = false;
         }
@@ -304,11 +326,17 @@ impl Earbuds {
             worn: self.worn,
             // Poses flow to this computer while it streams, unless the switch was refused. They
             // follow the head unless the earbuds hold.
-            available: match self.switch {
-                _ if self.holding => Some(false),
+            tracking: match self.switch {
                 Switch::Refused => Some(false),
                 Switch::Unconfirmed | Switch::Accepted => self.streaming,
-            },
+            }
+            .map(|flowing| match (flowing, self.holding) {
+                (false, _) => Tracking::Unavailable {
+                    reason: NOT_STREAMING,
+                },
+                (true, true) => Tracking::Unavailable { reason: WALKING },
+                (true, false) => Tracking::Available,
+            }),
         }
     }
 
@@ -403,12 +431,17 @@ mod tests {
         link.on_bytes(now, &audio(phone(), 0x09)).unwrap();
         assert_eq!(events(&mut link), []);
         link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
-        assert_eq!(events(&mut link), [Event::Available(true)]);
+        assert_eq!(events(&mut link), [Event::Available]);
         assert_eq!(link.take_outbox(), [stream_switch(true)]);
         link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
         assert_eq!(events(&mut link), []);
         link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
-        assert_eq!(events(&mut link), [Event::Available(false)]);
+        assert_eq!(
+            events(&mut link),
+            [Event::Unavailable {
+                reason: NOT_STREAMING
+            }]
+        );
         assert_eq!(link.take_outbox(), []);
     }
 
@@ -420,12 +453,17 @@ mod tests {
         let now = Instant::now();
         let mut link = link(now);
         link.on_bytes(now, &reply(2)).unwrap();
-        assert_eq!(events(&mut link), [Event::Available(false)]);
+        assert_eq!(
+            events(&mut link),
+            [Event::Unavailable {
+                reason: NOT_STREAMING
+            }]
+        );
         link.on_bytes(now, &reply(2)).unwrap();
         assert_eq!(events(&mut link), []);
         assert_eq!(link.take_outbox(), []);
         link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
-        assert_eq!(events(&mut link), [Event::Available(true)]);
+        assert_eq!(events(&mut link), [Event::Available]);
         assert_eq!(link.take_outbox(), [stream_switch(true)]);
         link.on_bytes(now, &reply(0)).unwrap();
         assert_eq!(events(&mut link), []);
@@ -446,9 +484,11 @@ mod tests {
         assert_eq!(
             events(&mut link),
             [
-                Event::Available(true),
-                Event::Available(false),
-                Event::Available(true)
+                Event::Available,
+                Event::Unavailable {
+                    reason: NOT_STREAMING
+                },
+                Event::Available
             ]
         );
         assert_eq!(link.take_outbox(), []);
@@ -493,8 +533,10 @@ mod tests {
             events(&mut link),
             [
                 Event::Worn(true),
-                Event::Available(true),
-                Event::Available(false)
+                Event::Available,
+                Event::Unavailable {
+                    reason: NOT_STREAMING
+                }
             ]
         );
         link.take_outbox();
@@ -502,11 +544,7 @@ mod tests {
         link.on_bytes(now, &wear(1, 1)).unwrap();
         assert_eq!(
             events(&mut link),
-            [
-                Event::Worn(false),
-                Event::Worn(true),
-                Event::Available(true)
-            ]
+            [Event::Worn(false), Event::Worn(true), Event::Available]
         );
         assert_eq!(link.take_outbox(), [stream_switch(true)]);
         link.on_bytes(now, &reply(0)).unwrap();
@@ -521,7 +559,7 @@ mod tests {
         let now = Instant::now();
         let mut link = link(now);
         link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
-        assert_eq!(events(&mut link), [Event::Available(true)]);
+        assert_eq!(events(&mut link), [Event::Available]);
         let turned = Quat {
             w: 0.9,
             x: 0.0,
@@ -539,10 +577,39 @@ mod tests {
         assert_eq!(sample(&mut link, 1, turned), []);
         assert_eq!(
             sample(&mut link, 2, Quat::IDENTITY),
-            [Event::Available(false)]
+            [Event::Unavailable { reason: WALKING }]
         );
         assert_eq!(sample(&mut link, 3, Quat::IDENTITY), []);
-        assert_eq!(sample(&mut link, 400, turned), [Event::Available(true)]);
+        assert_eq!(sample(&mut link, 400, turned), [Event::Available]);
+    }
+
+    // The earbuds send no 43/54 on connect while audio already plays (13 of 22 raw logs in
+    // data/). Readings arrive only at the current device, so the first one makes tracking
+    // available, and a hold's end makes it available again.
+    #[test]
+    fn readings_show_this_computer_streams_when_no_audio_push_came() {
+        let now = Instant::now();
+        let mut link = link(now);
+        let turned = Quat {
+            w: 0.9,
+            x: 0.0,
+            y: 0.0,
+            z: 0.19_f64.sqrt(),
+        };
+        let mut sample = |seq, raw| {
+            link.on_bytes(now, &sample_frame(seq, raw).encode())
+                .unwrap();
+            events(&mut link)
+                .into_iter()
+                .filter(|e| !matches!(e, Event::Pose { .. }))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(sample(1, turned), [Event::Available]);
+        assert_eq!(
+            sample(2, Quat::IDENTITY),
+            [Event::Unavailable { reason: WALKING }]
+        );
+        assert_eq!(sample(400, turned), [Event::Available]);
     }
 
     #[test]

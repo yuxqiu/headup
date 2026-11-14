@@ -7,8 +7,10 @@
 //!   queried. Tracking stops when either earbud is off, so [`Event::Worn`] means both are worn.
 //! - 43/54 reports the audio state of each connected source device. Head tracking only flows to
 //!   the earbuds' current device, which is the last one to start streaming audio. Whether this
-//!   computer is that device becomes [`Event::Available`]. The earbuds refuse headup's 43/88 while
-//!   another device is current, so headup sends it again once this computer streams.
+//!   computer is that device becomes [`Event::Available`] or [`Event::Unavailable`]. The earbuds
+//!   send no 43/54 on connect while audio already plays; a 43/89 reading shows it then. The earbuds
+//!   refuse headup's 43/88 while another device is current, so headup sends it again once this
+//!   computer streams.
 //! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts_up`]).
 //! - While the user walks around, the earbuds hold the reading and lose the head's movement, so
 //!   tracking is unavailable until the reading moves again (`rebuild`).
@@ -44,9 +46,7 @@ pub struct FreeClip2 {
 impl FreeClip2 {
     pub const TRAITS: TrackerTraits = TrackerTraits {
         // Head tracking is only sent while this computer streams audio to the earbuds (FINDINGS).
-        tracking_hint: Some(
-            "play audio on this computer; FreeClip 2 only tracks your head while it is playing",
-        ),
+        tracking_hint: Some(link::NOT_STREAMING),
         // Each re-centre lands ~10° off, always towards "looking up", so the rebuilt pose drifts
         // over a session (FINDINGS "Ground truth").
         pose_drifts_up: true,

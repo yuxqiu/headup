@@ -136,3 +136,55 @@ fn moving_head_fails_every_attempt_then_gives_up() {
         }
     }
 }
+
+// With nothing delivered, the head counts as still once 2 s have passed since the wait began.
+#[test]
+fn silence_counts_as_still() {
+    let mut still = Stillness::new(secs(1.0));
+    assert!(!still.check(secs(2.9)));
+    assert!(still.check(secs(3.0)));
+}
+
+// A moving head is not still; it is once its posture has stayed within 2° for 2 s.
+#[test]
+fn head_is_still_after_two_seconds_without_moving() {
+    let mut still = Stillness::new(Duration::ZERO);
+    let mut t = SAMPLE;
+    while t <= secs(5.0) {
+        still.pose(t, tilt(wobble(t).unwrap()));
+        assert!(!still.check(t), "moving head still at {t:?}");
+        t += SAMPLE;
+    }
+    let stopped = t - SAMPLE;
+    loop {
+        still.pose(t, tilt(1.0));
+        if still.check(t) {
+            break;
+        }
+        t += SAMPLE;
+    }
+    assert!(
+        (stopped + secs(2.0)..stopped + secs(2.1)).contains(&t),
+        "still at {t:?}, stopped at {stopped:?}"
+    );
+}
+
+// After a nudge the attempt measures afresh: poses measured while the nudge played (the user moving,
+// as asked) do not count, and the 5 s limit runs from the first pose after it.
+#[test]
+fn nudge_starts_measuring_afresh() {
+    let mut cal = Calibration::new(Duration::ZERO);
+    let (at, step) = drive(&mut cal, Duration::ZERO, secs(60.0), |_| None).unwrap();
+    assert_eq!((at, step), (secs(5.0), Step::Nudge));
+    // The prompt plays from 5 s to 9 s while the head moves. Its poses are taken after it ends, as
+    // the session does.
+    cal.spoken(secs(9.0));
+    let mut t = secs(5.0) + SAMPLE;
+    while t < secs(9.0) {
+        cal.pose(t, tilt(wobble(t).unwrap()));
+        t += SAMPLE;
+    }
+    let (at, step) = drive(&mut cal, secs(9.0), secs(30.0), |_| Some(0.0)).unwrap();
+    assert!(matches!(step, Step::Calibrated { .. }), "{step:?}");
+    assert_eq!(at, secs(9.0) + secs(3.0));
+}

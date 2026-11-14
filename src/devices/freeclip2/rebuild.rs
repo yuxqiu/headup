@@ -13,8 +13,8 @@
 //! to identity with no glide and stays there, the stream pauses, and it resumes relative to
 //! wherever the head is once the user has been quiet (FINDINGS "Instant resets while walking"). The
 //! head movement in between never reaches the stream, so a hold cannot be undone. The rebuilder
-//! reports where one starts ([`Rebuilt::HoldStarted`]); what that means for the session is decided
-//! by the link, which keeps the earbuds' state.
+//! reports where one starts ([`Rebuilt::HoldStarted`]) and starts a new orientation frame there;
+//! what the hold means for the session is decided by the link, which keeps the earbuds' state.
 //!
 //! A glide is not head movement, so it must not come out. `Rebuilder` has two parts:
 //!
@@ -315,6 +315,11 @@ impl GlideFilter {
 /// the reference goes on the right. `reference` is the earbuds' reference pose, in the frame of the
 /// stream start. At a `Step::Rebase` it becomes the last absolute orientation, because that is
 /// where the earbuds just moved it.
+///
+/// A hold starts a new frame, as a new stream does: after it the earbuds report relative to the
+/// head pose where the hold ended, which is not in the stream. Keeping the old reference would
+/// compose every later reading with whatever turn the user made during the hold (a turn of ~180°
+/// reads looking down as looking up).
 struct Stitch {
     reference: Quat,
     last_abs: Quat,
@@ -334,7 +339,11 @@ impl Stitch {
                     });
                 }
                 Step::Rebase => self.reference = self.last_abs,
-                Step::HoldStarted(seq) => out.push(Rebuilt::HoldStarted { seq }),
+                Step::HoldStarted(seq) => {
+                    self.reference = Quat::IDENTITY;
+                    self.last_abs = Quat::IDENTITY;
+                    out.push(Rebuilt::HoldStarted { seq });
+                }
             }
         }
         out
@@ -347,8 +356,8 @@ pub enum Rebuilt {
     /// A released sample: received at `at`, with its absolute orientation (relative to the stream
     /// start).
     Pose { at: Duration, orientation: Quat },
-    /// The identity sample `seq` started a hold (see the module docs). Poses after the hold are
-    /// relative to an unknown pose, so the orientation frame before the hold no longer applies.
+    /// The identity sample `seq` started a hold (see the module docs). Poses from here on are in a
+    /// new orientation frame: the head pose where the hold ends.
     HoldStarted { seq: u32 },
 }
 

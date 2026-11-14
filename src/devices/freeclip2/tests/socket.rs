@@ -49,6 +49,7 @@ async fn poses_keep_their_arrival_time_while_nothing_reads() {
     while let Some(event) = tracker.next_event(Duration::ZERO).await.unwrap() {
         match event {
             Event::Pose { at, .. } => got.push(at - start),
+            Event::Available => {} // the first reading shows this computer is the current device
             other => panic!("samples produced {other:?}"),
         }
     }

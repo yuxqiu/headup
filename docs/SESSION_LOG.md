@@ -547,3 +547,16 @@
   pitch crossed 20° (the reminder during 24 s of silence from a still head), recovery on the same pose as the
   crossing below 15°, re-anchored to -6.1° and -10.7°. Six later glances (≤5 s) cued nothing. Raw log: at most 3
   samples within any 20 ms (prompt bursts gone), no missed glide. The user heard every prompt and cue.
+
+## 2026-11-13 22:20 UTC
+- Investigated a "stuck" service: walking around breaks the FreeClip 2 reference. Firmware 7.0.0.526: an
+  accelerometer activity detector makes the earbuds hold (reference follows the head, readings identity, stream
+  paused) while the user walks (FINDINGS "Instant resets while walking"). Rejected along the way: recalibrating on
+  every reset (prompts mid-walk), the weak-link theory, correcting the reference across a reset.
+- Now: `Earbuds::holding` makes tracking unavailable during a hold; a hold starts a new orientation frame; the
+  session's `Tracking::Resuming` waits for a still head before "sit upright"; `Event::Unavailable { reason }`
+  carries the backend's own wording. Fixed: with audio playing at connect (no 43/54), tracking never came back
+  after a hold.
+- Live check (data/walk3*.jsonl, audio playing before connect): no prompt mid-walk, "sit upright" after sitting
+  down, tone and tink on a look-down (user heard all three). 99 tests pass. Fixtures: turn_walk, walk_reconnect,
+  walk_near_far, walk_slouch.

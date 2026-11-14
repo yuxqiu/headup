@@ -1,6 +1,6 @@
 //! Device-agnostic posture session: spoken calibration, then monitoring with cues.
 
-use super::calibration::{Calibration, Report, Step};
+use super::calibration::{Calibration, Report, Step, Stillness};
 use super::cues::{CueSink, Phrase};
 use super::detector::{Config, Detector};
 use super::quat::Quat;
@@ -91,15 +91,18 @@ impl Timeline {
 }
 
 /// Whether head tracking flows, as the tracker has shown it.
-#[derive(Clone, Copy, PartialEq, Eq)]
 enum Tracking {
     /// Nothing heard yet: silence may mean tracking has not started, not a still head.
     Starting,
-    /// A pose or `Available(true)`: silence means the head is still.
+    /// `Unavailable`, with the tracker's reason: the head may move unseen. Poses may still arrive:
+    /// data measured before, or trailing data. They do not end this state. Only `Available` does.
+    Unavailable(&'static str),
+    /// `Available` after `Unavailable`. Poses flow, but the user may still be on the move (a
+    /// device can stop tracking while the user walks around), so the head is not judged until it
+    /// holds still ([`Stillness`]).
+    Resuming(Stillness),
+    /// Poses flow and the head can be judged. Silence means the head is still.
     Available,
-    /// `Available(false)`: the head may move unseen. Poses may still arrive: data measured
-    /// before, or trailing data. They do not end this state. Only `Available(true)` does.
-    Unavailable,
 }
 
 /// What the tracker has reported about itself.
@@ -122,22 +125,38 @@ impl TrackerStatus {
         std::mem::replace(&mut self.worn, worn) && !worn
     }
 
-    /// A pose arrived: tracking has started.
-    fn pose_arrived(&mut self) {
-        if self.tracking == Tracking::Starting {
-            self.tracking = Tracking::Available;
+    /// A pose measured at `measured` arrived. At startup it means tracking has started.
+    fn pose_arrived(&mut self, measured: Duration, q: Quat) {
+        match &mut self.tracking {
+            Tracking::Starting => self.tracking = Tracking::Available,
+            Tracking::Resuming(still) => still.pose(measured, q),
+            Tracking::Unavailable(_) | Tracking::Available => {}
         }
     }
 
-    /// Record the reported availability. Returns `true` if tracking was available and just
-    /// stopped.
-    fn availability_changed(&mut self, available: bool) -> bool {
-        let next = if available {
-            Tracking::Available
-        } else {
-            Tracking::Unavailable
+    /// `Available` arrived at `now`.
+    fn available(&mut self, now: Duration) {
+        self.tracking = match self.tracking {
+            Tracking::Unavailable(_) => Tracking::Resuming(Stillness::new(now)),
+            Tracking::Starting | Tracking::Resuming(_) | Tracking::Available => Tracking::Available,
         };
-        std::mem::replace(&mut self.tracking, next) == Tracking::Available && !available
+    }
+
+    /// `Unavailable` arrived, for `reason`. Returns `true` if the head was being judged and no
+    /// longer can be.
+    fn unavailable(&mut self, reason: &'static str) -> bool {
+        let was = std::mem::replace(&mut self.tracking, Tracking::Unavailable(reason));
+        matches!(was, Tracking::Available)
+    }
+
+    /// Advance to `now`: a resuming tracker becomes available once the head holds still. Every
+    /// pose measured before `now` must have been passed to [`TrackerStatus::pose_arrived`].
+    fn settle(&mut self, now: Duration) {
+        if let Tracking::Resuming(still) = &mut self.tracking
+            && still.check(now)
+        {
+            self.tracking = Tracking::Available;
+        }
     }
 }
 
@@ -219,7 +238,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
         match event {
             Event::Pose { at, orientation } => {
                 let measured = self.time.deliver(at)?;
-                self.status.pose_arrived();
+                self.status.pose_arrived(measured, orientation);
                 return Ok(Some((measured, orientation)));
             }
             Event::Worn(w) => {
@@ -227,13 +246,13 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                     return Err(Interrupt::Removed);
                 }
             }
-            Event::Available(a) => {
-                self.rec.event(if a {
-                    LogEvent::TrackingAvailable
-                } else {
-                    LogEvent::TrackingUnavailable
-                })?;
-                if self.status.availability_changed(a) {
+            Event::Available => {
+                self.rec.event(LogEvent::TrackingAvailable)?;
+                self.status.available(self.time.now());
+            }
+            Event::Unavailable { reason } => {
+                self.rec.event(LogEvent::TrackingUnavailable)?;
+                if self.status.unavailable(reason) {
                     return Err(Interrupt::Unavailable);
                 }
             }
@@ -242,9 +261,12 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     }
 
     fn on_unavailable(&mut self) {
-        let hint = self.tracking_hint_suffix();
+        let reason = match self.status.tracking {
+            Tracking::Unavailable(reason) => format!(" ({reason})"),
+            _ => String::new(),
+        };
         self.rec.note(&format!(
-            "head tracking is unavailable; will calibrate when it resumes{hint}"
+            "head tracking is unavailable{reason}; will calibrate when it resumes"
         ));
     }
 
@@ -272,21 +294,26 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
 
     /// Wait until tracking is available (see [`Tracking`]). Tracking may not start until a device
     /// precondition is met (see `TrackerTraits`). That can take a while, so this waits without a
-    /// deadline.
+    /// deadline. A note says so, with what the user can do, once the wait gets long.
     async fn wait_for_tracking(&mut self) -> Flow<()> {
         let start = self.now();
         let mut noted = false;
-        while self.status.tracking != Tracking::Available {
-            self.next(POLL).await?;
+        loop {
+            self.status.settle(self.now());
+            let hint = match self.status.tracking {
+                Tracking::Available => return Ok(()),
+                Tracking::Starting => self.tracking_hint_suffix(),
+                Tracking::Unavailable(reason) => format!(" ({reason})"),
+                Tracking::Resuming(_) => String::new(),
+            };
             if !noted && self.now() - start >= TRACKING_WAIT_NOTE {
-                let hint = self.tracking_hint_suffix();
                 self.rec.note(&format!(
                     "waiting for head tracking from the earbuds{hint}…"
                 ));
                 noted = true;
             }
+            self.next(Duration::from_millis(200)).await?;
         }
-        Ok(())
     }
 
     /// Capture the upright pose (see [`Calibration`]). Returns `None` if the head kept moving on

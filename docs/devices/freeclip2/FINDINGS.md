@@ -917,3 +917,7 @@ identity sample as ground truth for each glide's end.
   user kept hearing "sit upright", once mid-walk. headup models the hold instead: tracking is unavailable from
   its first identity sample to the first sample that is not identity (DECISIONS "The earbuds' hold makes tracking
   unavailable").
+- Live check of that (data/walk3*.jsonl, fixture `walk_slouch.csv`): two holds in a 75 s walk; the earbuds
+  released the first one while the user paused in another room (tracking resumed 8.5 s later, then held again).
+  After the walk the user's look-downs read +46° raw, as at the desk, so the earbuds' own frame is fine; the
+  readings are relative to the head pose where the hold ended.

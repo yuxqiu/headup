@@ -12,7 +12,7 @@ pub enum Event {
     ///
     /// The orientation is absolute within one wear period. It is relative to a frame the backend
     /// chooses, arbitrary but fixed. The frame may change after `Worn(true)`, or when tracking
-    /// resumes after `Available(false)`. The session recalibrates in both cases.
+    /// resumes after `Unavailable`. The session recalibrates in both cases.
     ///
     /// `at` is when the backend received the sample the pose comes from. It is the best available
     /// measure of when the pose was measured. Smoothing and slouch timing run on `at`. It must not
@@ -26,17 +26,20 @@ pub enum Event {
     /// Whether the earbuds are worn well enough for head tracking. The backend decides what that
     /// takes. Sent on change. A backend should report the initial state soon after connecting.
     Worn(bool),
-    /// Whether the device can deliver head tracking right now, beyond being worn. This covers a
-    /// device precondition (see [`TrackerTraits::tracking_hint`]). Sent on change. Until told
+    /// The device delivers head tracking again after `Unavailable`. Sent on change. Until told
     /// otherwise, assume tracking is available.
+    Available,
+    /// The device cannot deliver head tracking right now, beyond not being worn. `reason` says why
+    /// and what the user can do, in the backend's words; the session shows it as is. Sent on
+    /// change, including a change of reason.
     ///
     /// While tracking is available, silence means the head is still. A backend whose silence can
-    /// also mean something else, such as a stall or data that stopped, must send
-    /// `Available(false)` then. Otherwise the session keeps the last posture forever.
+    /// also mean something else, such as a stall or data that stopped, must send `Unavailable`
+    /// then. Otherwise the session keeps the last posture forever.
     ///
-    /// Poses may still arrive after `Available(false)`, from held or trailing data. They do not end
-    /// the unavailability. Only `Available(true)` does.
-    Available(bool),
+    /// Poses may still arrive after `Unavailable`, from held or trailing data. They do not end the
+    /// unavailability. Only `Available` does.
+    Unavailable { reason: &'static str },
 }
 
 /// A source of head orientation. Device quirks such as re-centring are the backend's job.
@@ -62,8 +65,8 @@ pub trait HeadTracker {
 /// adding a field leaves existing backends unchanged.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TrackerTraits {
-    /// What the user can do when no head tracking arrives, e.g. a device precondition. Shown in
-    /// "waiting for head tracking" messages.
+    /// What the user can do when no head tracking arrives at startup, before the tracker has said
+    /// anything, e.g. a device precondition. Later, `Event::Unavailable` carries its own reason.
     pub tracking_hint: Option<&'static str>,
     /// The reported orientation accumulates error towards "looking up" over a session, so the same
     /// pose reads higher later. The session then re-anchors upright after each recovery. Drift

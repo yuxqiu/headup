@@ -363,13 +363,14 @@ fn recordings() -> Vec<String> {
         .filter(|n| n.ends_with(".csv"))
         .collect();
     names.sort();
-    assert!(names.len() >= 18, "recordings missing from {dir}");
+    assert!(names.len() >= 19, "recordings missing from {dir}");
     names
 }
 
 // Every real recording follows the glide formula, including glides cut short, so no glide is
 // taken for a hold. The holds are identity samples with no glide before them: live4.csv seq 34,
-// after a wear flicker, and the walks in turn_walk.csv, walk_reconnect.csv and walk_near_far.csv
+// after a wear flicker, and the walks in turn_walk.csv, walk_reconnect.csv, walk_near_far.csv and
+// walk_slouch.csv
 // (FINDINGS "Re-centre and stillness", "Instant resets while walking").
 #[test]
 fn holds_are_found_only_where_recorded() {
@@ -379,6 +380,7 @@ fn holds_are_found_only_where_recorded() {
             "turn_walk.csv" => &[8197, 11137],
             "walk_reconnect.csv" => &[984, 3414],
             "walk_near_far.csv" => &[2122, 3622, 7552],
+            "walk_slouch.csv" => &[2161, 2821],
             _ => &[],
         };
         assert_eq!(holds(&read_csv(&name)), want, "{name}");
