@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-13 18:30 UTC
+Last updated: 2026-11-14 06:20 UTC
 
 ## Current state
 - The protocol works.
@@ -34,6 +34,12 @@ Last updated: 2026-11-13 18:30 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- 2026-11-14: v0.4.4 released (commit ad8fd6f): one availability concept (wear folded in), four session phases,
+  `LogEvent` serialised by serde (cues logged as `{"event":"Cue","cue":…}`), `JsonLog` for both logs. Live check
+  data/rewear*.jsonl passed (cue, recovery, earbuds out and back in, recalibration, cue, re-anchor). Next:
+  (1) record in FreeClip 2 FINDINGS the 0.2 s "walking" hold seen right after re-insertion (data/rewear.jsonl),
+  if the user wants; (2) `Event::FrameChanged` waits for a backend that needs it; (3) Windows/macOS Bluetooth
+  backends wait for a machine.
 - 2026-11-13: cues play in-process (`core/audio.rs`, `cpal`; notifications via `notify-rust`); DECISIONS "Cues play
   in-process with cpal". Next: a live run to hear tone, tink and prompts on the earbuds (start and end intact).
   Bluetooth is behind `src/devices/bluetooth/` (DECISIONS "Bluetooth behind a per-OS module"); Windows and macOS

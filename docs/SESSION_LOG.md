@@ -568,3 +568,11 @@
   `reported: View` and `Outputs`. README made device-neutral; FreeClip 2 user page added.
 - Live checks: sitting perfectly still after a walk keeps the stream silent until a head move (data/sitstill*);
   pause, walk, sit, play, look down cues correctly (data/pausewalk*). 105 tests pass.
+
+## 2026-11-14 06:20 UTC
+- `record.rs`: `LogEvent` derives `Serialize` (`tag = "event"`); cues logged as `Cue { cue }`; console lines from
+  `Display`; `JsonLog(Option<LogSink>)` shared by `Recorder` and `DeviceLog` (alias). 111 tests pass.
+- Live check (data/rewear*; default output switched to the earbuds, silence playing): calibration, Tone/Recovered,
+  earbuds out → "put both earbuds in", back in → brief 0.2 s walking hold, recalibration, Tone/Recovered,
+  Reanchored −3.34°.
+- Released v0.4.4 (CI and Release workflow green; x86_64 and aarch64 tarballs).
