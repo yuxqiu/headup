@@ -13,8 +13,8 @@ fn phone() -> Address {
     "12:34:56:78:9A:BC".parse().unwrap()
 }
 
-fn link(now: Instant) -> Link {
-    let mut link = Link::new(pc(), now);
+fn link() -> Link {
+    let mut link = Link::new(pc());
     link.take_outbox();
     link
 }
@@ -79,7 +79,7 @@ fn reading(link: &mut Link, seq: u32, raw: Quat) -> Vec<Event> {
 
 #[test]
 fn starts_by_querying_and_switching_the_stream_on() {
-    let mut link = Link::new(pc(), Instant::now());
+    let mut link = Link::new(pc());
     let sent = link.take_outbox();
     assert_eq!(
         sent,
@@ -95,7 +95,7 @@ fn starts_by_querying_and_switching_the_stream_on() {
 #[test]
 fn rewearing_restarts_the_stream() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     assert_eq!(events(&mut link), [Event::Worn(true)]);
@@ -112,7 +112,7 @@ fn rewearing_restarts_the_stream() {
 #[test]
 fn rewearing_starts_a_new_frame() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     for seq in 1..=4 {
         reading(&mut link, seq, turned());
@@ -130,7 +130,7 @@ fn rewearing_starts_a_new_frame() {
 #[test]
 fn rewearing_during_a_hold_ends_it_and_starts_a_new_frame() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     assert_eq!(
         reading(&mut link, 1, turned()),
@@ -153,7 +153,7 @@ fn rewearing_during_a_hold_ends_it_and_starts_a_new_frame() {
 #[test]
 fn this_computer_starting_audio_rearms_the_stream() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &audio(phone(), 0x09)).unwrap();
     assert_eq!(events(&mut link), []);
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
@@ -177,7 +177,7 @@ fn this_computer_starting_audio_rearms_the_stream() {
 #[test]
 fn refused_stream_switch_waits_for_this_computer_to_stream() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &reply(2)).unwrap();
     assert_eq!(
         events(&mut link),
@@ -202,7 +202,7 @@ fn refused_stream_switch_waits_for_this_computer_to_stream() {
 #[test]
 fn audio_resuming_after_an_accepted_switch_keeps_the_stream() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
@@ -225,7 +225,7 @@ fn audio_resuming_after_an_accepted_switch_keeps_the_stream() {
 #[test]
 fn audio_starting_before_any_reply_switches_on_again() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(link.take_outbox(), [stream_switch(true)]);
 }
@@ -236,7 +236,7 @@ fn audio_starting_before_any_reply_switches_on_again() {
 #[test]
 fn switch_is_resent_after_another_device_streamed() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
@@ -251,7 +251,7 @@ fn switch_is_resent_after_another_device_streamed() {
 #[test]
 fn rewearing_after_a_refusal_makes_tracking_available_again() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     link.on_bytes(now, &reply(1)).unwrap();
@@ -283,7 +283,7 @@ fn rewearing_after_a_refusal_makes_tracking_available_again() {
 #[test]
 fn a_hold_makes_tracking_unavailable_until_the_reading_moves() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(events(&mut link), [Event::Available]);
     assert_eq!(reading(&mut link, 1, turned()), []);
@@ -298,7 +298,7 @@ fn a_hold_makes_tracking_unavailable_until_the_reading_moves() {
 // available, and a hold's end makes it available again.
 #[test]
 fn readings_show_this_computer_streams_when_no_audio_push_came() {
-    let mut link = link(Instant::now());
+    let mut link = link();
     assert_eq!(reading(&mut link, 1, turned()), [Event::Available]);
     let walking = Event::Unavailable { reason: WALKING };
     assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
@@ -310,7 +310,7 @@ fn readings_show_this_computer_streams_when_no_audio_push_came() {
 #[test]
 fn readings_while_unavailable_leave_no_frame() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     reading(&mut link, 1, turned());
     link.on_bytes(now, &audio(pc(), 0x03)).unwrap(); // paused: unavailable
@@ -331,7 +331,7 @@ fn readings_while_unavailable_leave_no_frame() {
 #[test]
 fn tracking_resuming_starts_a_new_frame() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     let orientations = |link: &mut Link, seq, raw| -> Vec<Quat> {
         link.on_bytes(now, &sample_frame(seq, raw).encode())
             .unwrap();
@@ -359,7 +359,7 @@ fn tracking_resuming_starts_a_new_frame() {
 #[test]
 fn malformed_frames_are_errors() {
     let now = Instant::now();
-    let mut link = link(now);
+    let mut link = link();
     let short = Frame::new(43, 54, &[(5, &[1, 2])]).encode();
     assert!(link.on_bytes(now, &short).is_err());
 }
@@ -368,7 +368,7 @@ fn malformed_frames_are_errors() {
 #[test]
 fn poses_carry_their_read_time() {
     let start = Instant::now();
-    let mut link = link(start);
+    let mut link = link();
     let at = |i: u32| start + Duration::from_millis(20 * u64::from(i));
     for seq in 1..=80 {
         let raw = Quat::IDENTITY;

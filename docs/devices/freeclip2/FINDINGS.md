@@ -262,10 +262,10 @@ Evidence: `data/reclaim_test.log` (controlled) and session 4's raw log (`--raw-l
   (probe_03). The vendor app never sends 43/88, so no app code confirms this.
 - Firmware reading (2026-11-12) refutes both hypotheses for the recovery **[code]**: none of the probe's queries
   can reach the stream's start/stop logic. 43/90 only records the host; the 43/180 handler reaches none of the
-  start/stop functions; and `43/44:1=` (an empty value) is dropped: the TLV parser stores no value pointer for a
-  zero-length value (`0x7034a152`), the getter then returns null (`0x7034a44a`), and the 43/44 setter
-  (`0x70395996`, "ambient sound and motion state") takes its error path. So tracking came back at the same time as
-  the probe, not because of it.
+  start/stop functions; and the host 43/44 handler (`0x703a2cee`) ignores the request and only replies with a
+  stored byte (see "43/44 does not report walking"). So tracking came back at the same time as the probe, not
+  because of it. (Corrected 2026-11-14: `0x70395996` is the touch-pad switch setter in a separate internal table,
+  not the 43/44 handler.)
 - With `2=00`, this computer was the current device and `enable` was set, so a sensor-side condition failed (status
   flags from messages 0x841a/event 10, the mode byte from 0x8402, or the sensor pipeline not delivering samples).
   None of these is visible over MBB, so the cause cannot be determined from the recordings. headup now logs every
@@ -676,7 +676,7 @@ The earbuds run 7.0.0.526 (MBB 1/7 TLV 7, hardware `HL1SAKM_Ver.A`), the version
 | 43/89: TLV1 = u32 LE seq, TLV2 = 4 × f32 LE `w,x,y,z` (`protocol.rs`) | sender `0x7039bb80` copies 4 + 16 bytes; the loop writes identity as `1.0` then three zeros | grounded (code + recordings) |
 | 43/88 TLV1 = 1/0 switches the stream; reply TLV2 0/2 (/1) (`protocol.rs`, `link.rs`) | handler `0x7039c018`; `2=02` → `2=00` in live2/live3 and `data/refusal_live*.jsonl` | grounded (code + live); value 1 = earbud-to-earbud link down (code: message 0x8406); never seen live |
 | A refused 43/88 leaves the stream off until this computer streams (`link.rs` refusal) | handler leaves `enable` unchanged on 2; `data/refusal_live*.jsonl` | grounded (code + live) |
-| Samples go only to the earbuds' current device (`tracking_hint`, `Available`) | `0x7039b9d0` addresses frames to the current device; reclaim test; refusal test | grounded (code + live) |
+| Samples go only to the earbuds' current device (`Available`, `Unavailable { reason }`) | `0x7039b9d0` addresses frames to the current device; reclaim test; refusal test | grounded (code + live) |
 | 43/88 "on" restarts the stream: sequence from 1 (`rebuild.rs` new stream) | grounding test 9.9 s, 63 s, 104 s | grounded (live) |
 | A stream can also restart with a lower, non-1 sequence (`rebuild.rs`) | grounding test 94.7 s (901 → 437) after an audio gap; stream_restart fixture | grounded (live) |
 | 43/37: TLV1 left, TLV2 right worn; TLV3/TLV4 = left/right in the case (`protocol.rs` reads 1–2) | grounding test 37 s: `4=01` with the right earbud in its case | grounded (live); TLV3/4 meaning new |
@@ -934,3 +934,19 @@ identity sample as ground truth for each glide's end.
   released the first one while the user paused in another room (tracking resumed 8.5 s later, then held again).
   After the walk the user's look-downs read +46° raw, as at the desk, so the earbuds' own frame is fine; the
   readings are relative to the head pose where the hold ended.
+
+## 43/44 does not report walking (firmware 7.0.0.526, read 2026-11-14) [code]
+
+Checked as a way to learn "walking" or "stopped walking" without the hold. It cannot.
+- The host command table (`0x7030e0d4`, 77 entries, registered at `0x70393104`) maps 43/44 to `0x703a2cee`. That
+  handler ignores the request and replies `2b 2c 01 01 <state[215]>` (43/44, TLV 1 = the byte at offset 215 of the
+  state block returned by `0x7036ca0e`). The 11 entries after the table form a separate internal table (searched
+  by `0x703955d4` for internal message 197); its 44 is `0x70395996`, the touch-pad switch setter. `anchors.py`'s
+  reads the registered length (`li a1,77` at `0x7039310e`), so its report lists only the 77.
+- `state[215]` is stored in one place, `0x70386276` (in `0x7038626e`, which then sends a 43/44 report through
+  `0x703861d8`). `0x7038626e`'s address is taken once, as a callback slot in a struct passed to a Bluetooth-service
+  ioctl (`0x70385142`); the subagent's reading of that ioctl found no caller of the slot `[code, not re-checked]`.
+  So the value stays 0, as the probe showed (`1=00`). Its one reader maps ANC mode 4 or 5 by it
+  (`0x70385d86`): an adaptive-ANC scene code `[inferred]`, not the head-tracking activity detector.
+- The walking detector (`0x600fab40`, flag `0x6015ba10`) is read only by the re-centre stage; no MBB command
+  exposes it. Walking is visible only through the 43/89 stream (the hold: identity, then a pause).

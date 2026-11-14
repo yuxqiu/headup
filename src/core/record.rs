@@ -69,9 +69,9 @@ pub enum LogEvent {
     CalibrationFailed,
     /// The device can deliver head tracking again.
     TrackingAvailable,
-    /// The device can no longer deliver head tracking. The posture reference is dropped, and
-    /// headup recalibrates when tracking resumes.
-    TrackingUnavailable,
+    /// The device can no longer deliver head tracking, for the tracker's `reason`. The posture
+    /// reference is dropped, and headup recalibrates when tracking resumes.
+    TrackingUnavailable { reason: &'static str },
     /// After a recovery the head settled above upright, so upright was re-anchored to this pitch
     /// (relative to calibration).
     Reanchored { upright: f64 },
@@ -79,22 +79,41 @@ pub enum LogEvent {
     Cue(Cue),
 }
 
+/// A log line's fields for a [`LogEvent`]: its name, and the value it carries if any.
+#[derive(Serialize)]
+struct EventFields {
+    event: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    upright: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    reason: Option<&'static str>,
+}
+
 impl LogEvent {
-    /// The event's name and, for `Reanchored`, the new upright.
-    fn parts(self) -> (&'static str, Option<f64>) {
-        let name = match self {
-            LogEvent::Paused => "Paused",
-            LogEvent::Resumed => "Resumed",
-            LogEvent::CalibrationFailed => "CalibrationFailed",
-            LogEvent::TrackingAvailable => "TrackingAvailable",
-            LogEvent::TrackingUnavailable => "TrackingUnavailable",
-            LogEvent::Reanchored { upright } => return ("Reanchored", Some(upright)),
-            LogEvent::Cue(Cue::Tone) => "Tone",
-            LogEvent::Cue(Cue::Speak) => "Speak",
-            LogEvent::Cue(Cue::Notify) => "Notify",
-            LogEvent::Cue(Cue::Recovered) => "Recovered",
+    fn fields(self) -> EventFields {
+        let named = |event| EventFields {
+            event,
+            upright: None,
+            reason: None,
         };
-        (name, None)
+        match self {
+            LogEvent::Paused => named("Paused"),
+            LogEvent::Resumed => named("Resumed"),
+            LogEvent::CalibrationFailed => named("CalibrationFailed"),
+            LogEvent::TrackingAvailable => named("TrackingAvailable"),
+            LogEvent::TrackingUnavailable { reason } => EventFields {
+                reason: Some(reason),
+                ..named("TrackingUnavailable")
+            },
+            LogEvent::Reanchored { upright } => EventFields {
+                upright: Some(round(upright, 2)),
+                ..named("Reanchored")
+            },
+            LogEvent::Cue(Cue::Tone) => named("Tone"),
+            LogEvent::Cue(Cue::Speak) => named("Speak"),
+            LogEvent::Cue(Cue::Notify) => named("Notify"),
+            LogEvent::Cue(Cue::Recovered) => named("Recovered"),
+        }
     }
 }
 
@@ -136,20 +155,13 @@ impl Recorder {
 
     /// A session event that happens now. It is shown and logged.
     pub fn event(&mut self, event: LogEvent) -> Result<()> {
-        #[derive(Serialize)]
-        struct Fields {
-            event: &'static str,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            upright: Option<f64>,
-        }
-        let (name, upright) = event.parts();
-        let shown = upright.map_or(String::new(), |u| format!(" (upright {u:.1}°)"));
-        self.note(&format!("{name}{shown}"));
+        let fields = event.fields();
+        // The reason is shown in the session's own note, so the console line names the event only.
+        let shown = fields
+            .upright
+            .map_or(String::new(), |u| format!(" (upright {u:.1}°)"));
+        self.note(&format!("{}{shown}", fields.event));
         if let Some(f) = self.log.as_mut() {
-            let fields = Fields {
-                event: name,
-                upright: upright.map(|u| round(u, 2)),
-            };
             write_line(f, unix_now(), &fields)?;
         }
         Ok(())
@@ -253,6 +265,10 @@ mod tests {
             rec.event(LogEvent::Cue(Cue::Tone)).unwrap();
             rec.event(LogEvent::Reanchored { upright: -3.6049 })
                 .unwrap();
+            rec.event(LogEvent::TrackingUnavailable {
+                reason: "play audio",
+            })
+            .unwrap();
         });
         assert_eq!(
             lines,
@@ -260,6 +276,7 @@ mod tests {
                 json!({"pitch": 25.5, "roll": 1.0, "yaw": -3.0}),
                 json!({"event": "Tone"}),
                 json!({"event": "Reanchored", "upright": -3.6}),
+                json!({"event": "TrackingUnavailable", "reason": "play audio"}),
             ]
         );
     }

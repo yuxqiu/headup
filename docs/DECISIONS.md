@@ -932,9 +932,8 @@
 - **What.**
   - The session's `Tracking` has a fourth state, `Resuming`: `Available` after `Unavailable`. Poses flow, but the
     head is not judged until it holds still (`calibration::Stillness`, 2 s within 2°); then the state becomes
-    `Available`. `TrackerStatus` makes the transitions, so `wait_for_tracking` just waits for `Available`. Startup passes
-    through `Resuming` only when the tracker reported `Unavailable` first (e.g. audio not playing at connect), and
-    then the first prompt also waits for a still head; harmless. Replaces the `resuming` flag and `if` in
+    `Available`. `TrackerStatus` makes the transitions, so `wait_for_tracking` just waits for `Available`. Startup never passes
+    through `Resuming` (since 2026-11-14, `Tracking::NotStarted`; see "The backend words every 'no tracking'"). Replaces the `resuming` flag and `if` in
     `wait_for_tracking` (user: the resume state was missing and blended in as `if`s).
   - `Event::Available(bool)` became `Event::Available` and `Event::Unavailable { reason }`. `reason` is the
     backend's own sentence, shown as is in "head tracking is unavailable (…)" and the "waiting for head tracking"
@@ -1102,3 +1101,62 @@
   frame stale. In the recordings every pause during a walk began with a detected hold (8 of 8: turn_test, walk2,
   walk3, sitstill).
 - **Not done.** Tracker status as one level event instead of edges: worth it only with a second backend.
+
+## 2026-11-14: The rebuilder carries `Instant` (user)
+- **What.** `Rebuilder::push` takes each sample's `Instant` and `Rebuilt::Pose` returns it; the rebuilder never
+  computes with times, it only carries them to the pose. `PoseFrame` is now just `Option<Rebuilder>`: its `epoch`,
+  both conversions, the "time went backwards" check and the `FrameOut` mapping are gone, and `Link::new` no longer
+  takes a start time. `Instant` stays where parts started at different moments must agree on time (the tracker
+  interface, `Event::Pose { at }`), where real time is touched (the session's clock and waits, wall-clock log
+  times, audio), and in the session's `Pose` for logging; logic inside a component uses `Duration` since its own
+  start (session time).
+- **Why.** User asked why `Instant` was needed where it was; the epoch existed only to convert to the rebuilder's
+  durations and back (also raised in the thermos review).
+- A refactor: tests unchanged except for time setup (the rebuilder tests add recording seconds to a start
+  `Instant`; the link test helper takes no time).
+
+## 2026-11-14: When to use `Instant` and when `Duration` (user)
+- **What.** AGENTS.md "`Instant` or `Duration`": `Instant` for times that cross between parts started at different
+  moments, for the clock and waits, for wall-clock logs, and where a part only carries a time; `Duration` for
+  spans and for one part's logic, from its own start; convert at most once, at a boundary, never back.
+- **Audit** (production code, every `duration_since`, `elapsed`, `start +` and float-seconds use): one conversion
+  each, at a boundary (session entry `Timeline::deliver`/`now`, wall-clock logging, the audio library's playback
+  clock); float seconds only inside formulas (smoothing, samples to length). The two round trips found earlier
+  (the session's pose time for logging, the rebuilder's epoch) were removed on 2026-11-14.
+
+## 2026-11-14: The backend words every "no tracking"; the reason is logged (user)
+- **What.** `TrackerTraits::tracking_hint` is removed. A backend says why tracking is unavailable only through
+  `Event::Unavailable { reason }`, including at startup: FreeClip 2 reports `NOT_STREAMING` as soon as the earbuds
+  refuse the stream switch (this computer not streaming), as the 2026-11-13 failed live run showed. Until a tracker
+  has given a reason, the session's "waiting for head tracking from the earbuds…" note carries none. The session
+  log's `TrackingUnavailable` line now carries the reason (`{"event":"TrackingUnavailable","reason":"…"}`); the
+  console event line names the event only, because the session's own note already shows the reason.
+- **Why.** User: two ways to word "no tracking" (a startup hint in the traits, a reason in the event) for one
+  text; and the reason was the one thing about an interruption the log did not say.
+- **Accepted exception to "hold back only noise, briefly":** after a gap, the rebuilder holds a real sample until
+  the next sample rules out a glide through it; if the stream pauses right then, it stays held. Measured on every
+  recording: at most 49 ms, because after a pause the stream resumes on movement and more samples follow at once.
+  Stated in `rebuild.rs`'s module doc.
+- **Not done:** sending tracker status as one level event instead of changes (the backend's `reported: View` and
+  the session's `TrackerStatus` both keep a copy); worth it only with a second backend.
+- **Startup never resumes** (user: "I thought we did not go through resume during startup?"). An `Unavailable`
+  before tracking ever started now puts the session in `Tracking::NotStarted(reason)`, not `Unavailable`; its
+  `Available` goes straight to `Available`, with no wait for a still head: there is no posture yet that the user
+  could have moved away from. Poses still do not end it. `Resuming` follows only a real interruption. Corrects
+  "Startup passes through `Resuming` only when the tracker reported `Unavailable` first" in "Resuming is a tracking
+  state". Test `startup_unavailability_needs_no_settling` (prompt at 15 s instead of 10 s with the old rule).
+- `Tracking::waits_for_device` and `Tracking::reason` answer the two questions the "waiting for head tracking"
+  note needs (user: an `Option<Option<&str>>` was unreadable).
+
+## 2026-11-14: 43/44 checked as a walking signal; the firmware tool reads the host table's registered length
+- **43/44 does not report walking** (FINDINGS "43/44 does not report walking"): its host handler only replies with
+  a byte that nothing in 7.0.0.526 writes (its one writer is an uncalled callback), and it is an adaptive-ANC
+  scene code, not the head-tracking walking detector. No MBB command exposes that detector. So the hold in the
+  43/89 stream stays the only walking signal, and the sit-still-after-a-walk limit stands. The live probe was not
+  run: the firmware settles it.
+- **`anchors.py`**: the host dispatch table runs straight into an internal one, so a run of (id, pointer) pairs
+  read 88 entries and gave 43/37 a second "handler" from the internal table. It now takes the length the firmware
+  registers the table with (an immediate `a1` after loading its address) and fails if none is found. Rerun on
+  7.0.0.526: the only changes are "77 entries (registered), followed directly by 11 entries of another table" and
+  43/37's single handler; every check still passes. Baseline `anchors-526.txt` updated. FINDINGS' earlier note
+  naming `0x70395996` the 43/44 setter is corrected (it is the touch-pad switch setter in the internal table).

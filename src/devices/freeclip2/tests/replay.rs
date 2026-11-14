@@ -76,7 +76,7 @@ impl Replay {
     /// Replay `rows`, with the recording's time zero at `start`.
     pub fn new(rows: &[Row], start: Instant) -> Self {
         let adapter = "00:00:00:00:00:01".parse().unwrap();
-        let mut link = Link::new(adapter, start);
+        let mut link = Link::new(adapter);
         link.take_outbox();
         let rows = rows
             .iter()

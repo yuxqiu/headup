@@ -74,6 +74,17 @@ def tables(body, base, lo_id, hi_id, min_len):
     return found
 
 
+def registered_length(rows, at):
+    """The entry count the firmware registers the table at `at` with: a0 = its address, then an immediate a1
+    before the call. A dispatch table can run straight into another, so the run of pairs alone does not say."""
+    for i, r in enumerate(rows):
+        if r.ref == at and r.args.startswith("a0,"):
+            for x in rows[i + 1:i + 1 + SEND_WINDOW]:
+                if x.imm("a1") is not None:
+                    return x.imm("a1")
+    return None
+
+
 def reply_codes(rows, fn, handler, reporters):
     """Immediates loaded into a0 right before each call from `handler` to a 43/88 report function."""
     codes = set()
@@ -162,10 +173,15 @@ def main(out_dir):
     if len(host) != 1:
         fail(f"expected one host service-43 dispatch table (holding 43/88 and 43/90), found {len(host)}")
     at, entries = host[0]
+    registered = registered_length(rows, at)
+    if registered is None or registered > len(entries):
+        fail(f"host table at {at:#x}: no registration with a length up to {len(entries)} found")
+    entries, rest = entries[:registered], entries[registered:]
     handlers = collections.defaultdict(list)
     for i, h in entries:
         handlers[i].append(h)
-    print(f"host 43/x dispatch table at {at:#x}: {len(entries)} entries")
+    print(f"host 43/x dispatch table at {at:#x}: {len(entries)} entries (registered)"
+          + (f", followed directly by {len(rest)} entries of another table" if rest else ""))
     for cmd, (what, _) in WATCH.items():
         print(f"  43/{cmd} ({what}) handler: {', '.join(f'{h:#x}' for h in handlers.get(cmd, [])) or 'none'}")
     checks["every watched command but 43/89 has a host handler, 43/89 none"] = all(

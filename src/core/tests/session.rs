@@ -124,7 +124,6 @@ impl HeadTracker for FakeTracker {
     fn traits(&self) -> TrackerTraits {
         TrackerTraits {
             pose_drifts_up: self.drifts,
-            ..TrackerTraits::default()
         }
     }
 }
@@ -432,4 +431,24 @@ async fn monitoring_judges_only_after_taking_every_queued_pose() {
     };
     let run = simulate(script, sim).await;
     assert_eq!(run.played(), [Prompt(SitUpright), Prompt(Calibrated)]);
+}
+
+// At startup the tracker says tracking is unavailable (a device precondition), then available.
+// Tracking never started, so no posture can be stale: "sit upright" comes at once, without
+// waiting for a still head, even though the head is moving.
+#[tokio::test(start_paused = true)]
+async fn startup_unavailability_needs_no_settling() {
+    let script = vec![
+        unavailable(),
+        Quiet(secs(10.0)),
+        Ev(Event::Available),
+        Wobble(0.0, 20.0, secs(3.0)),
+        Poses(0.0, secs(8.0)),
+    ];
+    let run = simulate(script, Sim::default()).await;
+    let prompt = run.first(Prompt(SitUpright));
+    assert!(
+        (secs(10.0)..secs(10.3)).contains(&prompt),
+        "prompt at {prompt:?}"
+    );
 }

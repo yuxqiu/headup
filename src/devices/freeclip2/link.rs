@@ -27,9 +27,9 @@ pub struct Link {
 }
 
 impl Link {
-    /// A link to earbuds just connected at `now`. It starts by asking for the wear state and
-    /// switching the pose stream on.
-    pub fn new(adapter: Address, now: Instant) -> Self {
+    /// A link to earbuds just connected. It starts by asking for the wear state and switching the
+    /// pose stream on.
+    pub fn new(adapter: Address) -> Self {
         let mut out = Outputs::default();
         for f in [wear_query(), capability_query(), stream_switch(true)] {
             out.send(f);
@@ -38,7 +38,7 @@ impl Link {
             decoder: Decoder::default(),
             adapter,
             earbuds: Earbuds::default(),
-            frame: PoseFrame::new(now),
+            frame: PoseFrame(None),
             reported: View::default(),
             out,
         }
@@ -119,8 +119,10 @@ impl Link {
         }
         for out in self.frame.push(now, seq, raw) {
             match out {
-                FrameOut::Pose(pose) => self.out.event(pose),
-                FrameOut::HoldStarted { seq } => {
+                Rebuilt::Pose { at, orientation } => {
+                    self.out.event(Event::Pose { at, orientation })
+                }
+                Rebuilt::HoldStarted { seq } => {
                     self.out.log(LogRecord::Hold(Hold { hold: seq }));
                     self.earbuds.on_hold_started();
                 }
@@ -150,52 +152,19 @@ impl Link {
 /// rotate the axes later movements are measured about (a reference off by ~180° reads looking down
 /// as looking up), which recalibrating does not undo. So each stretch gets a new frame, and the
 /// session recalibrates in it.
-struct PoseFrame {
-    /// Time zero for the rebuilder, which works in durations since it.
-    epoch: Instant,
-    rebuilder: Option<Rebuilder>,
-}
-
-/// What a reading gives, in the link's terms.
-enum FrameOut {
-    /// An `Event::Pose`.
-    Pose(Event),
-    /// See [`Rebuilt::HoldStarted`].
-    HoldStarted { seq: u32 },
-}
+struct PoseFrame(Option<Rebuilder>);
 
 impl PoseFrame {
-    fn new(epoch: Instant) -> Self {
-        PoseFrame {
-            epoch,
-            rebuilder: None,
-        }
-    }
-
     /// Rebuild a reading received at `now`, starting a frame if there is none.
-    fn push(&mut self, now: Instant, seq: u32, raw: Quat) -> Vec<FrameOut> {
-        let t = now
-            .checked_duration_since(self.epoch)
-            .expect("time went backwards past the link's start");
-        let rebuilt = self
-            .rebuilder
+    fn push(&mut self, now: Instant, seq: u32, raw: Quat) -> Vec<Rebuilt> {
+        self.0
             .get_or_insert_with(Rebuilder::default)
-            .push(t, seq, raw);
-        rebuilt
-            .into_iter()
-            .map(|out| match out {
-                Rebuilt::Pose { at, orientation } => FrameOut::Pose(Event::Pose {
-                    at: self.epoch + at,
-                    orientation,
-                }),
-                Rebuilt::HoldStarted { seq } => FrameOut::HoldStarted { seq },
-            })
-            .collect()
+            .push(now, seq, raw)
     }
 
     /// End the frame: the next reading starts a new one.
     fn end(&mut self) {
-        self.rebuilder = None;
+        self.0 = None;
     }
 }
 
@@ -281,7 +250,7 @@ enum Availability {
 
 /// Why head tracking is unavailable, for the console: this computer is not the earbuds' current
 /// device, or the switch was refused.
-pub(super) const NOT_STREAMING: &str =
+const NOT_STREAMING: &str =
     "play audio on this computer; FreeClip 2 only tracks your head while it is playing";
 /// Why head tracking is unavailable, for the console: the earbuds hold (see [`Earbuds::holding`]).
 const WALKING: &str = "FreeClip 2 does not track your head while you walk around; \

@@ -65,9 +65,6 @@ pub trait HeadTracker {
 /// adding a field leaves existing backends unchanged.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TrackerTraits {
-    /// What the user can do when no head tracking arrives at startup, before the tracker has said
-    /// anything, e.g. a device precondition. Later, `Event::Unavailable` carries its own reason.
-    pub tracking_hint: Option<&'static str>,
     /// The reported orientation accumulates error towards "looking up" over a session, so the same
     /// pose reads higher later. The session then re-anchors upright after each recovery. Drift
     /// the other way is not corrected, because that would need a different rule.

@@ -76,6 +76,13 @@ Run everything inside `nix develop`.
 - **Two kinds of time.** Timing logic uses the monotonic `tokio::time::Instant`, so tests can run on a paused
   clock, and spans of it as `Duration` (exact integer nanoseconds), never `f64` seconds: a float round trip can land
   a nanosecond early and make a timer loop spin. Convert to seconds only inside formulas (e.g. smoothing). Log lines use wall-clock Unix seconds (`t`). Console lines carry no time.
+- **`Instant` or `Duration`.** An `Instant` is a point on the shared clock: use it for a time that crosses between
+  parts that started at different moments (`Event::Pose { at }`), for reading the clock and waiting (`now`,
+  `sleep_until`, deadlines), for wall-clock log times, and where a part only carries a time without computing with
+  it (the rebuilder). A `Duration` is a span: use it for constants and intervals, and for the logic of one part that
+  computes with time, measured from that part's own start (session time; `Calibration`, `Stillness` and `Detector`
+  take session time from the session). Convert at most once, at the boundary, and never back: a round trip means
+  the conversion is in the wrong place.
 - **Poses carry their measurement time** (`Event::Pose { at, .. }`); smoothing and slouch timers run on it, never on
   when the session handles the pose. A tracker with nothing left to deliver means a head that has not moved: the
   session takes every waiting event before it judges posture up to now. A backend delivers each pose as soon as it

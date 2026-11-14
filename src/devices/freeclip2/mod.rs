@@ -46,8 +46,6 @@ pub struct FreeClip2 {
 
 impl FreeClip2 {
     pub const TRAITS: TrackerTraits = TrackerTraits {
-        // Head tracking is only sent while this computer streams audio to the earbuds (FINDINGS).
-        tracking_hint: Some(link::NOT_STREAMING),
         // Each re-centre lands ~10° off, always towards "looking up", so the rebuilt pose drifts
         // over a session (FINDINGS "Ground truth").
         pose_drifts_up: true,
@@ -60,7 +58,7 @@ impl FreeClip2 {
     {
         let (events_tx, events) = mpsc::unbounded_channel();
         let (stop, stop_rx) = oneshot::channel();
-        let link = Link::new(adapter, Instant::now());
+        let link = Link::new(adapter);
         tokio::spawn(async move {
             if let Err(e) = serve(stream, link, log, &events_tx, stop_rx).await {
                 // Fails only if the tracker is gone, and then nobody is left to tell.

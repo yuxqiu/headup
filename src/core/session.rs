@@ -99,15 +99,37 @@ impl Timeline {
 enum Tracking {
     /// Nothing heard yet: silence may mean tracking has not started, not a still head.
     Starting,
+    /// `Unavailable` before tracking ever started, with the tracker's reason. Poses do not end it;
+    /// `Available` does, at once: there is no posture yet that the user could have moved away from.
+    NotStarted(&'static str),
     /// `Unavailable`, with the tracker's reason: the head may move unseen. Poses may still arrive:
     /// data measured before, or trailing data. They do not end this state. Only `Available` does.
     Unavailable(&'static str),
-    /// `Available` after `Unavailable`. Poses flow, but the user may still be on the move (a
-    /// device can stop tracking while the user walks around), so the head is not judged until it
-    /// holds still ([`Stillness`]).
+    /// `Available` after `Unavailable` (tracking had started). Poses flow, but the user may still
+    /// be on the move (a device can stop tracking while the user walks around), so the head is not
+    /// judged until it holds still ([`Stillness`]).
     Resuming(Stillness),
     /// Poses flow and the head can be judged. Silence means the head is still.
     Available,
+}
+
+impl Tracking {
+    /// Whether the session waits for the device: tracking has not started or is unavailable.
+    /// While resuming, data flows, and only the head must settle.
+    fn waits_for_device(&self) -> bool {
+        match self {
+            Tracking::Starting | Tracking::NotStarted(_) | Tracking::Unavailable(_) => true,
+            Tracking::Resuming(_) | Tracking::Available => false,
+        }
+    }
+
+    /// Why tracking is unavailable, in the tracker's words, once it has said.
+    fn reason(&self) -> Option<&'static str> {
+        match self {
+            Tracking::NotStarted(reason) | Tracking::Unavailable(reason) => Some(reason),
+            Tracking::Starting | Tracking::Resuming(_) | Tracking::Available => None,
+        }
+    }
 }
 
 /// What the tracker has reported about itself, and whether the session can judge the head yet.
@@ -135,7 +157,7 @@ impl TrackerStatus {
         match &mut self.tracking {
             Tracking::Starting => self.tracking = Tracking::Available,
             Tracking::Resuming(still) => still.pose(measured, q),
-            Tracking::Unavailable(_) | Tracking::Available => {}
+            Tracking::NotStarted(_) | Tracking::Unavailable(_) | Tracking::Available => {}
         }
     }
 
@@ -143,26 +165,21 @@ impl TrackerStatus {
     fn available(&mut self, now: Duration) {
         match self.tracking {
             Tracking::Unavailable(_) => self.tracking = Tracking::Resuming(Stillness::new(now)),
-            Tracking::Starting => self.tracking = Tracking::Available,
+            Tracking::Starting | Tracking::NotStarted(_) => self.tracking = Tracking::Available,
             Tracking::Resuming(_) | Tracking::Available => {}
-        }
-    }
-
-    /// Whether the session is waiting for the device, with what the user can do if anything is
-    /// known: at startup the tracker's hint, while unavailable its reason. `None` while resuming,
-    /// when data flows and only the head must settle.
-    fn waiting_for(&self, traits: TrackerTraits) -> Option<Option<&'static str>> {
-        match self.tracking {
-            Tracking::Starting => Some(traits.tracking_hint),
-            Tracking::Unavailable(reason) => Some(Some(reason)),
-            Tracking::Resuming(_) | Tracking::Available => None,
         }
     }
 
     /// `Unavailable` arrived, for `reason`. Returns `true` if the head was being judged and no
     /// longer can be.
     fn unavailable(&mut self, reason: &'static str) -> bool {
-        let was = std::mem::replace(&mut self.tracking, Tracking::Unavailable(reason));
+        let next = match self.tracking {
+            Tracking::Starting | Tracking::NotStarted(_) => Tracking::NotStarted(reason),
+            Tracking::Unavailable(_) | Tracking::Resuming(_) | Tracking::Available => {
+                Tracking::Unavailable(reason)
+            }
+        };
+        let was = std::mem::replace(&mut self.tracking, next);
         matches!(was, Tracking::Available)
     }
 
@@ -266,7 +283,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 self.status.available(self.time.now());
             }
             Event::Unavailable { reason } => {
-                self.rec.event(LogEvent::TrackingUnavailable)?;
+                self.rec.event(LogEvent::TrackingUnavailable { reason })?;
                 if self.status.unavailable(reason) {
                     return Err(Interrupt::Unavailable(reason));
                 }
@@ -298,9 +315,9 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     }
 
     /// Wait until tracking is available (see [`Tracking`]). Tracking may not start until a device
-    /// precondition is met (see `TrackerTraits`). That can take a while, so this waits without a
-    /// deadline. A note says so, with what the user can do, once the wait for the device gets
-    /// long.
+    /// precondition is met (the tracker's `Unavailable` reason says which). That can take a while,
+    /// so this waits without a deadline. A note says so, with that reason once the tracker has
+    /// given one, once the wait for the device gets long.
     async fn wait_for_tracking(&mut self) -> Flow<()> {
         let start = self.now();
         let mut noted = false;
@@ -309,15 +326,15 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             if matches!(self.status.tracking, Tracking::Available) {
                 return Ok(());
             }
-            if !noted && self.now() - start >= TRACKING_WAIT_NOTE {
-                // While resuming, data flows: the session only waits for a still head.
-                if let Some(hint) = self.status.waiting_for(self.tracker.traits()) {
-                    let hint = hint.map_or(String::new(), |h| format!(" ({h})"));
-                    self.rec.note(&format!(
-                        "waiting for head tracking from the earbuds{hint}…"
-                    ));
-                    noted = true;
-                }
+            let tracking = &self.status.tracking;
+            if !noted && tracking.waits_for_device() && self.now() - start >= TRACKING_WAIT_NOTE {
+                let reason = tracking
+                    .reason()
+                    .map_or(String::new(), |r| format!(" ({r})"));
+                self.rec.note(&format!(
+                    "waiting for head tracking from the earbuds{reason}…"
+                ));
+                noted = true;
             }
             self.next(JUDGE_EVERY).await?;
         }

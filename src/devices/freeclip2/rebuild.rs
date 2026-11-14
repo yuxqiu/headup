@@ -33,7 +33,9 @@
 //!   glide matches until its identity sample: during a glide the readings do not depend on the
 //!   head.
 //! - Samples up to the start of the oldest live hypothesis come out at once. Later samples might be
-//!   part of a glide, so they wait for it to be decided, however long the stream is silent.
+//!   part of a glide, so they wait for it to be decided, however long the stream is silent. A real
+//!   sample is held this way only after a gap, until the next sample rules the glide out; the
+//!   recordings show at most 49 ms (DECISIONS "Exact glide model, immediate release").
 //! - When an identity sample ends a glide, the glide's samples are dropped, the rest come out, and
 //!   the reference moves.
 //! - The earbuds sometimes do not send the start of a glide: they resume after a gap, or start a
@@ -46,7 +48,7 @@
 
 use crate::core::quat::Quat;
 use std::collections::VecDeque;
-use std::time::Duration;
+use tokio::time::Instant;
 
 /// Samples from the pose held before a glide to its identity sample.
 const GLIDE_LEN: u32 = 68;
@@ -55,10 +57,10 @@ const GLIDE_LEN: u32 = 68;
 /// 0.00015° (FINDINGS "Re-centre and stillness"). Head movement is much farther off.
 const FIT_TOL_DEG: f64 = 0.001;
 
-/// A raw sample, received at `t` after the caller's time zero.
+/// A raw sample, received at `t`.
 #[derive(Clone, Copy)]
 struct Held {
-    t: Duration,
+    t: Instant,
     seq: u32,
     raw: Quat,
 }
@@ -351,7 +353,7 @@ impl Stitch {
 pub enum Rebuilt {
     /// A released sample: received at `at`, with its absolute orientation (relative to the
     /// rebuilder's first sample).
-    Pose { at: Duration, orientation: Quat },
+    Pose { at: Instant, orientation: Quat },
     /// The identity sample `seq` started a hold (see the module docs). Poses after the hold are
     /// relative to a reference this rebuilder does not know.
     HoldStarted { seq: u32 },
@@ -376,9 +378,9 @@ impl Default for Rebuilder {
 }
 
 impl Rebuilder {
-    /// Feed one raw sample, received at `t` after the caller's time zero. Returns what it releases,
+    /// Feed one raw sample, received at `t`. Returns what it releases,
     /// in order.
-    pub fn push(&mut self, t: Duration, seq: u32, raw: Quat) -> Vec<Rebuilt> {
+    pub fn push(&mut self, t: Instant, seq: u32, raw: Quat) -> Vec<Rebuilt> {
         let steps = self.filter.push(Held { t, seq, raw });
         self.stitch.apply(steps)
     }

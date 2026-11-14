@@ -4,6 +4,7 @@ use super::super::rebuild::{Rebuilder, Rebuilt};
 use crate::core::quat::{Euler, Quat};
 use crate::devices::freeclip2::tests::replay::{Row, phase_at, phases, read_csv, replay, secs};
 use std::time::Duration;
+use tokio::time::Instant;
 
 /// Replays a guided recording and returns the median (pitch, yaw, roll) of the last 60 samples
 /// of each phase, in order.
@@ -187,14 +188,15 @@ fn hides_slow_glide_at_any_sample_rate() {
     assert_eq!(rows.len() - out.len(), 67, "the glide is dropped");
 }
 
-/// Push `(seq, pitch)` samples at 50 Hz from t = 0; returns, for each, how many samples it
+/// Push `(seq, pitch)` samples at 50 Hz from now; returns, for each, how many samples it
 /// released.
 fn push_all(rb: &mut Rebuilder, samples: &[(u32, f64)]) -> Vec<usize> {
+    let start = Instant::now();
     samples
         .iter()
         .enumerate()
         .map(|(i, &(seq, pitch))| {
-            let t = Duration::from_millis(20 * i as u64);
+            let t = start + Duration::from_millis(20 * i as u64);
             rb.push(t, seq, pitch_quat(pitch))
                 .iter()
                 .filter(|out| matches!(out, Rebuilt::Pose { .. }))
@@ -251,9 +253,10 @@ fn cut_short_glide_keeps_the_pose_before_it() {
 
 /// The holds started while pushing `rows`, by the sequence numbers of their first samples.
 fn holds(rows: &[Row]) -> Vec<u32> {
+    let start = Instant::now();
     let mut rb = Rebuilder::default();
     rows.iter()
-        .flat_map(|r| rb.push(r.t, r.seq, r.raw))
+        .flat_map(|r| rb.push(start + r.t, r.seq, r.raw))
         .filter_map(|out| match out {
             Rebuilt::HoldStarted { seq } => Some(seq),
             Rebuilt::Pose { .. } => None,
