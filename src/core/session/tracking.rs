@@ -1,5 +1,6 @@
 //! The session's view of head tracking: whether the head can be judged.
 
+use super::{Flow, Interrupt};
 use crate::core::quat::Quat;
 use crate::core::steady::Stillness;
 use std::time::Duration;
@@ -28,9 +29,13 @@ impl Tracking {
         }
     }
 
-    /// `Unavailable` arrived. Returns `true` if the head was being judged and no longer can be.
-    pub(super) fn unavailable(&mut self) -> bool {
-        matches!(std::mem::replace(self, Tracking::Waiting), Tracking::Live)
+    /// `Unavailable` arrived. If the head was being judged, that ends the cycle:
+    /// [`Interrupt::Unavailable`].
+    pub(super) fn unavailable(&mut self) -> Flow<()> {
+        match std::mem::replace(self, Tracking::Waiting) {
+            Tracking::Live => Err(Interrupt::Unavailable),
+            Tracking::Waiting | Tracking::Settling(_) => Ok(()),
+        }
     }
 
     /// A pose measured at `measured` arrived: while settling, it counts towards stillness.
@@ -40,8 +45,8 @@ impl Tracking {
         }
     }
 
-    /// Advance to `now`: settling ends once the head holds still. Every pose measured before `now`
-    /// must have been passed to [`Tracking::pose_arrived`].
+    /// Advance to `now`: settling ends once the head holds still. Pass the poses that have arrived
+    /// first (tracker contract, "Late poses").
     pub(super) fn settle(&mut self, now: Duration) {
         if let Tracking::Settling(still) = self
             && still.check(now)

@@ -15,45 +15,45 @@ pub use desktop::DesktopPlayer;
 use std::sync::Arc;
 use wav::Pcm;
 
-/// Generates [`Phrase`] and [`PhraseClips`] (one decoded clip per phrase) from `Variant => "clip"`
+/// Generates [`Voice`] and [`VoiceClips`] (one decoded clip per voice) from `Variant => "clip"`
 /// pairs. Each clip is embedded from `assets/voice/<clip>.wav`.
-macro_rules! phrases {
-    ($($phrase:ident => $clip:literal),+ $(,)?) => {
-        /// Fixed spoken prompts. Their text is in tools/gen_voice.sh.
+macro_rules! voices {
+    ($($voice:ident => $clip:literal),+ $(,)?) => {
+        /// The embedded spoken clips. Their text is in tools/gen_voice.sh.
         #[derive(Debug, Clone, Copy, PartialEq)]
-        pub enum Phrase {
-            $($phrase),+
+        enum Voice {
+            $($voice),+
         }
 
-        /// Every phrase's clip, decoded.
-        #[allow(non_snake_case)] // one field per `Phrase` variant, named after it
-        struct PhraseClips {
-            $($phrase: Arc<Pcm>),+
+        /// Every voice clip, decoded.
+        #[allow(non_snake_case)] // one field per `Voice` variant, named after it
+        struct VoiceClips {
+            $($voice: Arc<Pcm>),+
         }
 
-        impl PhraseClips {
+        impl VoiceClips {
             /// Decode every embedded clip.
             fn decode() -> Result<Self> {
-                Ok(PhraseClips {
-                    $($phrase: Arc::new(Phrase::$phrase.pcm()?)),+
+                Ok(VoiceClips {
+                    $($voice: Arc::new(Voice::$voice.pcm()?)),+
                 })
             }
 
-            fn get(&self, p: Phrase) -> Arc<Pcm> {
-                match p {
-                    $(Phrase::$phrase => self.$phrase.clone()),+
+            fn get(&self, v: Voice) -> Arc<Pcm> {
+                match v {
+                    $(Voice::$voice => self.$voice.clone()),+
                 }
             }
         }
 
-        impl Phrase {
+        impl Voice {
             #[cfg(test)]
-            const ALL: &[Phrase] = &[$(Phrase::$phrase),+];
+            const ALL: &[Voice] = &[$(Voice::$voice),+];
 
-            /// WAV bytes of the phrase's clip.
+            /// WAV bytes of the clip.
             fn clip(self) -> &'static [u8] {
                 match self {
-                    $(Phrase::$phrase => {
+                    $(Voice::$voice => {
                         include_bytes!(concat!("../../../assets/voice/", $clip, ".wav"))
                     })+
                 }
@@ -62,7 +62,7 @@ macro_rules! phrases {
     };
 }
 
-phrases! {
+voices! {
     SitUpright => "sit_upright",
     Calibrated => "calibrated",
     Moved => "moved",
@@ -70,9 +70,30 @@ phrases! {
     LiftHead => "lift_head",
 }
 
-impl Phrase {
+impl Voice {
     fn pcm(self) -> Result<Pcm> {
         Pcm::parse(self.clip()).with_context(|| format!("embedded clip for {self:?}"))
+    }
+}
+
+/// A spoken calibration prompt (its text is in tools/gen_voice.sh, under the same clip name). The
+/// spoken reminder is not one: it plays as [`Cue::Speak`].
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Phrase {
+    SitUpright,
+    Calibrated,
+    Moved,
+    MoveHead,
+}
+
+impl Phrase {
+    fn voice(self) -> Voice {
+        match self {
+            Phrase::SitUpright => Voice::SitUpright,
+            Phrase::Calibrated => Voice::Calibrated,
+            Phrase::Moved => Voice::Moved,
+            Phrase::MoveHead => Voice::MoveHead,
+        }
     }
 }
 
@@ -112,7 +133,7 @@ mod tests {
 
     #[test]
     fn embedded_clips_are_mono_16_bit_pcm() {
-        for &p in Phrase::ALL {
+        for &p in Voice::ALL {
             let pcm = p.pcm().unwrap();
             assert!(
                 pcm.samples.len() > pcm.rate as usize / 2,

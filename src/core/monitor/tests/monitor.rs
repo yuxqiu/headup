@@ -112,3 +112,39 @@ fn angles_are_relative_to_the_baseline() {
         }
     );
 }
+
+// Poses delivered in one batch, as after a prompt or a late delivery: a slouch held past the tone,
+// then a sit-up, checked once. The reminder that fell due before the sit-up comes before the tink.
+#[test]
+fn a_batch_keeps_reminders_before_the_change_that_follows_them() {
+    let mut m = Monitor::new(Quat::IDENTITY, traits(false));
+    let mut t = 0.0;
+    while t < 12.0 {
+        m.pose(secs(t), tilt(40.0));
+        t += 0.02;
+    }
+    while t < 14.0 {
+        m.pose(secs(t), tilt(0.0));
+        t += 0.02;
+    }
+    assert_eq!(
+        m.check(secs(t)),
+        [Output::Remind(Cue::Tone), Output::Remind(Cue::Recovered)]
+    );
+}
+
+// Sitting up at the very moment a reminder falls due, before a check at that time ran: the user
+// was still slouching when it fell due, so it plays, then the tink. The outcome does not depend on
+// whether the pose or the check came first.
+#[test]
+fn sitting_up_as_a_reminder_falls_due_plays_it_then_tinks() {
+    let mut m = Monitor::new(Quat::IDENTITY, traits(false));
+    m.pose(secs(0.0), tilt(40.0));
+    assert_eq!(m.check(secs(0.0)), []);
+    let due = m.next_due().unwrap();
+    m.pose(due, tilt(-10.0));
+    assert_eq!(
+        m.check(due),
+        [Output::Remind(Cue::Tone), Output::Remind(Cue::Recovered)]
+    );
+}

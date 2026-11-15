@@ -16,6 +16,7 @@
 //!   tracking is unavailable until the reading moves again (`link`; `rebuild` finds where a hold
 //!   starts).
 
+mod earbuds;
 mod link;
 mod mbb;
 mod protocol;
@@ -25,7 +26,7 @@ use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use crate::devices::bluetooth::{Address, Host};
 use crate::devices::{Backend, Found};
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, bail};
 use link::Link;
 use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -72,6 +73,18 @@ impl FreeClip2 {
     }
 }
 
+/// The earbuds closed the RFCOMM connection.
+#[derive(Debug)]
+pub struct ConnectionClosed;
+
+impl std::fmt::Display for ConnectionClosed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "earbuds closed the connection")
+    }
+}
+
+impl std::error::Error for ConnectionClosed {}
+
 /// Move bytes between `stream` and `link`, pass its events on and write its log, until asked to
 /// stop or the tracker is dropped.
 async fn serve<S>(
@@ -103,7 +116,9 @@ where
             }
         };
         let n = read.context("RFCOMM read")?;
-        ensure!(n > 0, "earbuds closed the connection");
+        if n == 0 {
+            return Err(ConnectionClosed.into());
+        }
         let handled = link.on_bytes(Instant::now(), &buf[..n]);
         // Written before a protocol error is returned, so the log shows the frame that caused it.
         for record in link.take_log() {

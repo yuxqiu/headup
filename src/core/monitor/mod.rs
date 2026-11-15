@@ -11,7 +11,7 @@ mod reminders;
 use super::quat::{Euler, Quat};
 use super::sound::Cue;
 use super::tracker::TrackerTraits;
-use detector::{Config, Detector, PostureChange};
+use detector::{Config, Detector, PostureEvent};
 use reminders::{Reminders, Schedule};
 use std::time::Duration;
 
@@ -38,8 +38,6 @@ pub struct Monitor {
     baseline: Quat,
     detector: Detector,
     reminders: Reminders,
-    /// What happened since the last [`Monitor::check`], in order.
-    outputs: Vec<Output>,
 }
 
 impl Monitor {
@@ -53,7 +51,6 @@ impl Monitor {
             baseline,
             detector: Detector::new(config),
             reminders: Reminders::new(Schedule::default()),
-            outputs: Vec::new(),
         }
     }
 
@@ -62,30 +59,30 @@ impl Monitor {
     /// [`Monitor::check`].
     pub fn pose(&mut self, measured: Duration, orientation: Quat) -> Euler {
         let angles = (self.baseline.conj() * orientation).euler();
-        let update = self.detector.update(measured, angles.pitch);
-        self.reanchored(update.reanchored);
-        match update.posture {
-            Some(PostureChange::SlouchStarted) => self.reminders.slouch_started(measured),
-            Some(PostureChange::Recovered) => {
-                let tink = self.reminders.recovered();
-                self.remind(tink);
-            }
-            None => {}
-        }
-        let due = self.reminders.due(measured);
-        self.remind(due);
+        self.detector.pose(measured, angles.pitch);
         angles
     }
 
-    /// Judge up to `now`, and return what happened since the last check, in order. Every pose
-    /// measured before `now` must have been passed to [`Monitor::pose`]: silence then means the
-    /// head has not moved.
+    /// Judge up to `now`, and return what happened since the last check, in order. Pass the poses
+    /// that have arrived first: silence then means the head has not moved, and a pose arriving
+    /// later is judged from its own time (tracker contract, "Late poses"). Reminders that fell due
+    /// before a posture change come before it.
     pub fn check(&mut self, now: Duration) -> Vec<Output> {
-        let reanchored = self.detector.tick(now);
-        self.reanchored(reanchored);
-        let due = self.reminders.due(now);
-        self.remind(due);
-        std::mem::take(&mut self.outputs)
+        let mut outputs = Vec::new();
+        for (at, event) in self.detector.check(now) {
+            outputs.extend(self.reminders.due(at).into_iter().map(Output::Remind));
+            match event {
+                PostureEvent::SlouchStarted => self.reminders.slouch_started(at),
+                PostureEvent::Recovered => {
+                    outputs.extend(self.reminders.recovered().map(Output::Remind))
+                }
+                PostureEvent::Reanchored { upright } => {
+                    outputs.push(Output::Reanchored { upright })
+                }
+            }
+        }
+        outputs.extend(self.reminders.due(now).into_iter().map(Output::Remind));
+        outputs
     }
 
     /// When the next reminder falls due if the slouch goes on: check by then for it to be on
@@ -99,15 +96,6 @@ impl Monitor {
             pitch: self.detector.smoothed(),
             slouching: self.detector.slouching(),
         }
-    }
-
-    fn remind(&mut self, cues: impl IntoIterator<Item = Cue>) {
-        self.outputs.extend(cues.into_iter().map(Output::Remind));
-    }
-
-    fn reanchored(&mut self, upright: Option<f64>) {
-        self.outputs
-            .extend(upright.map(|upright| Output::Reanchored { upright }));
     }
 }
 

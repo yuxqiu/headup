@@ -3,6 +3,7 @@
 use super::super::protocol::sample_frame;
 use super::*;
 use crate::core::quat::Quat;
+use crate::devices::freeclip2::earbuds::Blocker;
 use std::time::Duration;
 
 fn pc() -> Address {
@@ -258,12 +259,13 @@ fn rewearing_after_a_refusal_makes_tracking_available_again() {
     link.on_bytes(now, &wear(1, 1)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     link.on_bytes(now, &reply(1)).unwrap();
+    // The reason names the refusal's cause, not "play audio": audio is already playing.
     assert_eq!(
         events(&mut link),
         [
             Event::Available,
             Event::Unavailable {
-                reason: Blocker::NotStreaming.reason()
+                reason: Blocker::PeerLinkDown.reason()
             }
         ]
     );

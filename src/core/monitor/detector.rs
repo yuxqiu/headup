@@ -4,11 +4,13 @@
 //! The input is forward pitch in degrees, relative to the calibrated upright pose. Looking down is
 //! positive.
 //!
-//! Trackers may stop sending while the head is still, so silence means the pitch is unchanged. The
-//! caller also calls `tick` as time passes without a sample, so re-anchoring can settle. Smoothing
-//! works on time, not on sample count, so it behaves the same at any sample rate.
+//! The caller passes each sample to [`Detector::pose`], then calls [`Detector::check`] with the
+//! time, which returns what happened since the last check, in order ([`PostureEvent`]). Trackers
+//! may stop sending while the head is still, so silence means the pitch is unchanged: a check with
+//! no new sample still lets re-anchoring settle. Smoothing works on time, not on sample count, so
+//! it behaves the same at any sample rate.
 //!
-//! [`Detector::update`] takes each sample through three steps:
+//! [`Detector::pose`] takes each sample through three steps:
 //!
 //! 1. Smooth it. The smoothed value is relative to calibration.
 //! 2. If the state is `Reanchoring`, check whether the head now holds still. This may re-anchor
@@ -36,21 +38,16 @@ pub struct Config {
     pub reanchor_after_recovery: bool,
 }
 
-/// A change of posture.
+/// Something the detector noticed.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum PostureChange {
+pub enum PostureEvent {
     SlouchStarted,
     /// The slouch ended: the user sat back up.
     Recovered,
-}
-
-/// What one pose sample produced.
-#[derive(Debug, Default, PartialEq)]
-pub struct Update {
-    /// The posture changed at this sample.
-    pub posture: Option<PostureChange>,
     /// Upright was re-anchored to this pitch (relative to calibration).
-    pub reanchored: Option<f64>,
+    Reanchored {
+        upright: f64,
+    },
 }
 
 impl Default for Config {
@@ -154,11 +151,11 @@ impl State {
     }
 
     /// Step on smoothed pitch `s` and unsmoothed pitch `p` (both relative to upright) at time `t`.
-    /// Returns the next state and the posture change, if any.
-    fn step(self, t: Duration, s: f64, p: f64, cfg: &Config) -> (State, Option<PostureChange>) {
+    /// Returns the next state and the posture change it shows, if any.
+    fn step(self, t: Duration, s: f64, p: f64, cfg: &Config) -> (State, Option<PostureEvent>) {
         match self {
             State::Upright | State::Reanchoring(_) if s >= cfg.on_deg => {
-                (State::Slouching, Some(PostureChange::SlouchStarted))
+                (State::Slouching, Some(PostureEvent::SlouchStarted))
             }
             State::Slouching if s < cfg.off_deg => {
                 let next = if cfg.reanchor_after_recovery {
@@ -170,7 +167,7 @@ impl State {
                 } else {
                     State::Upright
                 };
-                (next, Some(PostureChange::Recovered))
+                (next, Some(PostureEvent::Recovered))
             }
             unchanged => (unchanged, None),
         }
@@ -184,6 +181,8 @@ pub struct Detector {
     /// Pitch (relative to calibration) taken as upright: 0 until re-anchored.
     upright: f64,
     state: State,
+    /// What happened since the last [`Detector::check`], in order, each at the time that showed it.
+    events: Vec<(Duration, PostureEvent)>,
 }
 
 impl Detector {
@@ -197,6 +196,7 @@ impl Detector {
             smoother: Smoother::new(cfg.smoothing),
             upright: 0.0,
             state: State::Upright,
+            events: Vec::new(),
         }
     }
 
@@ -209,38 +209,37 @@ impl Detector {
         matches!(self.state, State::Slouching)
     }
 
-    /// New pitch sample at time `t`, relative to the calibrated upright pose. Times must not go
-    /// backwards.
-    pub fn update(&mut self, t: Duration, pitch: f64) -> Update {
+    /// A pitch sample measured at `t`, relative to the calibrated upright pose. Times must not go
+    /// backwards. What it shows comes out of the next [`Detector::check`].
+    pub fn pose(&mut self, t: Duration, pitch: f64) {
         let smoothed = self.smoother.smooth(t, pitch);
-        let reanchored = self.reanchor(t, Some(pitch - self.upright));
-        let posture = self.transition(t, smoothed - self.upright, pitch - self.upright);
-        Update {
-            posture,
-            reanchored,
-        }
-    }
-
-    /// Re-anchor upright if the head has settled by `t` (see [`State::settle`]). Returns the new
-    /// upright.
-    fn reanchor(&mut self, t: Duration, p: Option<f64>) -> Option<f64> {
-        self.state.settle(t, p).map(|p| {
-            self.upright += p;
-            self.upright
-        })
-    }
-
-    /// Advance to `t` without a new sample: silence means the pitch is unchanged, so re-anchoring
-    /// may settle. Returns the new upright if it did.
-    pub fn tick(&mut self, t: Duration) -> Option<f64> {
-        self.reanchor(t, None)
-    }
-
-    fn transition(&mut self, t: Duration, s: f64, p: f64) -> Option<PostureChange> {
-        let (next, change) =
-            std::mem::replace(&mut self.state, State::Upright).step(t, s, p, &self.cfg);
+        self.reanchor(t, Some(pitch - self.upright));
+        let (next, change) = std::mem::replace(&mut self.state, State::Upright).step(
+            t,
+            smoothed - self.upright,
+            pitch - self.upright,
+            &self.cfg,
+        );
         self.state = next;
-        change
+        self.events.extend(change.map(|event| (t, event)));
+    }
+
+    /// Judge up to `now`, and return what happened since the last check, in order, each at the
+    /// time of the sample or check that showed it. Pass the samples that have arrived first:
+    /// silence then means the pitch is unchanged, so re-anchoring may settle (tracker contract,
+    /// "Late poses").
+    pub fn check(&mut self, now: Duration) -> Vec<(Duration, PostureEvent)> {
+        self.reanchor(now, None);
+        std::mem::take(&mut self.events)
+    }
+
+    /// Re-anchor upright if the head has settled by `t` (see [`State::settle`]).
+    fn reanchor(&mut self, t: Duration, p: Option<f64>) {
+        if let Some(p) = self.state.settle(t, p) {
+            self.upright += p;
+            let upright = self.upright;
+            self.events.push((t, PostureEvent::Reanchored { upright }));
+        }
     }
 }
 

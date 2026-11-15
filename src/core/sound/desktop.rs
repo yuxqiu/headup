@@ -2,7 +2,7 @@
 
 use super::audio;
 use super::wav::Pcm;
-use super::{Cue, Phrase, PhraseClips, Player, Sound};
+use super::{Cue, Player, Sound, Voice, VoiceClips};
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
@@ -10,20 +10,20 @@ use std::sync::Arc;
 pub struct DesktopPlayer {
     tone: Arc<Pcm>,
     tink: Arc<Pcm>,
-    /// Every phrase's clip, decoded once at startup.
-    phrases: PhraseClips,
+    /// Every voice clip, decoded once at startup.
+    voices: VoiceClips,
 }
 
 impl DesktopPlayer {
     pub fn new() -> Result<Self> {
-        let phrases = PhraseClips::decode()?;
+        let voices = VoiceClips::decode()?;
         Ok(DesktopPlayer {
             // Notes chosen by ear, not measured: the reminder falls from C5 to A4 (soft), the
             // tink rises from A5 to E6 (bright). The user heard both on the earbuds in the
             // 2026-11-13 live check (data/walk3*.jsonl).
             tone: Arc::new(Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)])),
             tink: Arc::new(Pcm::tones(&[(880.0, 0.08), (1318.5, 0.14)])),
-            phrases,
+            voices,
         })
     }
 }
@@ -31,10 +31,10 @@ impl DesktopPlayer {
 impl Player for DesktopPlayer {
     fn play(&self, sound: Sound) -> impl Future<Output = Result<()>> + 'static {
         let pcm = match sound {
-            Sound::Prompt(p) => self.phrases.get(p),
+            Sound::Prompt(p) => self.voices.get(p.voice()),
             Sound::Reminder(Cue::Tone) => self.tone.clone(),
             Sound::Reminder(Cue::Recovered) => self.tink.clone(),
-            Sound::Reminder(Cue::Speak) => self.phrases.get(Phrase::LiftHead),
+            Sound::Reminder(Cue::Speak) => self.voices.get(Voice::LiftHead),
             Sound::Reminder(Cue::Notify) => {
                 let shown = tokio::spawn(notify());
                 return finished(shown, sound);

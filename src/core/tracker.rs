@@ -11,6 +11,12 @@
 //! 2. **Silence.** While tracking is available, a tracker with nothing to deliver means a head that
 //!    has not moved. A backend whose silence can mean something else (a stall, a continuous stream
 //!    that stopped) must report `Unavailable`, after a timeout derived from its report interval.
+//!
+//!    **Late poses.** The session judges up to now with what has arrived. A pose a backend held
+//!    back briefly (see [`Event::Pose`]) can arrive after the session judged a later time. It is
+//!    judged from its own measurement time on, and never undoes a decision already made (a
+//!    reminder that played, a calibration that finished). Every judging type in core takes poses
+//!    and times on this rule.
 //! 3. **Frames.** Orientations are relative to a frame the backend chooses, arbitrary but fixed
 //!    while tracking is available. The frame may change across an `Unavailable`; the session
 //!    recalibrates after every interruption. A device that changes its frame while available

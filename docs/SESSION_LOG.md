@@ -594,3 +594,11 @@
   `Stillness`; `request_switch` returns nothing; `Window::span` documents that it discards; one bounded playback
   path with its hang limit documented; one `CueSink::play`, reminders' outcomes return to the session (`Sounds`,
   `LogEvent::CueFailed`). 114 tests pass. All staged, not committed.
+
+## 2026-11-15 15:18 UTC
+- `Monitor` composes the detector and reminders (private under core/monitor/); session and sound split into
+  modules; detector reports timed `PostureEvent`s via `pose` + `check`.
+- Whole-codebase thermos review applied: late-pose rule stated once in the tracker contract, `PromptPlaying` and
+  `SwitchOn` tokens, refusal reasons kept (peer-link sentence), `Tracking::unavailable()?`, `Phrase` prompts-only
+  over a private `Voice` registry, typed test errors, HANDOFF rewritten. One behaviour change recorded (sit-up as
+  a reminder falls due plays it, then the tink). 131 tests; `nix flake check` passes. Staged, not committed.

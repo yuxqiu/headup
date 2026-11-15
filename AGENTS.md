@@ -31,8 +31,9 @@ user, through the earbuds, when they look down for too long. Everything runs loc
 - `src/devices/`: the backend registry (`mod.rs`), discovery (`discovery.rs`), and `bluetooth/`: the Bluetooth
   operations backends use (`Host`, `RfcommStream`, `Address`), one implementation per OS (`bluez.rs` for Linux).
 - `src/devices/<model>/`: one backend. FreeClip 2: `protocol.rs` (wire messages), `link.rs` (protocol state, no
-  I/O), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (a task that owns the socket and reads continuously). Its test-only modules are in
-  `src/devices/<model>/tests/`.
+  I/O: coordinates the parts and reports to the session), `earbuds.rs` (what the earbuds said, the stream switch's
+  fate, the availability derived from them), `rebuild.rs` (orientation rebuild), `mbb.rs` (framing), `mod.rs` (a
+  task that owns the socket and reads continuously). Its test-only modules are in `src/devices/<model>/tests/`.
 - `src/testing.rs`: test support shared across modules (run the real session on any tracker).
 - Per model, outside `src/`: `docs/devices/<model>/` (`README.md`: what users of that model need to know; `FINDINGS.md`: the evidence), `tools/<model>/` (Python research scripts: `firmware/`,
   `device/` for the earbuds, `recordings/` for recorded data, `app/` for the vendor app) and
@@ -75,7 +76,7 @@ Run everything inside `nix develop`.
   whose message handlers update it and return what to send. Compute what the session sees from it (a view), and
   emit an event only when a view field changes. Do not store derived values next to the facts. Rules for sending
   stay in the handler of the message that triggers them (FreeClip 2: `Earbuds`, `View`, `Link::report`).
-- **One list per registry.** `backends!` (devices) and `phrases!` (voice prompts) generate their enums and dispatch.
+- **One list per registry.** `backends!` (devices) and `voices!` (embedded voice clips) generate their enums and dispatch.
   Extend the list instead of adding a lookup that can miss at runtime.
 - **Independent of sample rate.** Detection and session logic use seconds: timers, windows, and a smoothing time
   constant. Sample counts are allowed only inside a backend, where the protocol defines them.
@@ -92,7 +93,9 @@ Run everything inside `nix develop`.
 - **Poses carry their measurement time** (`Event::Pose { at, .. }`); smoothing and slouch timers run on it, never on
   when the session handles the pose. A tracker with nothing left to deliver means a head that has not moved: the
   session takes every waiting event before it judges posture up to now. A backend delivers each pose as soon as it
-  knows it is real, and holds back only noise it will drop (FreeClip 2: glides), briefly.
+  knows it is real, and holds a sample back only while it may be noise it will drop (FreeClip 2: glides), briefly.
+  Such a pose can arrive after the session judged a later time; core judges it from its own time on and never
+  undoes a decision (`tracker.rs`, "Late poses").
 - **Logging.** Log lines are JSON written with serde_json; never build JSON by hand. Session output goes through
   `Recorder` (event names in `LogEvent`). A backend's raw data goes to its `DeviceLog` (`--raw-log`).
 - **Make illegal states unrepresentable.** Fields that are valid only together, or that exclude each other, go into
@@ -142,5 +145,5 @@ Run everything inside `nix develop`.
   describe one device's quirks.
 - Release steps: bump `version` in `Cargo.toml`, wait for green CI, then the user publishes a `v<version>` GitHub
   release. The `Release` workflow builds the tarballs (see `docs/RUNBOOK.md`).
-- Voice prompts: add a line to `phrases!` in `src/core/sound/mod.rs` and the text to `tools/gen_voice.sh`, then run
-  the script.
+- Voice clips: add a line to `voices!` in `src/core/sound/mod.rs` and the text to `tools/gen_voice.sh`, then run
+  the script. A calibration prompt also gets a `Phrase` variant mapped to its clip in `Phrase::voice`.

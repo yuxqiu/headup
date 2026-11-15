@@ -72,13 +72,13 @@ fn a_moving_head_keeps_settling() {
 #[test]
 fn unavailable_interrupts_only_a_live_head() {
     let mut t = Tracking::Waiting;
-    assert!(!t.unavailable());
+    assert!(t.unavailable().is_ok());
     t.available(secs(0.0));
-    assert!(!t.unavailable(), "while settling");
+    assert!(t.unavailable().is_ok(), "while settling");
     t.available(secs(1.0));
     t.settle(secs(3.0));
     assert!(live(&t));
-    assert!(t.unavailable());
+    assert!(matches!(t.unavailable(), Err(Interrupt::Unavailable)));
     assert!(matches!(t, Tracking::Waiting));
 }
 

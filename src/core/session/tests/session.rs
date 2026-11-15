@@ -8,9 +8,20 @@ use crate::core::sound::Sound::{self, Prompt, Reminder};
 use crate::core::steady::STILL;
 use crate::core::tracker::TrackerTraits;
 use crate::testing::secs;
-use crate::testing::{PlayerSim, SessionRun, run_session, wait_until_due};
-use anyhow::bail;
+use crate::testing::{PlayerSim, ScriptFinished, SessionRun, run_session};
 use std::collections::VecDeque;
+
+/// Wait as a tracker does for an event due at `due`: until it is due, or until `timeout` has passed
+/// if that comes first. Returns whether it is due.
+async fn wait_until_due(due: Instant, timeout: Duration) -> bool {
+    let deadline = Instant::now() + timeout;
+    if due > deadline {
+        tokio::time::sleep_until(deadline).await;
+        return false;
+    }
+    tokio::time::sleep_until(due).await;
+    true
+}
 
 fn tilt(deg: f64) -> Quat {
     let h = deg.to_radians() / 2.0;
@@ -103,7 +114,7 @@ impl HeadTracker for FakeTracker {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
         let Some(&(due, event)) = self.events.front() else {
             if wait_until_due(self.start + self.end, timeout).await {
-                bail!("script finished");
+                return Err(ScriptFinished.into());
             }
             return Ok(None);
         };
@@ -125,25 +136,18 @@ impl HeadTracker for FakeTracker {
     }
 }
 
-/// How the simulated tracker and cue output behave.
+/// How the simulated tracker and player behave.
 #[derive(Default)]
 struct Sim {
     /// The tracker declares `pose_drifts_up`.
     drifts: bool,
-    /// Each spoken prompt takes this long.
-    prompt: Duration,
-    /// This reminder cannot be played.
-    failing: Option<Cue>,
+    player: PlayerSim,
 }
 
 /// Run `script` to its end and report what the session did.
 async fn simulate(script: Vec<Script>, sim: Sim) -> SessionRun {
     let mut tracker = FakeTracker::new(script, sim.drifts);
-    let player = PlayerSim {
-        prompt: sim.prompt,
-        failing: sim.failing,
-    };
-    run_session(&mut tracker, player).await
+    run_session(&mut tracker, sim.player).await
 }
 
 use Script::*;
@@ -215,7 +219,10 @@ async fn failed_reminder_is_logged_and_monitoring_goes_on() {
         Quiet(secs(35.0)),
     ];
     let sim = Sim {
-        failing: Some(Tone),
+        player: PlayerSim {
+            failing: Some(Tone),
+            ..PlayerSim::default()
+        },
         ..Sim::default()
     };
     let run = simulate(script, sim).await;
@@ -262,7 +269,10 @@ async fn calibration_ignores_poses_measured_during_the_prompt() {
         Poses(0.0, secs(6.0)),
     ];
     let sim = Sim {
-        prompt: secs(2.0),
+        player: PlayerSim {
+            prompt: secs(2.0),
+            ..PlayerSim::default()
+        },
         ..Sim::default()
     };
     let run = simulate(script, sim).await;
@@ -283,7 +293,10 @@ async fn poses_measured_during_the_nudge_do_not_count() {
         Poses(0.0, secs(20.0)),
     ];
     let sim = Sim {
-        prompt: secs(4.0),
+        player: PlayerSim {
+            prompt: secs(4.0),
+            ..PlayerSim::default()
+        },
         ..Sim::default()
     };
     let run = simulate(script, sim).await;
@@ -503,7 +516,10 @@ async fn monitoring_judges_only_after_taking_every_queued_pose() {
         Poses(0.0, secs(20.0)),
     ];
     let sim = Sim {
-        prompt: secs(15.0),
+        player: PlayerSim {
+            prompt: secs(15.0),
+            ..PlayerSim::default()
+        },
         ..Sim::default()
     };
     let run = simulate(script, sim).await;

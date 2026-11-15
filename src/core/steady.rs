@@ -12,6 +12,7 @@ use std::time::Duration;
 
 /// The samples measured since `start`, oldest first. A sample measured before `start` does not
 /// count: those measured during a prompt, for example, are delivered after it.
+#[derive(Debug, PartialEq)]
 pub(crate) struct Window<T> {
     start: Duration,
     /// Samples (measurement time, value). The first is the latest that can still begin a span.
@@ -48,8 +49,9 @@ impl<T: Copy> Window<T> {
 
     /// The samples that cover the `len` before `now`, if samples do: the latest measured at least
     /// `len` before `now` (the head stayed there until the next one) and every one after it.
-    /// Samples before that one can cover no later span, so they are discarded: `now` must not go
-    /// backwards between calls (with a fixed `len`).
+    /// Samples before that one can cover no later span, so they are discarded. A call with an
+    /// earlier `now` than before (a late pose) gets `None` or the span it covers, never a wrong
+    /// one.
     pub(crate) fn span(&mut self, now: Duration, len: Duration) -> Option<Vec<T>> {
         let from = now.checked_sub(len)?;
         let begin = self.samples.iter().rposition(|&(m, _)| m <= from)?;
@@ -81,8 +83,8 @@ impl Stillness {
         self.0.add(measured, q);
     }
 
-    /// Whether the head has held still up to `now`. Every pose measured before `now` must have
-    /// been passed to [`Stillness::pose`].
+    /// Whether the head has held still up to `now`, after passing the poses that have arrived
+    /// (tracker contract, "Late poses").
     pub fn check(&mut self, now: Duration) -> bool {
         // Nothing since the wait began: the head has not moved (silence means unchanged).
         if self.0.first().is_none() {

@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::testing::secs;
-use PostureChange::{Recovered, SlouchStarted};
+use PostureEvent::{Reanchored, Recovered, SlouchStarted};
 
 fn reanchoring() -> Config {
     Config {
@@ -11,38 +11,54 @@ fn reanchoring() -> Config {
     }
 }
 
-/// Feed `pitch` at 50 Hz from `t0` for `span` seconds, handing each update to `seen` with its
-/// time. Returns the time after the last sample.
+/// Feed `pitch` at 50 Hz from `t0` for `span` seconds, checking after every sample as the monitor
+/// does, and hand each event to `seen` with its time. Returns the time after the last sample.
 fn feed(
     d: &mut Detector,
     t0: f64,
     span: f64,
     pitch: f64,
-    mut seen: impl FnMut(f64, Update),
+    mut seen: impl FnMut(f64, PostureEvent),
 ) -> f64 {
     let mut t = t0;
     while t < t0 + span {
-        seen(t, d.update(secs(t), pitch));
+        d.pose(secs(t), pitch);
+        for (_, event) in d.check(secs(t)) {
+            seen(t, event);
+        }
         t += 0.02;
     }
     t
 }
 
-/// [`feed`], collecting the uprights re-anchored to.
-fn reanchors(d: &mut Detector, t0: f64, span: f64, pitch: f64, out: &mut Vec<f64>) -> f64 {
-    feed(d, t0, span, pitch, |_, u| out.extend(u.reanchored))
+/// The uprights re-anchored to among `events`.
+fn uprights(events: impl IntoIterator<Item = PostureEvent>) -> Vec<f64> {
+    events
+        .into_iter()
+        .filter_map(|e| match e {
+            Reanchored { upright } => Some(upright),
+            SlouchStarted | Recovered => None,
+        })
+        .collect()
 }
 
-/// [`feed`], collecting (time, posture change).
+/// [`feed`], collecting the uprights re-anchored to.
+fn reanchors(d: &mut Detector, t0: f64, span: f64, pitch: f64, out: &mut Vec<f64>) -> f64 {
+    feed(d, t0, span, pitch, |_, e| out.extend(uprights([e])))
+}
+
+/// [`feed`], collecting (time, posture change), without re-anchors.
 fn run(
     d: &mut Detector,
     t0: f64,
     span: f64,
     pitch: f64,
-    out: &mut Vec<(f64, PostureChange)>,
+    out: &mut Vec<(f64, PostureEvent)>,
 ) -> f64 {
-    feed(d, t0, span, pitch, |t, u| {
-        out.extend(u.posture.map(|c| (t, c)))
+    feed(d, t0, span, pitch, |t, e| {
+        if !matches!(e, Reanchored { .. }) {
+            out.push((t, e));
+        }
     })
 }
 
@@ -108,9 +124,9 @@ fn silent_head_after_a_recovery_reanchors() {
     // A few samples back up past upright (the smoothing crosses below off_deg), then silence.
     let t = reanchors(&mut d, t, 0.3, -10.0, &mut re);
     assert!(re.is_empty(), "re-anchored before settling: {re:?}");
-    let reanchored = d.tick(secs(t + 1.0));
+    let reanchored = uprights(d.check(secs(t + 1.0)).into_iter().map(|(_, e)| e));
     assert!(
-        reanchored.is_some_and(|u| (u + 10.0).abs() < 0.5),
+        reanchored.len() == 1 && (reanchored[0] + 10.0).abs() < 0.5,
         "re-anchored {reanchored:?}"
     );
 }
@@ -123,12 +139,13 @@ fn head_silent_from_the_recovery_sample_reanchors() {
     let mut re = vec![];
     let mut t = reanchors(&mut d, 0.0, 15.0, 40.0, &mut re);
     while d.slouching() {
-        re.extend(d.update(secs(t), -10.0).reanchored);
+        d.pose(secs(t), -10.0);
+        re.extend(uprights(d.check(secs(t)).into_iter().map(|(_, e)| e)));
         t += 0.02;
     }
     assert!(re.is_empty(), "re-anchored before settling: {re:?}");
-    let reanchored = d.tick(secs(t + 1.0));
-    assert_eq!(reanchored, Some(-10.0));
+    let reanchored = uprights(d.check(secs(t + 1.0)).into_iter().map(|(_, e)| e));
+    assert_eq!(reanchored, [-10.0]);
 }
 
 #[test]
@@ -177,10 +194,10 @@ fn no_reanchoring_unless_enabled() {
 fn smoothing_is_independent_of_sample_rate() {
     let after_step = |hz: f64| {
         let mut d = Detector::new(Config::default());
-        d.update(Duration::ZERO, 0.0);
+        d.pose(Duration::ZERO, 0.0);
         let steps = (0.24 * hz).round() as u32;
         for i in 1..=steps {
-            d.update(secs(f64::from(i) / hz), 30.0);
+            d.pose(secs(f64::from(i) / hz), 30.0);
         }
         d.smoothed().unwrap()
     };
@@ -197,4 +214,29 @@ fn looking_up_is_not_slouching() {
     let mut changes = vec![];
     run(&mut d, 0.0, 60.0, -40.0, &mut changes);
     assert!(changes.is_empty());
+}
+
+// Samples passed in one batch come out of one check in order, each event at the time of the
+// sample that showed it.
+#[test]
+fn a_batch_reports_each_event_at_its_sample_time() {
+    let mut d = Detector::new(Config::default());
+    let mut t = 0.0;
+    let mut times = vec![];
+    while t < 5.0 {
+        let pitch = if t < 2.0 || t >= 4.0 { 0.0 } else { 40.0 };
+        d.pose(secs(t), pitch);
+        times.push(secs(t));
+        t += 0.02;
+    }
+    let events = d.check(secs(t));
+    let kinds: Vec<_> = events.iter().map(|&(_, e)| e).collect();
+    assert_eq!(kinds, [SlouchStarted, Recovered]);
+    for (at, _) in &events {
+        assert!(times.contains(at), "{at:?} is not a sample time");
+    }
+    // Smoothing crosses 20° about 0.09 s after a step to 40°, and 15° about 0.12 s after a step
+    // back to 0° (time constant 0.123 s).
+    assert!((secs(2.0)..secs(2.15)).contains(&events[0].0), "{events:?}");
+    assert!((secs(4.0)..secs(4.2)).contains(&events[1].0), "{events:?}");
 }

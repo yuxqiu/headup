@@ -67,8 +67,8 @@ pub enum LogEvent {
     CalibrationFailed,
     /// The device can deliver head tracking again.
     TrackingAvailable,
-    /// The device can no longer deliver head tracking, for the tracker's `reason`. The posture
-    /// reference is dropped, and headup recalibrates when tracking resumes.
+    /// The device can no longer deliver head tracking, for the tracker's `reason`. If headup was
+    /// calibrating or monitoring, that ends: it recalibrates when tracking resumes.
     TrackingUnavailable { reason: &'static str },
     /// After a recovery the head settled above upright, so upright was re-anchored to this pitch
     /// (relative to calibration).

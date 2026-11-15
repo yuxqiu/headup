@@ -5,11 +5,12 @@
 use crate::core::quat::Quat;
 use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
+use crate::devices::freeclip2::ConnectionClosed;
 use crate::devices::freeclip2::FreeClip2;
 use crate::devices::freeclip2::link::Link;
 use crate::devices::freeclip2::protocol::sample_frame;
-use crate::testing::secs;
-use anyhow::{Result, anyhow};
+use crate::testing::{ScriptFinished, secs};
+use anyhow::Result;
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::time::Duration;
@@ -61,6 +62,13 @@ pub fn read_csv(name: &str) -> Vec<Row> {
         .collect()
 }
 
+/// The recording's samples as 43/89 frames, each with when it arrives (the recording's time zero at
+/// `start`).
+fn frames(rows: &[Row], start: Instant) -> impl Iterator<Item = (Instant, Vec<u8>)> + '_ {
+    rows.iter()
+        .map(move |r| (start + r.t, sample_frame(r.seq, r.raw).encode()))
+}
+
 /// Feeds a recording to a [`Link`] as the socket would: each sample as a 43/89 frame at its
 /// recorded time. All times are exact `Instant`s.
 pub struct Replay {
@@ -75,13 +83,9 @@ impl Replay {
         let adapter = "00:00:00:00:00:01".parse().unwrap();
         let mut link = Link::new(adapter);
         link.take_outbox();
-        let rows = rows
-            .iter()
-            .map(|r| (start + r.t, sample_frame(r.seq, r.raw).encode()))
-            .collect();
         Replay {
             link,
-            rows,
+            rows: frames(rows, start).collect(),
             now: start,
         }
     }
@@ -126,16 +130,12 @@ pub fn replay(rows: &[Row]) -> Vec<Out> {
 /// the real session can run on it: [`FreeClip2`] reads an in-memory socket, and a task writes each
 /// sample to it as a 43/89 frame at its recorded time. Time zero is when it is created. When the
 /// recording is over, the task closes the socket; once everything before that has been delivered,
-/// the tracker fails with "script finished".
+/// the tracker fails with [`ScriptFinished`].
 pub struct ReplayTracker(FreeClip2);
 
 impl ReplayTracker {
     pub fn new(rows: &[Row]) -> Self {
-        let start = Instant::now();
-        let frames: Vec<(Instant, Vec<u8>)> = rows
-            .iter()
-            .map(|r| (start + r.t, sample_frame(r.seq, r.raw).encode()))
-            .collect();
+        let frames: Vec<_> = frames(rows, Instant::now()).collect();
         let (ours, mut earbuds) = tokio::io::duplex(1 << 16);
         tokio::spawn(async move {
             for (at, bytes) in frames {
@@ -152,8 +152,8 @@ impl ReplayTracker {
 impl HeadTracker for ReplayTracker {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
         self.0.next_event(timeout).await.map_err(|e| {
-            if e.root_cause().to_string() == "earbuds closed the connection" {
-                anyhow!("script finished")
+            if e.downcast_ref::<ConnectionClosed>().is_some() {
+                ScriptFinished.into()
             } else {
                 e
             }

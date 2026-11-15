@@ -13,8 +13,9 @@ Device MAC used in examples: `AA:BB:CC:DD:EE:01`, a made-up address; use your ea
 
 - Probe an MBB command: `python3 -I tools/freeclip2/device/probe.py AA:BB:CC:DD:EE:01 '43/90:1='`
 - Troubleshoot a device backend: `headup --raw-log FILE` appends every raw sample (time, seq, quaternion as sent)
-  and every other frame as JSON lines. Rebuilt orientations are in `--log` (pitch/yaw/roll). A FreeClip 2
-  hold (the reading jumping to identity with no glide, while walking around) is logged as `{"hold":SEQ}`.
+  and every other frame as JSON lines. While monitoring, `--log` has each pose as pitch/yaw/roll relative to the
+  calibrated upright. A FreeClip 2 hold (the reading jumping to identity with no glide, while walking around) is
+  logged as `{"hold":SEQ}`.
 - Log lines in both files start with `t`, wall-clock Unix time in seconds (ms precision). Convert in Python with
   `datetime.fromtimestamp(t)`; subtract the first `t` for seconds since start.
 - Stream head pose: `python3 -I tools/freeclip2/device/headpose.py AA:BB:CC:DD:EE:01 SECONDS [data/out.csv]`
@@ -31,7 +32,7 @@ Device MAC used in examples: `AA:BB:CC:DD:EE:01`, a made-up address; use your ea
     without it sound goes to ALSA's default device). Calibration is spoken whenever head tracking
     starts or comes back; stop with Ctrl-C or SIGTERM (`systemctl --user stop headup`), which disables the stream; a second
     one quits without waiting for that.
-- Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match the `phrases!` list in
+- Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match the `voices!` list in
   `src/core/sound/mod.rs`.
 - Home Manager module: `homeManagerModules.default` in `nix/hm-module.nix`. To verify it evaluates, build a minimal
   `home-manager.lib.homeManagerConfiguration` with `services.headup.enable = true` and read

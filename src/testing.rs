@@ -52,10 +52,22 @@ pub fn secs(x: f64) -> Duration {
     Duration::from_micros((x * 1e6).round() as u64)
 }
 
+/// A test tracker's script or recording is over: the error that ends [`run_session`].
+#[derive(Debug)]
+pub struct ScriptFinished;
+
+impl std::fmt::Display for ScriptFinished {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "script finished")
+    }
+}
+
+impl std::error::Error for ScriptFinished {}
+
 /// What a session did.
 pub struct SessionRun {
-    /// Prompts and cues, with when each started (since the session began).
-    pub cues: Vec<(Sound, Duration)>,
+    /// Prompts and reminders, with when each started (since the session began).
+    pub sounds: Vec<(Sound, Duration)>,
     /// The `"event"` names in the session log, in order.
     pub events: Vec<String>,
 }
@@ -63,16 +75,16 @@ pub struct SessionRun {
 impl SessionRun {
     /// What played, in order.
     pub fn played(&self) -> Vec<Sound> {
-        self.cues.iter().map(|&(p, _)| p).collect()
+        self.sounds.iter().map(|&(p, _)| p).collect()
     }
 
     pub fn count(&self, played: Sound) -> usize {
-        self.cues.iter().filter(|(p, _)| *p == played).count()
+        self.sounds.iter().filter(|(p, _)| *p == played).count()
     }
 
     /// When `played` first started.
     pub fn first(&self, played: Sound) -> Duration {
-        self.cues
+        self.sounds
             .iter()
             .find(|(p, _)| *p == played)
             .unwrap_or_else(|| panic!("no {played:?} in {:?}", self.played()))
@@ -81,7 +93,7 @@ impl SessionRun {
 
     /// When each `played` started.
     pub fn times(&self, played: Sound) -> Vec<Duration> {
-        self.cues
+        self.sounds
             .iter()
             .filter(|(p, _)| *p == played)
             .map(|&(_, t)| t)
@@ -90,7 +102,7 @@ impl SessionRun {
 
     /// The reminder cues, with when each started.
     pub fn reminders(&self) -> Vec<(Cue, Duration)> {
-        self.cues
+        self.sounds
             .iter()
             .filter_map(|&(p, t)| match p {
                 Sound::Reminder(cue) => Some((cue, t)),
@@ -110,7 +122,7 @@ pub struct PlayerSim {
 }
 
 /// Run the real session on `tracker` (on tokio's paused clock) until the tracker fails with
-/// `"script finished"`, and report what it did, with a fake player that behaves as `sim` says.
+/// [`ScriptFinished`], and report what it did, with a fake player that behaves as `sim` says.
 pub async fn run_session(tracker: &mut impl HeadTracker, sim: PlayerSim) -> SessionRun {
     let log = SharedBuf::default();
     let mut rec = Recorder::new(Some(Box::new(log.clone())));
@@ -121,7 +133,7 @@ pub async fn run_session(tracker: &mut impl HeadTracker, sim: PlayerSim) -> Sess
         log: RefCell::default(),
     };
     let Err(err) = session::run(tracker, &player, &mut rec).await;
-    assert_eq!(err.to_string(), "script finished");
+    assert!(err.downcast_ref::<ScriptFinished>().is_some(), "{err:#}");
     let events = log
         .text()
         .lines()
@@ -129,7 +141,7 @@ pub async fn run_session(tracker: &mut impl HeadTracker, sim: PlayerSim) -> Sess
         .filter_map(|v| v["event"].as_str().map(String::from))
         .collect();
     SessionRun {
-        cues: player.log.into_inner(),
+        sounds: player.log.into_inner(),
         events,
     }
 }
@@ -154,16 +166,4 @@ impl std::io::Write for SharedBuf {
     fn flush(&mut self) -> std::io::Result<()> {
         Ok(())
     }
-}
-
-/// Wait as a tracker does for an event due at `due`: until it is due, or until `timeout` has passed
-/// if that comes first. Returns whether it is due.
-pub async fn wait_until_due(due: Instant, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    if due > deadline {
-        tokio::time::sleep_until(deadline).await;
-        return false;
-    }
-    tokio::time::sleep_until(due).await;
-    true
 }

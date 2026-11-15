@@ -2,10 +2,9 @@
 //! to send and `--raw-log` records go out. [`super::FreeClip2`] only moves bytes between this and
 //! the socket, so every protocol decision here can be tested without earbuds.
 
+use super::earbuds::{Availability, Earbuds, SwitchOn};
 use super::mbb::{Decoder, Frame};
-use super::protocol::{
-    Message, RawFrame, RawSample, SwitchReply, capability_query, stream_switch, wear_query,
-};
+use super::protocol::{Message, RawFrame, RawSample, capability_query, stream_switch, wear_query};
 use super::rebuild::{Rebuilder, Rebuilt};
 use crate::core::quat::Quat;
 use crate::core::tracker::Event;
@@ -68,6 +67,12 @@ impl Link {
         std::mem::take(&mut self.out.log)
     }
 
+    /// Send the stream switch, and record it as sent: unconfirmed until the earbuds answer.
+    fn send_switch_on(&mut self) {
+        self.earbuds.switch_sent();
+        self.out.send(stream_switch(true));
+    }
+
     /// Switch the pose stream off, leaving the earbuds as they were before headup.
     pub fn stop(&mut self) {
         self.out.send(stream_switch(false));
@@ -88,16 +93,16 @@ impl Link {
             }
             Message::StreamSwitch(reply) => {
                 self.earbuds.on_reply(reply);
-                false
+                None
             }
             Message::Sample { seq, raw } => {
                 self.on_reading(now, seq, raw);
-                false
+                None
             }
-            Message::Other => false,
+            Message::Other => None,
         };
-        if switch_on {
-            self.out.send(stream_switch(true));
+        if let Some(SwitchOn) = switch_on {
+            self.send_switch_on();
         }
         self.report();
         Ok(())
@@ -131,7 +136,9 @@ impl Link {
     /// Tell the session what changed. When tracking stops, the pose frame ends; since readings are
     /// not rebuilt while it is unavailable, the next stretch starts a new one (see [`PoseFrame`]).
     fn report(&mut self) {
-        if let Some(event) = self.reported.update_to(self.earbuds.view()) {
+        if let Some(event) = self.reported.update_to(View {
+            availability: self.earbuds.availability(),
+        }) {
             if let Event::Unavailable { .. } = event {
                 self.frame.end();
             }
@@ -230,207 +237,6 @@ impl View {
                 reason: blocker.reason(),
             },
         })
-    }
-}
-
-/// Whether head tracking flows, as reported to the session.
-#[derive(Clone, Copy, PartialEq)]
-enum Availability {
-    Available,
-    Unavailable(Blocker),
-}
-
-/// Why FreeClip 2 cannot deliver head tracking.
-#[derive(Clone, Copy, PartialEq, Debug)]
-enum Blocker {
-    /// An earbud is out (43/37); tracking needs both.
-    NotWorn,
-    /// This computer is not the earbuds' current device, or the switch was refused (43/54, 43/88).
-    NotStreaming,
-    /// The earbuds hold while the user walks around (see [`Earbuds::holding`]).
-    Walking,
-}
-
-impl Blocker {
-    /// The sentence the session shows and logs.
-    fn reason(self) -> &'static str {
-        match self {
-            Blocker::NotWorn => "put both earbuds in; FreeClip 2 tracks your head only with both",
-            Blocker::NotStreaming => {
-                "play audio on this computer; FreeClip 2 only tracks your head while it is playing"
-            }
-            Blocker::Walking => {
-                "FreeClip 2 does not track your head while you walk around; \
-                 it resumes when you move your head after you stop"
-            }
-        }
-    }
-}
-
-/// What the earbuds have said about themselves, and what became of the last "stream on" sent.
-/// Each message updates it and may ask the link to switch the stream on (a handler returning
-/// `true`). The link always sends what is asked, so a switch recorded here as sent really was
-/// sent.
-#[derive(Default)]
-struct Earbuds {
-    /// 43/37: both earbuds are in the ears (`None` until reported).
-    worn: Option<bool>,
-    /// 43/54: this computer streams audio to the earbuds, which makes it their current device
-    /// (`None` until known). A 43/89 reading also tells it, if no 43/54 has (see
-    /// [`Earbuds::on_reading`]).
-    streaming: Option<bool>,
-    switch: Switch,
-    /// 43/89: the earbuds hold. While the user walks around, their activity detector locks the
-    /// reference to the head on every sample, so the readings stay at identity, the stream pauses,
-    /// and it resumes relative to wherever the head is then (FINDINGS "Instant resets while
-    /// walking"). The readings do not follow the head meanwhile. The rebuilder recognises the start
-    /// ([`Rebuilt::HoldStarted`]): telling it from the end of a glide takes the glide model.
-    holding: bool,
-}
-
-/// What became of the last "stream on" (43/88 TLV 1 = 1).
-#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
-enum Switch {
-    /// The switch is not known to stand. Either it was sent and has no answer yet, or the earbuds
-    /// accepted it and then cancelled it.
-    ///
-    /// Two things cancel an accepted switch:
-    /// - Taking an earbud off. After re-wearing, no samples come until a new 43/88
-    ///   (data/grounding_test.log "rewear").
-    /// - Another device becoming current. After this computer streams again, no samples come until
-    ///   a new 43/88 (data/grounding_test3.log "phone_takeover").
-    ///
-    /// One rule covers both: send the switch again when this computer starts streaming.
-    ///
-    /// The same rule covers a switch with no answer yet whose refusal is still in transit. The
-    /// earbuds refuse a switch sent while another device is current. The 43/54 push saying this
-    /// computer streams can arrive before that refusal.
-    ///
-    /// The earbuds answer every well-formed 43/88 (firmware `0x7039c018`; 13 of 13 live, within
-    /// 80 ms), so no retry timer is needed.
-    #[default]
-    Unconfirmed,
-    /// Accepted, and nothing has cancelled it since. It survives audio gaps. When this computer
-    /// streams again, the earbuds resume the stream by themselves (FINDINGS "Grounding of headup's
-    /// device logic"), so the switch is not sent again.
-    Accepted,
-    /// Refused (43/88 reply 1 or 2). The stream stays off, so silence does not mean the head is
-    /// still.
-    Refused,
-}
-
-impl Earbuds {
-    /// 43/37. Taking an earbud off cancels the switch. Putting the earbuds back on needs a new
-    /// switch, and starts a new stream, so no hold carries over. Returns whether to switch the
-    /// stream on.
-    fn on_wear(&mut self, worn: bool) -> bool {
-        let was = self.worn.replace(worn);
-        if !worn {
-            self.cancel_switch();
-            return false;
-        }
-        if was != Some(false) {
-            return false;
-        }
-        self.holding = false;
-        self.request_switch();
-        true
-    }
-
-    /// 43/89: a hold started (see [`Earbuds::holding`]).
-    fn on_hold_started(&mut self) {
-        self.holding = true;
-    }
-
-    /// 43/89. The earbuds send readings only to their current device, so a reading also tells
-    /// that this computer streams, if no 43/54 has said so yet (the earbuds send none on connect
-    /// while audio is already playing). A reading that is not identity follows the head again, so
-    /// it ends a hold.
-    fn on_reading(&mut self, raw: Quat) {
-        self.streaming.get_or_insert(true);
-        if raw != Quat::IDENTITY {
-            self.holding = false;
-        }
-    }
-
-    /// 43/54 for one device.
-    ///
-    /// When another device streams, an accepted switch counts as cancelled.
-    ///
-    /// When this computer streams, whether the switch is sent again depends on its state:
-    /// - Accepted: not sent. Sending it would restart the stream, and every new stream adds a
-    ///   re-centre.
-    /// - Unconfirmed: sent when this computer starts streaming (see [`Switch::Unconfirmed`]), not
-    ///   on every push.
-    /// - Refused: sent on every push that says this computer streams.
-    ///
-    /// Returns whether to switch the stream on.
-    fn on_audio(&mut self, this_computer: bool, streaming: bool) -> bool {
-        if !this_computer {
-            if streaming {
-                self.cancel_switch();
-            }
-            return false;
-        }
-        let started = streaming && self.streaming != Some(true);
-        self.streaming = Some(streaming);
-        let resend = match self.switch {
-            Switch::Accepted => false,
-            Switch::Refused => streaming,
-            Switch::Unconfirmed => started,
-        };
-        if resend {
-            self.request_switch();
-        }
-        resend
-    }
-
-    /// 43/88 reply. A refusal is undone by [`Earbuds::on_audio`] when this computer streams, or by
-    /// [`Earbuds::on_wear`] when the earbuds go back on.
-    fn on_reply(&mut self, reply: SwitchReply) {
-        self.switch = match reply {
-            SwitchReply::Accepted => Switch::Accepted,
-            SwitchReply::PeerLinkDown | SwitchReply::NotCurrentDevice => Switch::Refused,
-        };
-    }
-
-    fn view(&self) -> View {
-        View {
-            availability: self.availability(),
-        }
-    }
-
-    /// Poses follow the head while both earbuds are worn and this computer streams (unless the
-    /// switch was refused), and the earbuds do not hold. A removed earbud comes first: nothing
-    /// else matters until it is back. `None` while it is unknown whether this computer streams.
-    fn availability(&self) -> Option<Availability> {
-        if self.worn == Some(false) {
-            return Some(Availability::Unavailable(Blocker::NotWorn));
-        }
-        let flowing = match self.switch {
-            Switch::Refused => false,
-            Switch::Unconfirmed | Switch::Accepted => self.streaming?,
-        };
-        Some(if !flowing {
-            Availability::Unavailable(Blocker::NotStreaming)
-        } else if self.holding {
-            Availability::Unavailable(Blocker::Walking)
-        } else {
-            Availability::Available
-        })
-    }
-
-    /// Record that the stream switch is being sent: it is unconfirmed until the earbuds answer.
-    /// The caller returns `true`, so the link sends it.
-    fn request_switch(&mut self) {
-        self.switch = Switch::Unconfirmed;
-    }
-
-    /// The earbuds cancelled an accepted switch.
-    fn cancel_switch(&mut self) {
-        if self.switch == Switch::Accepted {
-            self.switch = Switch::Unconfirmed;
-        }
     }
 }
 

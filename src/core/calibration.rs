@@ -1,7 +1,8 @@
 //! Calibration: find the upright pose after the "sit upright" prompt.
 //!
-//! [`Calibration`] makes every decision without I/O. The session feeds it poses and the time,
-//! speaks what it asks for, and tells it when that prompt has ended.
+//! [`Calibration`] makes every decision without I/O. The session feeds it poses and asks it what
+//! comes next ([`Calibration::check`]). Between measurements, while the user hears a prompt, it is
+//! a [`Paused`] calibration, which resumes measuring when the prompt has ended.
 //!
 //! The rule: the head is upright once the posture since the prompt has stayed steady for
 //! CALIBRATION. The posture holds between poses, because a tracker with nothing to deliver means a
@@ -36,12 +37,13 @@ pub(crate) const CALIBRATION_TRIES: usize = 4;
 const NUDGE_AFTER: Duration = Duration::from_secs(5);
 const NUDGE_EVERY: Duration = Duration::from_secs(15);
 
-/// What the session should do after [`Calibration::check`].
+/// What comes next, from [`Calibration::check`].
 #[derive(Debug, PartialEq)]
-pub enum Output {
-    /// No pose has arrived: ask the user to move a little, then call
-    /// [`Calibration::prompt_ended`].
-    Nudge,
+pub enum Next {
+    /// Keep feeding poses.
+    Measuring(Calibration),
+    /// No pose has arrived: ask the user to move a little, then resume.
+    Nudge(Paused),
     /// An attempt ended. Show `report`, then act on `outcome`.
     AttemptEnded { report: Report, outcome: Outcome },
 }
@@ -51,9 +53,8 @@ pub enum Output {
 pub enum Outcome {
     /// The head held steady; this is its mean pose, the upright pose.
     Calibrated(Quat),
-    /// The head moved: tell the user, then call [`Calibration::prompt_ended`] to start the next
-    /// attempt.
-    Retry,
+    /// The head moved: tell the user, then resume for the next attempt.
+    Retry(Paused),
     /// The last attempt failed: tell the user they moved. Calibration is over.
     GaveUp,
 }
@@ -88,26 +89,27 @@ pub struct Spread {
     pub p90: f64,
 }
 
+/// Calibration while it measures: one attempt, from a start.
+#[derive(Debug, PartialEq)]
 pub struct Calibration {
-    /// Attempts started so far, including the current one.
+    /// Attempts started so far, including this one.
     attempts: usize,
-    state: State,
+    /// The poses measured since the attempt started (or since the nudge ended).
+    poses: Window<Quat>,
+    /// When to ask the user to move if no pose has come by then.
+    nudge_at: Duration,
 }
 
-enum State {
-    /// An attempt is measuring. `nudge_at` is when to ask the user to move if it has no pose yet.
-    Measuring {
-        poses: Window<Quat>,
-        nudge_at: Duration,
-    },
-    /// A prompt asked for by an [`Output`] is playing. What follows it is in `then`.
-    Prompting { then: AfterPrompt },
-    /// Calibrated or gave up.
-    Done,
+/// Calibration between measurements, while the user hears a prompt. It resumes measuring when the
+/// prompt has ended ([`Paused::resume`]); poses measured before then do not count.
+#[derive(Debug, PartialEq)]
+pub struct Paused {
+    attempts: usize,
+    then: AfterPrompt,
 }
 
-/// What a calibration prompt leads to once it ends. Either way measuring starts afresh then:
-/// poses measured while a prompt plays do not count.
+/// What a paused calibration does when it resumes.
+#[derive(Debug, PartialEq)]
 enum AfterPrompt {
     /// "Move a little" ended: the same attempt goes on.
     SameAttempt,
@@ -118,28 +120,29 @@ enum AfterPrompt {
 impl Calibration {
     /// Start the first attempt at `now`, when the "sit upright" prompt has finished.
     pub fn new(now: Duration) -> Self {
+        Calibration::measuring(1, now, NUDGE_AFTER)
+    }
+
+    /// Attempt `attempts`, measuring from `now`, asking the user to move if no pose has come
+    /// `nudge_in` later.
+    fn measuring(attempts: usize, now: Duration, nudge_in: Duration) -> Self {
         Calibration {
-            attempts: 1,
-            state: State::measuring(now, NUDGE_AFTER),
+            attempts,
+            poses: Window::new(now),
+            nudge_at: now + nudge_in,
         }
     }
 
-    /// A pose measured at `measured`. Poses that arrive while a prompt plays, or after the end,
-    /// are not measured.
+    /// A pose measured at `measured`. A pose measured before the measurement started (during a
+    /// prompt) does not count.
     pub fn pose(&mut self, measured: Duration, q: Quat) {
-        if let State::Measuring { poses, .. } = &mut self.state {
-            poses.add(measured, q);
-        }
+        self.poses.add(measured, q);
     }
 
-    /// Decide at `now`. Every pose measured before `now` must have been passed to
-    /// [`Calibration::pose`]. `None` means keep feeding poses (or a prompt is playing, or
-    /// calibration is over).
-    pub fn check(&mut self, now: Duration) -> Option<Output> {
-        let State::Measuring { poses, nudge_at } = &mut self.state else {
-            return None;
-        };
-        let judged = poses.span(now, CALIBRATION).map(|span| {
+    /// Decide at `now`, after passing the poses that have arrived (tracker contract, "Late
+    /// poses").
+    pub fn check(mut self, now: Duration) -> Next {
+        let judged = self.poses.span(now, CALIBRATION).map(|span| {
             let (mean, p90) = mean_and_p90(&span);
             let spread = Spread {
                 samples: span.len(),
@@ -151,58 +154,44 @@ impl Calibration {
             attempt: self.attempts,
             spread,
         };
-        let (next, output) = match (judged, poses.first()) {
-            (Some((mean, spread)), _) if spread.p90 < CALIBRATION_MAX_P90_DEG => (
-                State::Done,
-                ended(report(Some(spread)), Outcome::Calibrated(mean)),
-            ),
+        match (judged, self.poses.first()) {
+            (Some((mean, spread)), _) if spread.p90 < CALIBRATION_MAX_P90_DEG => {
+                ended(report(Some(spread)), Outcome::Calibrated(mean))
+            }
             (judged, Some(first)) if now >= first + CALIBRATION_ATTEMPT => {
                 let report = report(judged.map(|(_, spread)| spread));
                 if self.attempts == CALIBRATION_TRIES {
-                    (State::Done, ended(report, Outcome::GaveUp))
+                    ended(report, Outcome::GaveUp)
                 } else {
                     let then = AfterPrompt::NextAttempt;
-                    (State::Prompting { then }, ended(report, Outcome::Retry))
+                    ended(report, Outcome::Retry(self.pause(then)))
                 }
             }
-            (_, None) if now >= *nudge_at => {
-                let then = AfterPrompt::SameAttempt;
-                (State::Prompting { then }, Output::Nudge)
-            }
-            _ => return None,
-        };
-        self.state = next;
-        Some(output)
-    }
-
-    /// The prompt asked for by an [`Output`] ended at `now`. Does nothing if none was playing.
-    pub fn prompt_ended(&mut self, now: Duration) {
-        let State::Prompting { then } = &self.state else {
-            return;
-        };
-        let wait = match then {
-            AfterPrompt::SameAttempt => NUDGE_EVERY,
-            AfterPrompt::NextAttempt => {
-                self.attempts += 1;
-                NUDGE_AFTER
-            }
-        };
-        self.state = State::measuring(now, wait);
-    }
-}
-
-fn ended(report: Report, outcome: Outcome) -> Output {
-    Output::AttemptEnded { report, outcome }
-}
-
-impl State {
-    /// Measuring from `now`, asking the user to move if no pose has come `nudge_in` later.
-    fn measuring(now: Duration, nudge_in: Duration) -> State {
-        State::Measuring {
-            poses: Window::new(now),
-            nudge_at: now + nudge_in,
+            (_, None) if now >= self.nudge_at => Next::Nudge(self.pause(AfterPrompt::SameAttempt)),
+            _ => Next::Measuring(self),
         }
     }
+
+    fn pause(self, then: AfterPrompt) -> Paused {
+        Paused {
+            attempts: self.attempts,
+            then,
+        }
+    }
+}
+
+impl Paused {
+    /// The prompt ended at `now`: measuring starts afresh.
+    pub fn resume(self, now: Duration) -> Calibration {
+        match self.then {
+            AfterPrompt::SameAttempt => Calibration::measuring(self.attempts, now, NUDGE_EVERY),
+            AfterPrompt::NextAttempt => Calibration::measuring(self.attempts + 1, now, NUDGE_AFTER),
+        }
+    }
+}
+
+fn ended(report: Report, outcome: Outcome) -> Next {
+    Next::AttemptEnded { report, outcome }
 }
 
 /// Mean orientation of `samples` and the 90th-percentile angle (degrees) of samples from it.

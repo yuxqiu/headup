@@ -1311,7 +1311,8 @@
   `stream.rs:102-107`). Rejected for now: an async client (the `pulseaudio` crate directly, cancel by dropping the
   request; loses cpal's portability), a child process per sound (killable, but loses the exact end time that
   moved playback in-process), and a one-sound-in-flight guard (limits the leak to one thread; not needed yet).
-- **`Earbuds::request_switch` returns nothing.** It returned a constant `true` so that `resend &&
+- **`Earbuds::request_switch` returns nothing** (replaced the same day by "A paused calibration is its own value;
+  the link records the switch where it sends it": `request_switch` is gone). It returned a constant `true` so that `resend &&
   self.request_switch()` read as one expression, hiding the state change; callers now return `true` themselves.
 - **`Window::span` states that it discards samples** no later span can need, so `now` must not go backwards.
 - **Kept.** `GlideFilter::drop_after` (its doc names both effects, and every caller needs both); "unit
@@ -1432,3 +1433,91 @@
 - **Behaviour unchanged:** moves only; every existing test passes as it was.
 - **Kept flat:** `calibration.rs` (one decision type, parallel to `monitor/`), `steady.rs` (shared by calibration,
   the detector and `Tracking`), `record.rs`, `tracker.rs`, `quat.rs`.
+
+## 2026-11-15: The detector reports timed `PostureEvent`s through `pose` + `check` (user)
+- **What.** `Detector::update -> Update { posture: Option<PostureChange>, reanchored: Option<f64> }` and
+  `Detector::tick -> Option<f64>` are replaced by `pose(t, pitch)` and `check(now) -> Vec<(Duration,
+  PostureEvent)>`, with `PostureEvent::{SlouchStarted, Recovered, Reanchored { upright }}`, in order, each at the
+  time of the sample or check that showed it, the same rhythm as `Calibration` and `Monitor`. `Monitor::check`
+  is one loop over those events: reminders due by an event's time come before it, then the event; then the
+  reminders due by `now`. `Update` and `PostureChange` are gone.
+- **Why.** User: two independent options in one return value, and a bare `Option<f64>` from `tick` that said
+  neither what it was nor that a re-anchor is all a tick can produce, were easy to misread. One event type means
+  no caller can read the posture change and forget the re-anchor. The ordering rule "reminders due before a
+  posture change come first" is now stated once instead of holding because `due` ran after every pose.
+- **Tests.** The `Monitor` tests, session tests and replays pass as they were. Detector tests read events (`feed`
+  checks after every sample, as the monitor does; `tick` calls became `check`).
+- **One behaviour change (found by review).** A sit-up measured at or just after a reminder's due time, delivered
+  before a check at that time ran, now plays that reminder and then the tink; before, the reminder was dropped
+  and no tink followed, because `recovered` ran before `due` on that pose. The user was still slouching when it
+  fell due, so the new outcome is the one a check at that moment would give, and it no longer depends on whether
+  the pose or the check came first (a window of milliseconds at each due time). Tests
+  `sitting_up_as_a_reminder_falls_due_plays_it_then_tinks` and
+  `a_batch_keeps_reminders_before_the_change_that_follows_them`. A randomized comparison with the previous
+  `Monitor` (about 127k outputs, review probe) found no other difference under the session's wake-up pattern.
+
+## 2026-11-15: Contracts carried by types; late poses stated once (user: "fix all", thermos review)
+- **Late poses.** Five types documented "every pose measured before `now` must have been passed", which the
+  rebuilder's brief hold (up to 49 ms, "The backend words every 'no tracking'") breaks. The rule is stated once, in
+  the tracker contract ("Late poses": judged from its own time on, never undoing a decision); the types refer to
+  it. `Window::span` documents its real guarantee for an earlier `now` (`None` or the right span). AGENTS.md's
+  "holds back only noise" now matches the tracker contract.
+- **`PromptPlaying`** (replaced the same day by "A paused calibration is its own value…"). `Output::Nudge` and `Outcome::Retry` carry a `#[must_use]` token that
+  `Calibration::prompt_ended` consumes; only calibration makes one, while it waits for that prompt. Forgetting to
+  end a prompt is a compiler warning instead of a silent hang, and ending one that was never asked for cannot be
+  written (the out-of-turn test lost that case). Rejected again, as on 2026-11-13: `Step::Say(Phrase)`.
+- **`SwitchOn`** (refined the same day: the link records the switch where it sends it). `Earbuds` handlers return
+  `Option<SwitchOn>`; only `request_switch` makes one, while recording the
+  switch as sent, so the record and the send cannot drift apart (replaces handlers returning `bool`).
+- **Refusal reasons kept.** `Switch::Refused(Refusal)`; reply 1 (`PeerLinkDown`) reports its own
+  `Blocker::PeerLinkDown` ("the two earbuds have lost their link to each other…", `[unverified]`: reply 1 has never
+  been recorded) instead of "play audio on this computer". Behaviour change in
+  `rewearing_after_a_refusal_makes_tracking_available_again` (expects the new reason). Open: if audio is already
+  playing, nothing resends the switch after a reply 1 until a 43/54 push or a re-wear.
+- **Session.** `Tracking::unavailable()` returns the interruption (`Flow<()>`, used with `?`) instead of a `bool`.
+  Poses reach `Tracking` the way they reach calibration and the monitor: from `next()`'s return value in
+  `wait_for_tracking`, not as a side effect in `handle`. The status line has one deadline (`status_due`).
+- **`Phrase` is calibration prompts only.** A private `Voice` (the `voices!` registry, all embedded clips) holds
+  the spoken reminder too; `Phrase::voice` maps prompts to clips, so `Sound::Prompt` of the reminder cannot be
+  written.
+- **Tests.** Typed `testing::ScriptFinished` and `freeclip2::ConnectionClosed` replace matching error text;
+  `SessionRun::sounds` (was `cues`); `wait_until_due` lives in the session tests; their `Sim` nests a `PlayerSim`;
+  one `frames` helper in replay.rs. New: `a_batch_keeps_reminders_before_the_change_that_follows_them`,
+  `sitting_up_as_a_reminder_falls_due_plays_it_then_tinks`, `a_batch_reports_each_event_at_its_sample_time`.
+- **Docs.** `LogEvent::TrackingUnavailable` (calibration or monitoring ends), RUNBOOK `--log` wording, HANDOFF
+  rewritten to the current state (history stays in SESSION_LOG and DECISIONS).
+
+## 2026-11-15: A paused calibration is its own value; the link records the switch where it sends it (user)
+- **Calibration.** Replaces the `PromptPlaying` token and `prompt_ended`. `Calibration` is only ever measuring;
+  `check(self, now) -> Next` consumes it and returns `Next::Measuring(Calibration)`, `Next::Nudge(Paused)` or
+  `Next::AttemptEnded { report, outcome }`, with `Outcome::{Calibrated(Quat), Retry(Paused), GaveUp}`. A `Paused`
+  calibration (between measurements, while the user hears a prompt) can only `resume(now)`, which gives back a
+  measuring `Calibration`. The internal `Prompting` and `Done` states, the `unreachable!`, and "calls out of turn
+  do nothing" are gone: those calls cannot be written (`calls_out_of_turn_do_nothing` removed). The named outcomes
+  stay, so the phrase choice stays in the session (as 2026-11-13 wanted when it rejected `Step::Say(Phrase)`).
+- **Why.** User: the token "reads confusing and shows a design gap". It patched a handshake (calibration asks for
+  a prompt, the session plays it, then says it ended) in which a `Calibration` existed in a state where it could do
+  nothing useful; the paused state is now a different value.
+- **Link.** `Earbuds` handlers only decide (`Option<SwitchOn>`, no state change); `Link::send_switch_on` records the
+  switch as unconfirmed and sends the frame, in one place. `Earbuds::request_switch` is gone. The token no longer
+  has to keep two places in step.
+- **Behaviour unchanged**: the session tests, link tests and replays pass as they were; calibration tests use the
+  new shape.
+
+## 2026-11-15: `Earbuds` has its own file (user)
+- `src/devices/freeclip2/earbuds.rs` holds `Earbuds` (the facts and their handlers), `Switch`, `Refusal`,
+  `SwitchOn`, and the derived `Availability` and `Blocker` with its sentences. `link.rs` keeps the coordination:
+  `Link`, `PoseFrame`, `Outputs`, the raw-log records and `View` (built in `Link::report` from
+  `Earbuds::availability`). The link records a sent switch through `Earbuds::switch_sent`. Move only: every test
+  passes unchanged apart from importing `Blocker` from its new module.
+
+## 2026-11-15: `Earbuds` keeps the earbuds' answer; its rules are one list (user: "not very readable")
+- **What.** `Switch` (`Unconfirmed`/`Accepted`/`Refused(Refusal)`) and `Refusal` are gone: `Earbuds::answer:
+  Option<SwitchReply>` holds the earbuds' answer to the last "stream on" that still stands (`None`: no answer yet,
+  or an accepted one they cancelled), in the protocol's own words. `availability()` reads as the priority list it
+  is (worn, then the answer, then streaming, then holding). The module doc states the four rules once, each with
+  its evidence (tracking flows when…; when "stream on" is sent; what cancels an accepted answer; holds), and field
+  and method docs point to them instead of repeating the evidence.
+- **Kept.** `Availability`/`Blocker` (the session's view, one sentence per blocker; an `Option<Blocker>` would
+  make "available" implicit) and `SwitchOn` (the handlers' one request).
+- **Behaviour unchanged**: refactor; every test passes as it was.

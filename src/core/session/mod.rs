@@ -4,7 +4,7 @@ mod sounds;
 mod timeline;
 mod tracking;
 
-use super::calibration::{Calibration, Outcome, Output};
+use super::calibration::{Calibration, Next, Outcome};
 use super::monitor::{self, Monitor};
 use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
@@ -153,7 +153,6 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
         match event {
             Event::Pose { at, orientation } => {
                 let measured = self.time.deliver(at)?;
-                self.tracking.pose_arrived(measured, orientation);
                 return Ok(Some(Pose {
                     measured,
                     at,
@@ -167,9 +166,7 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
             }
             Event::Unavailable { reason } => {
                 self.rec.event(LogEvent::TrackingUnavailable { reason })?;
-                if self.tracking.unavailable() {
-                    return Err(Interrupt::Unavailable);
-                }
+                self.tracking.unavailable()?;
             }
         }
         Ok(None)
@@ -197,7 +194,9 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
             if let Tracking::Live = self.tracking {
                 return Ok(());
             }
-            self.next(JUDGE_EVERY).await?;
+            for pose in self.next(JUDGE_EVERY).await? {
+                self.tracking.pose_arrived(pose.measured, pose.orientation);
+            }
         }
     }
 
@@ -211,22 +210,22 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
             for pose in self.next(JUDGE_EVERY).await? {
                 cal.pose(pose.measured, pose.orientation);
             }
-            match cal.check(self.now()) {
-                None => {}
-                Some(Output::Nudge) => {
+            cal = match cal.check(self.now()) {
+                Next::Measuring(cal) => cal,
+                Next::Nudge(paused) => {
                     self.sounds.prompt(Phrase::MoveHead).await?;
-                    cal.prompt_ended(self.now());
+                    paused.resume(self.now())
                 }
-                Some(Output::AttemptEnded { report, outcome }) => {
+                Next::AttemptEnded { report, outcome } => {
                     self.rec.note(&report.to_string());
                     match outcome {
                         Outcome::Calibrated(upright) => {
                             self.sounds.prompt(Phrase::Calibrated).await?;
                             return Ok(Some(upright));
                         }
-                        Outcome::Retry => {
+                        Outcome::Retry(paused) => {
                             self.sounds.prompt(Phrase::Moved).await?;
-                            cal.prompt_ended(self.now());
+                            paused.resume(self.now())
                         }
                         Outcome::GaveUp => {
                             self.sounds.prompt(Phrase::Moved).await?;
@@ -234,18 +233,18 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
                         }
                     }
                 }
-            }
+            };
         }
     }
 
     /// Monitor until interrupted: earbuds off, tracking unavailable, or an error.
     async fn monitor(&mut self, baseline: Quat) -> Flow<()> {
         let mut monitor = Monitor::new(baseline, self.tracker.traits());
-        let mut last_status: Option<Duration> = None;
+        // When the live status line is next refreshed: at once, then every STATUS_EVERY.
+        let mut status_due = Duration::ZERO;
         loop {
             // Wake for the next status refresh, or when the next reminder is due if that is sooner.
             // Times are exact, so the reminder falls due at that point.
-            let status_due = last_status.map_or(Duration::ZERO, |last| last + STATUS_EVERY);
             let wake = monitor
                 .next_due()
                 .map_or(status_due, |due| due.min(status_due));
@@ -263,8 +262,8 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
                     }
                 }
             }
-            if last_status.is_none_or(|last| t - last >= STATUS_EVERY) {
-                last_status = Some(t);
+            if t >= status_due {
+                status_due = t + STATUS_EVERY;
                 self.rec.status(monitor.status())?;
             }
         }
