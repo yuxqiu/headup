@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-15 06:06 UTC
+Last updated: 2026-11-15 06:59 UTC
 
 ## Current state
 - The protocol works.
@@ -34,6 +34,10 @@ Last updated: 2026-11-15 06:06 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- Staged (117 tests, `nix flake check` incl. the new rustdoc check passes): `Cue` in cues.rs; detector reports
+  posture, `core::reminders` owns the schedule; whole-codebase thermos fixes (exit without waiting on a stuck
+  sound, `stop_stream`, no `POLL`, `Player`/`DesktopPlayer`, `ReplayTracker` on the real backend). Next: a short
+  live run (calibrate, slouch past the spoken reminder, stop) on the new build, then bump to 0.4.6 and release.
 - After v0.4.5 (staged, 114 tests, `nix flake check` passes): `Stillness` owns "no data means still"
   (`Window::start`); one bounded playback path (`audio::play_bounded`, hang limit documented); `CueSink::play(Sound)`
   with the session's `Sounds` (prompts awaited, reminders collected in `Session::next`, failures logged as

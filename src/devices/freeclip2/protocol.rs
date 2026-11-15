@@ -133,9 +133,9 @@ fn switch_reply(f: &Frame) -> Result<Message> {
 
 /// 43/89: TLV 1 = u32 LE sequence number, TLV 2 = 4 x f32 LE (w, x, y, z), a unit quaternion
 /// (FINDINGS "Hardware test"). A reading that is no rotation at all (a NaN or infinite component,
-/// or all zero) is malformed: nothing downstream could make sense of it. Its exact length is not
-/// checked: the angle math normalises, so a firmware that sends slightly longer or shorter
-/// quaternions still works.
+/// or all zero) is malformed: nothing downstream could make sense of it. Its norm is not checked
+/// against 1: the angle math normalises, so a firmware that sends quaternions slightly off unit
+/// length still works.
 fn sample(f: &Frame) -> Result<Message> {
     let seq: [u8; 4] = f.tlv(1).context("no sequence number")?.try_into()?;
     let quat: [u8; 16] = f.tlv(2).context("no quaternion")?.try_into()?;

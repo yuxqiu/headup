@@ -1,4 +1,5 @@
-//! Audio and desktop cues.
+//! What headup plays: spoken calibration prompts ([`Phrase`]) and reminders ([`Cue`]), both a
+//! [`Sound`], and the [`Player`] that plays them on this computer ([`DesktopPlayer`]).
 //!
 //! Sounds play in-process on the default audio output ([`audio`]). Tones are generated at startup.
 //! Spoken prompts were pre-recorded with Piper's "alba" voice and are embedded in the binary
@@ -6,13 +7,12 @@
 //! `notify-rust`.
 
 use super::audio;
-use super::detector::Cue;
 use super::wav::Pcm;
 use anyhow::{Context, Result};
 use std::sync::Arc;
 
 /// Generates [`Phrase`] and [`PhraseClips`] (one decoded clip per phrase) from `Variant => "clip"`
-/// pairs. Each clip is embedded from assets/voice/<clip>.wav.
+/// pairs. Each clip is embedded from `assets/voice/<clip>.wav`.
 macro_rules! phrases {
     ($($phrase:ident => $clip:literal),+ $(,)?) => {
         /// Fixed spoken prompts. Their text is in tools/gen_voice.sh.
@@ -72,6 +72,20 @@ impl Phrase {
     }
 }
 
+/// A reminder while monitoring: how headup tells the user about their posture. The reminder
+/// schedule decides when each is due ([`super::reminders::Reminders`]); a [`Player`] plays them.
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize)]
+pub enum Cue {
+    /// Soft tone in the earbuds, the first reminder of a slouch.
+    Tone,
+    /// Spoken reminder; repeated while the slouch goes on.
+    Speak,
+    /// Desktop notification.
+    Notify,
+    /// The "tink": the user sat back up after at least one reminder started.
+    Recovered,
+}
+
 /// Something to play: a spoken calibration prompt, or a reminder cue.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Sound {
@@ -79,8 +93,8 @@ pub enum Sound {
     Reminder(Cue),
 }
 
-/// Where the session sends sounds. [`Cues`] plays them; tests record them.
-pub trait CueSink {
+/// Where the session sends sounds. [`DesktopPlayer`] plays them; tests record them.
+pub trait Player {
     /// Start `sound` now, and return a future that ends once it has been heard (a notification:
     /// once shown), with an error if it could not be played. Playback starts on the call, not
     /// when the future is first polled, so a caller may keep the future and do other work while
@@ -88,17 +102,18 @@ pub trait CueSink {
     fn play(&self, sound: Sound) -> impl Future<Output = Result<()>> + 'static;
 }
 
-pub struct Cues {
+/// Plays sounds on this computer's default audio output and shows desktop notifications.
+pub struct DesktopPlayer {
     tone: Arc<Pcm>,
     tink: Arc<Pcm>,
     /// Every phrase's clip, decoded once at startup.
     phrases: PhraseClips,
 }
 
-impl Cues {
+impl DesktopPlayer {
     pub fn new() -> Result<Self> {
         let phrases = PhraseClips::decode()?;
-        Ok(Cues {
+        Ok(DesktopPlayer {
             // Notes chosen by ear, not measured: the reminder falls from C5 to A4 (soft), the
             // tink rises from A5 to E6 (bright). The user heard both on the earbuds in the
             // 2026-11-13 live check (data/walk3*.jsonl).
@@ -107,19 +122,15 @@ impl Cues {
             phrases,
         })
     }
-
-    fn phrase(&self, p: Phrase) -> Arc<Pcm> {
-        self.phrases.get(p)
-    }
 }
 
-impl CueSink for Cues {
+impl Player for DesktopPlayer {
     fn play(&self, sound: Sound) -> impl Future<Output = Result<()>> + 'static {
         let pcm = match sound {
-            Sound::Prompt(p) => self.phrase(p),
+            Sound::Prompt(p) => self.phrases.get(p),
             Sound::Reminder(Cue::Tone) => self.tone.clone(),
             Sound::Reminder(Cue::Recovered) => self.tink.clone(),
-            Sound::Reminder(Cue::Speak) => self.phrase(Phrase::LiftHead),
+            Sound::Reminder(Cue::Speak) => self.phrases.get(Phrase::LiftHead),
             Sound::Reminder(Cue::Notify) => {
                 let shown = tokio::spawn(notify());
                 return finished(shown, sound);
@@ -141,7 +152,7 @@ async fn notify() -> Result<()> {
     let shown = notify_rust::Notification::new()
         .appname("headup")
         .summary("Sit up straight")
-        // The text names no duration, because the detector's settings decide when this fires.
+        // The text names no duration, because the reminder schedule decides when this fires.
         .body("You have been looking down for a while.")
         .show_async()
         .await;

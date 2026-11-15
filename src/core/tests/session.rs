@@ -2,13 +2,13 @@
 
 use super::*;
 use crate::core::calibration::CALIBRATION_TRIES;
+use crate::core::cues::Cue::*;
 use crate::core::cues::Phrase::*;
 use crate::core::cues::Sound::{self, Prompt, Reminder};
-use crate::core::detector::Cue::*;
 use crate::core::steady::STILL;
 use crate::core::tracker::TrackerTraits;
 use crate::testing::secs;
-use crate::testing::{SessionRun, run_session_failing, wait_until_due};
+use crate::testing::{PlayerSim, SessionRun, run_session, wait_until_due};
 use anyhow::bail;
 use std::collections::VecDeque;
 
@@ -139,7 +139,11 @@ struct Sim {
 /// Run `script` to its end and report what the session did.
 async fn simulate(script: Vec<Script>, sim: Sim) -> SessionRun {
     let mut tracker = FakeTracker::new(script, sim.drifts);
-    run_session_failing(&mut tracker, sim.prompt, sim.failing).await
+    let player = PlayerSim {
+        prompt: sim.prompt,
+        failing: sim.failing,
+    };
+    run_session(&mut tracker, player).await
 }
 
 use Script::*;

@@ -1332,3 +1332,68 @@
   already in the tree through cpal). Rejected: returning a `JoinHandle` collected on each monitoring pass (a second,
   poll-based way to learn things beside the wait) and a shared `Arc<Mutex<Recorder>>` (output from anywhere, no
   single owner). On an interruption the reminders keep playing and their outcome is still collected later.
+
+## 2026-11-15: `Cue` lives in cues.rs (user)
+- **What.** `Cue` (`Tone`, `Speak`, `Notify`, `Recovered`) moved from detector.rs to cues.rs, beside `Phrase` and
+  `Sound`. The detector imports it to say which reminder is due (replaced the same day by "The detector reports
+  posture; `Reminders` decides when to remind": the detector no longer uses `Cue`); `cues`, `record` and the tests import it from
+  `cues`. No behaviour change; only import paths changed in tests.
+- **Why.** A `Cue` names how a reminder reaches the user (a sound, speech, a notification). The detector decides
+  when one is due; the vocabulary of reminders belongs with the module that plays them. Before, `cues` and `record`
+  imported it from the detector.
+- **Rejected.** Detector outputs as escalation levels with the media chosen in `cues`: the schedule (now in
+  `reminders::Schedule`) is defined per medium (`tone_after`, `speak_after`, `notify_after`), so levels would only rename the same thing.
+
+## 2026-11-15: The detector reports posture; `Reminders` decides when to remind (user)
+- **What.** The detector keeps smoothing, the 20°/15° thresholds and re-anchoring, and reports
+  `PostureChange::{SlouchStarted, Recovered}` per sample (`Update::posture`); `tick` only lets re-anchoring settle.
+  `Episode`, its `Timer`s, `next_due` and the schedule fields of `detector::Config` are gone. New
+  `core::reminders`: `Schedule` (tone 10 s, speech 30 s and every 120 s, notification 60 s; DECISIONS "Detector
+  behaviour") and `Reminders` (`slouch_started`, `due(now)`, `recovered`, `next_due`). The schedule is a function of
+  slouch time: what falls due between the time last judged and now, each reminder once. The one stored fact is
+  whether a reminder played (`cued`), because a pose measured before the tone can arrive after it played, so the
+  tink must follow what played, not the clock. The session passes posture changes on and wakes at
+  `Reminders::next_due`.
+- **Why.** User asked whether the detector should own the timers. Posture (what the head does) and the reminder
+  schedule (when to tell the user) change for different reasons; the schedule is now testable on times alone, and
+  the detector no longer imports `Cue`.
+- **Tests.** Behaviour unchanged: every session test and replay passes as it was. Detector tests now assert
+  posture changes (`slouch_starts_and_ends_at_the_thresholds`, `hysteresis_keeps_the_slouch_between_thresholds`,
+  `upright_never_changes_posture`; re-anchor tests unchanged apart from `tick` returning the upright); the schedule
+  tests moved to tests/reminders.rs (escalation, short slouch, exact `next_due`, late times, tink after a played
+  reminder). One difference in edge cases: a repeated spoken reminder is due `renudge` after the previous one's due
+  time, not after the time it fired; the session wakes at the due time, so they coincide.
+- **Rejected.** The session owning the timers (decisions in the I/O layer); reminders sampling the detector's
+  current posture instead of change events (a batch of queued poses can hold slouch, recovery and slouch again);
+  keeping the schedule in the detector (posture code would keep importing `Cue`, and the schedule could be tested
+  only through pitch samples).
+
+## 2026-11-15: Whole-codebase thermos review after the detector split (user: "fix all and refactor")
+- **Exit does not wait for a stuck sound.** Dropping tokio's runtime waits, without limit, for every
+  `spawn_blocking` thread, including one stuck in a sound server that stopped answering (the known limit in
+  "Rules live with the facts they need"); a probe measured a 3 s blocked thread delaying exit by 3.0 s, so systemd
+  would kill headup after `TimeoutStopSec`. `main` now builds the runtime and ends with `shutdown_background`:
+  the stream is off and the logs are written by then. No timeout constant.
+- **A stop signal with a dead link exits cleanly.** Both stop paths use one `stop_stream`, which only warns (the
+  link is usually gone); before, the signal path returned the error and the unit showed as failed.
+  `Attempt::Failed` carries the `anyhow::Error` with context instead of a formatted string.
+- **`POLL` removed.** Monitoring wakes for the next status refresh (`STATUS_EVERY`) or the next reminder,
+  whichever is sooner; `idle` waits exactly until its end. `STATUS_EVERY` also keeps re-anchoring settling on a
+  silent head.
+- **Names.** `CueSink`/`Cues`/`FakeCues` are `Player`/`DesktopPlayer`/`FakePlayer`: they play prompts and
+  reminders, while `Cue` means a reminder only. The detector's `Settling` state is `Reanchoring` (the session's
+  `Tracking::Settling` is a different wait); its `steady()` is `within_settle_range`; `Session::reanchored` is
+  `log_reanchored`; rebuild.rs's `Arrival::GlideEnd` is `ToIdentity` (it also starts holds), and the branch
+  comment that contradicted its first case is rewritten.
+- **"Started", not "played".** `LogEvent::Cue` is logged when a reminder starts; `CueFailed` may follow. A reminder
+  that started and then failed still earns the tink: it was due, and its failure is reported.
+- **Docs that the split left stale** (cues.rs, the `POLL` doc link, AGENTS.md's `Posture`/`Episode` examples, the
+  RUNBOOK's "Rust detector" and "calibration … after re-wearing") are fixed. To catch the next one, `nix flake
+  check` runs rustdoc with warnings denied (`checks.doc`, private items included); `[unmeasured]` tags in doc
+  comments are escaped so rustdoc does not read them as links. Sources added for the generated tones (`wav.rs`).
+- **Tests.** `ReplayTracker` runs the real `FreeClip2` backend over an in-memory socket, written by a task at each
+  sample's recorded time, instead of copying the backend's read loop (AGENTS.md); closing the socket ends the
+  recording ("script finished"). `testing::run_session` takes a `PlayerSim` (prompt length, a failing reminder),
+  replacing `run_session_failing`. Detector tests share one `feed` helper; replay tests one `without_speech`
+  filter. All 117 tests pass unchanged in what they assert.
+- **Left as they are (deliberate):** the one-field `View` (user: not now), `request_switch` returning nothing.

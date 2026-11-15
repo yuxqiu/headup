@@ -1,17 +1,19 @@
-//! Replays recorded 43/89 samples (tests/fixtures/freeclip2/*.csv) through the real protocol
-//! ([`Link`]), as the socket would deliver them. [`ReplayTracker`] also runs them through the real
-//! posture session.
+//! Replays recorded 43/89 samples (tests/fixtures/freeclip2/*.csv) through the real protocol:
+//! [`Replay`] feeds them to a [`Link`] directly, and [`ReplayTracker`] writes them to the real
+//! backend's socket, so the real posture session can run on them.
 
 use crate::core::quat::Quat;
+use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use crate::devices::freeclip2::FreeClip2;
 use crate::devices::freeclip2::link::Link;
 use crate::devices::freeclip2::protocol::sample_frame;
-use crate::testing::{secs, wait_until_due};
-use anyhow::{Result, bail};
+use crate::testing::secs;
+use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use std::collections::VecDeque;
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 use tokio::time::Instant;
 
 /// One recorded 43/89 sample, received at `t` since the recording began. `phase` is the
@@ -120,43 +122,50 @@ pub fn replay(rows: &[Row]) -> Vec<Out> {
         .collect()
 }
 
-/// A [`HeadTracker`] that replays a recording through the protocol on tokio's paused clock, so the
-/// real session can run on it. Time zero is when it is created. It fails with "script finished"
-/// when the recording is over.
-pub struct ReplayTracker {
-    replay: Replay,
-    pending: Option<(Instant, Event)>,
-}
+/// A [`HeadTracker`] that replays a recording through the real backend on tokio's paused clock, so
+/// the real session can run on it: [`FreeClip2`] reads an in-memory socket, and a task writes each
+/// sample to it as a 43/89 frame at its recorded time. Time zero is when it is created. When the
+/// recording is over, the task closes the socket; once everything before that has been delivered,
+/// the tracker fails with "script finished".
+pub struct ReplayTracker(FreeClip2);
 
 impl ReplayTracker {
     pub fn new(rows: &[Row]) -> Self {
-        ReplayTracker {
-            replay: Replay::new(rows, Instant::now()),
-            pending: None,
-        }
+        let start = Instant::now();
+        let frames: Vec<(Instant, Vec<u8>)> = rows
+            .iter()
+            .map(|r| (start + r.t, sample_frame(r.seq, r.raw).encode()))
+            .collect();
+        let (ours, mut earbuds) = tokio::io::duplex(1 << 16);
+        tokio::spawn(async move {
+            for (at, bytes) in frames {
+                tokio::time::sleep_until(at).await;
+                earbuds.write_all(&bytes).await.unwrap();
+            }
+            // Dropping `earbuds` closes the socket: the backend reports the end of the recording.
+        });
+        let adapter = "00:00:00:00:00:01".parse().unwrap();
+        ReplayTracker(FreeClip2::start(ours, adapter, DeviceLog::new(None)))
     }
 }
 
 impl HeadTracker for ReplayTracker {
     async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        if self.pending.is_none() {
-            self.pending = self.replay.next();
-        }
-        let Some((when, _)) = self.pending else {
-            bail!("script finished");
-        };
-        if !wait_until_due(when, timeout).await {
-            return Ok(None);
-        }
-        Ok(self.pending.take().map(|(_, event)| event))
+        self.0.next_event(timeout).await.map_err(|e| {
+            if e.root_cause().to_string() == "earbuds closed the connection" {
+                anyhow!("script finished")
+            } else {
+                e
+            }
+        })
     }
 
     async fn stop(&mut self) -> Result<()> {
-        Ok(())
+        self.0.stop().await
     }
 
     fn traits(&self) -> TrackerTraits {
-        FreeClip2::TRAITS
+        self.0.traits()
     }
 }
 

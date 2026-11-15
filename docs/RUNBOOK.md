@@ -24,12 +24,12 @@ Device MAC used in examples: `AA:BB:CC:DD:EE:01`, a made-up address; use your ea
   `python3 -I tools/freeclip2/device/glide_move.py AA:BB:CC:DD:EE:01 data/glide_move.csv [--trials 3]`
 - Spatial mode query/set: `python3 -I tools/freeclip2/device/probe.py MAC '43/180:1=18,2=,3='` / `'43/180:1=18,2=01'`
   (0 off, 1 follow, 2 fixed).
-- Rust detector (inside `nix develop`):
+- headup itself (inside `nix develop`):
   - Tests: `cargo test`. They include replays of the recordings in `tests/fixtures/`.
   - Run: `cargo run --release -- [AA:BB:CC:DD:EE:01] [--log data/session.jsonl]`
   - It needs the BlueZ D-Bus API, a desktop notification server, and a PulseAudio server (PipeWire provides one;
-    without it sound goes to ALSA's default device). Calibration is spoken at start and after
-    re-wearing; stop with Ctrl-C or SIGTERM (`systemctl --user stop headup`), which disables the stream; a second
+    without it sound goes to ALSA's default device). Calibration is spoken whenever head tracking
+    starts or comes back; stop with Ctrl-C or SIGTERM (`systemctl --user stop headup`), which disables the stream; a second
     one quits without waiting for that.
 - Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match the `phrases!` list in
   `src/core/cues.rs`.
@@ -56,9 +56,10 @@ Device MAC used in examples: `AA:BB:CC:DD:EE:01`, a made-up address; use your ea
 - Turn a raw log into a publishable test fixture (samples only, time since the first sample; no addresses, serial
   or wall-clock time): `python3 -I tools/freeclip2/recordings/to_fixture.py data/X_raw.jsonl tests/fixtures/freeclip2/X.csv`.
   The rebuilder tests replay every CSV in that directory.
-  - Guided live test (headup stopped; prompts are spoken, printed and shown as notifications; run in `nix develop`):
-    `python3 -I tools/freeclip2/device/grounding_test.py AA:BB:CC:DD:EE:01 bluez_output.AA_BB_CC_DD_EE_01.1 data/grounding_test.log`
-    (stops with a non-zero exit if the RFCOMM link drops or the silence player dies)
+- Guided live test of the FreeClip 2 device logic (headup stopped; prompts are spoken, printed and shown as
+  notifications; run in `nix develop`):
+  `python3 -I tools/freeclip2/device/grounding_test.py AA:BB:CC:DD:EE:01 bluez_output.AA_BB_CC_DD_EE_01.1 data/grounding_test.log`
+  (stops with a non-zero exit if the RFCOMM link drops or the silence player dies)
 - Command catalogue: `python3 -I tools/freeclip2/app/used_cmds.py research/jadx_out/sources` (service-43 IDs the app sends)
 - Custom-instruction reference (WS63 encodings; this chip differs, see FINDINGS): `git clone --depth 1 https://github.com/hispark-rs/hisi-riscv-qemu research/hisi-riscv-qemu` (`docs/reference/xlinx-isa.md`).
 - References: `git clone --depth 1 https://github.com/melianmiko/OpenFreebuds research/openfreebuds`; posture apps in

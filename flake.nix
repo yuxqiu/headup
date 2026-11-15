@@ -38,7 +38,8 @@
       });
 
       # `nix flake check`: the package build (which runs the tests), Clippy with warnings denied,
-      # and rustfmt. This is what CI runs.
+      # rustdoc with warnings denied (so a doc link to a removed item fails), and rustfmt. This is
+      # what CI runs.
       checks = forAllSystems (
         pkgs:
         let
@@ -50,6 +51,14 @@
             pname = "headup-clippy";
             nativeBuildInputs = old.nativeBuildInputs ++ [ pkgs.clippy ];
             buildPhase = "cargo clippy --offline --locked --all-targets -- --deny warnings";
+            doCheck = false;
+            installPhase = "touch $out";
+          });
+          doc = pkg.overrideAttrs (old: {
+            pname = "headup-doc";
+            buildPhase = ''
+              RUSTDOCFLAGS="--deny warnings" cargo doc --offline --locked --no-deps --document-private-items
+            '';
             doCheck = false;
             installPhase = "touch $out";
           });

@@ -1,11 +1,12 @@
 //! Device-agnostic posture session: spoken calibration, then monitoring with cues.
 
 use super::calibration::{Calibration, Outcome, Output};
-use super::cues::{CueSink, Phrase, Sound};
-use super::detector::Cue;
-use super::detector::{Config, Detector};
+use super::cues::Cue;
+use super::cues::{Phrase, Player, Sound};
+use super::detector::{Config, Detector, PostureChange};
 use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
+use super::reminders::{Reminders, Schedule};
 use super::steady::Stillness;
 use super::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::{Context, Result, ensure};
@@ -19,15 +20,12 @@ use tokio::time::Instant;
 /// After a failed calibration (head kept moving), wait this long before asking again (DECISIONS
 /// "Refactor (user approved)", 2026-11-11).
 const CALIBRATION_RETRY: Duration = Duration::from_secs(60);
-/// How often the live status line is refreshed (DECISIONS "Thermo review applied").
+/// How often the live status line is refreshed (DECISIONS "Thermo review applied"). Monitoring
+/// wakes at least this often, which also lets re-anchoring settle on a silent head.
 const STATUS_EVERY: Duration = Duration::from_secs(1);
-/// How long to wait for a tracker event before re-checking timers. Reminders wake at their own due
-/// time ([`Detector::next_due`]), so this only bounds how late the status line and the idle loop
-/// look again; it matches STATUS_EVERY.
-const POLL: Duration = Duration::from_secs(1);
 /// How often calibration and the wait for a still head judge the head. A prompt comes at most this
 /// long after the head meets its condition (DECISIONS "Calibration outputs, one window type, review
-/// fixes"); a delay that short was not measured for noticeability [unmeasured].
+/// fixes"); a delay that short was not measured for noticeability \[unmeasured\].
 const JUDGE_EVERY: Duration = Duration::from_millis(200);
 
 /// Why a cycle ended early. A cycle waits for tracking, calibrates, then monitors. `?` carries the
@@ -150,28 +148,28 @@ impl Tracking {
 /// only after it. Monitoring does not wait for a reminder: it keeps judging while one plays, so the
 /// recovery tink is on time even if the user sits up during speech. A reminder keeps playing to its
 /// end even if monitoring stops, and its outcome is collected whenever the session next waits.
-struct Sounds<'a, C: CueSink> {
-    sink: &'a C,
+struct Sounds<'a, C: Player> {
+    player: &'a C,
     /// Reminders still playing, each ending with its outcome.
     reminders: FuturesUnordered<LocalBoxFuture<'static, (Cue, Result<()>)>>,
 }
 
-impl<'a, C: CueSink> Sounds<'a, C> {
-    fn new(sink: &'a C) -> Self {
+impl<'a, C: Player> Sounds<'a, C> {
+    fn new(player: &'a C) -> Self {
         Sounds {
-            sink,
+            player,
             reminders: FuturesUnordered::new(),
         }
     }
 
     /// Speak a calibration prompt and return once it has been heard.
     async fn prompt(&self, p: Phrase) -> Result<()> {
-        self.sink.play(Sound::Prompt(p)).await
+        self.player.play(Sound::Prompt(p)).await
     }
 
     /// Start a reminder and return at once; [`Sounds::ended`] gives its outcome.
     fn remind(&mut self, cue: Cue) {
-        let playing = self.sink.play(Sound::Reminder(cue));
+        let playing = self.player.play(Sound::Reminder(cue));
         self.reminders
             .push(Box::pin(async move { (cue, playing.await) }));
     }
@@ -182,7 +180,7 @@ impl<'a, C: CueSink> Sounds<'a, C> {
     }
 }
 
-struct Session<'a, T: HeadTracker, C: CueSink> {
+struct Session<'a, T: HeadTracker, C: Player> {
     tracker: &'a mut T,
     sounds: Sounds<'a, C>,
     rec: &'a mut Recorder,
@@ -193,14 +191,14 @@ struct Session<'a, T: HeadTracker, C: CueSink> {
 /// Calibrate, then monitor. Pause while tracking is unavailable (for example while the earbuds are
 /// off), and recalibrate when it resumes: the head may have moved unseen, and reseated earbuds sit
 /// differently. Returns only with a tracker or output error. The caller handles Ctrl-C.
-pub async fn run<T: HeadTracker, C: CueSink>(
+pub async fn run<T: HeadTracker, C: Player>(
     tracker: &mut T,
-    cues: &C,
+    player: &C,
     rec: &mut Recorder,
 ) -> Result<Infallible> {
     let mut s = Session {
         tracker,
-        sounds: Sounds::new(cues),
+        sounds: Sounds::new(player),
         rec,
         time: Timeline::new(),
         tracking: Tracking::Waiting,
@@ -216,7 +214,7 @@ pub async fn run<T: HeadTracker, C: CueSink>(
     }
 }
 
-impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
+impl<T: HeadTracker, C: Player> Session<'_, T, C> {
     /// Time since the session started; see [`Timeline`].
     fn now(&self) -> Duration {
         self.time.now()
@@ -251,6 +249,23 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             }
             wait = Duration::ZERO;
         }
+    }
+
+    /// Log and start each reminder in `cues`.
+    fn remind(&mut self, cues: impl IntoIterator<Item = Cue>) -> Result<()> {
+        for cue in cues {
+            self.rec.event(LogEvent::Cue { cue })?;
+            self.sounds.remind(cue);
+        }
+        Ok(())
+    }
+
+    /// Log a re-anchored upright, if there is one.
+    fn log_reanchored(&mut self, upright: Option<f64>) -> Result<()> {
+        if let Some(upright) = upright {
+            self.rec.event(LogEvent::Reanchored { upright })?;
+        }
+        Ok(())
     }
 
     /// A reminder ended. One that could not be played is shown and logged; monitoring goes on.
@@ -298,7 +313,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             if now >= end {
                 return Ok(());
             }
-            self.next((end - now).min(POLL)).await?;
+            self.next(end - now).await?;
         }
     }
 
@@ -355,30 +370,31 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     /// Monitor until interrupted: earbuds off, tracking unavailable, or an error.
     async fn monitor(&mut self, baseline: Quat) -> Flow<()> {
         let mut det = Detector::new(detector_config(self.tracker.traits()));
+        let mut reminders = Reminders::new(Schedule::default());
         let mut last_status: Option<Duration> = None;
         loop {
-            // Wake when the next reminder is due, or now if it already is. Times are exact, so
-            // `tick` fires the reminder at that point.
-            let wait = det
+            // Wake for the next status refresh, or when the next reminder is due if that is sooner.
+            // Times are exact, so the reminder falls due at that point.
+            let status_due = last_status.map_or(Duration::ZERO, |last| last + STATUS_EVERY);
+            let wake = reminders
                 .next_due()
-                .map_or(POLL, |due| due.saturating_sub(self.now()).min(POLL));
-            let mut updates = Vec::new();
+                .map_or(status_due, |due| due.min(status_due));
+            let wait = wake.saturating_sub(self.now());
             for pose in self.next(wait).await? {
                 let angles = (baseline.conj() * pose.orientation).euler();
                 self.rec.pose(pose.at, angles)?;
-                updates.push(det.update(pose.measured, angles.pitch));
+                let update = det.update(pose.measured, angles.pitch);
+                self.log_reanchored(update.reanchored)?;
+                match update.posture {
+                    Some(PostureChange::SlouchStarted) => reminders.slouch_started(pose.measured),
+                    Some(PostureChange::Recovered) => self.remind(reminders.recovered())?,
+                    None => {}
+                }
+                self.remind(reminders.due(pose.measured))?;
             }
             let t = self.now();
-            updates.push(det.tick(t));
-            for update in updates {
-                if let Some(upright) = update.reanchored {
-                    self.rec.event(LogEvent::Reanchored { upright })?;
-                }
-                for cue in update.cues {
-                    self.rec.event(LogEvent::Cue { cue })?;
-                    self.sounds.remind(cue);
-                }
-            }
+            self.log_reanchored(det.tick(t))?;
+            self.remind(reminders.due(t))?;
             if last_status.is_none_or(|last| t - last >= STATUS_EVERY) {
                 last_status = Some(t);
                 self.rec.status(det.smoothed(), det.slouching())?;

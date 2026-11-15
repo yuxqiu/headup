@@ -6,6 +6,7 @@ pub mod cues;
 pub mod detector;
 pub mod quat;
 pub mod record;
+pub mod reminders;
 pub mod session;
 pub mod steady;
 pub mod tracker;

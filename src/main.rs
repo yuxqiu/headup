@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use headup::core::record::{DeviceLog, LogSink, Recorder};
-use headup::core::{cues::Cues, session, tracker::HeadTracker};
+use headup::core::{cues::DesktopPlayer, session, tracker::HeadTracker};
 use headup::devices::bluetooth::{Address, Host};
 use headup::devices::{self, AnyTracker};
 use std::path::{Path, PathBuf};
@@ -72,8 +72,8 @@ enum Attempt {
     Stopped,
     /// No supported earbuds are connected yet; try again after RETRY.
     Waiting,
-    /// Something failed (the message says what); try again after RETRY.
-    Failed(String),
+    /// Something failed; try again after RETRY.
+    Failed(anyhow::Error),
 }
 
 /// One attempt: find the earbuds, connect, and run a session until it ends. Anything that can be
@@ -81,7 +81,7 @@ enum Attempt {
 async fn attempt(
     bt: &Host,
     args: &Args,
-    cues: &Cues,
+    player: &DesktopPlayer,
     rec: &mut Recorder,
     stop: &mut StopSignal,
 ) -> Result<Attempt> {
@@ -92,11 +92,7 @@ async fn attempt(
     let found = match found {
         Ok(Some(found)) => found,
         Ok(None) => return Ok(Attempt::Waiting),
-        Err(e) => {
-            return Ok(Attempt::Failed(format!(
-                "looking for earbuds failed: {e:#}"
-            )));
-        }
+        Err(e) => return Ok(Attempt::Failed(e.context("looking for earbuds failed"))),
     };
     rec.note(&format!(
         "using {} ({})",
@@ -109,16 +105,16 @@ async fn attempt(
     };
     let mut tracker = match connected {
         Ok(t) => t,
-        Err(e) => return Ok(Attempt::Failed(format!("connecting failed: {e:#}"))),
+        Err(e) => return Ok(Attempt::Failed(e.context("connecting failed"))),
     };
     let Err(e) = tokio::select! {
-        r = session::run(&mut tracker, cues, rec) => r,
+        r = session::run(&mut tracker, player, rec) => r,
         r = &mut *stop => {
             r?;
             rec.note("stopping (stop again to quit at once)");
             // Switching the stream off waits on the link; a second stop signal gives up on it.
             tokio::select! {
-                r = tracker.stop() => r?,
+                () = stop_stream(&mut tracker, rec) => {}
                 r = stop_signal()? => {
                     r?;
                     rec.warn("quit without switching the earbuds' stream off");
@@ -127,19 +123,34 @@ async fn attempt(
             return Ok(Attempt::Stopped);
         }
     };
-    // Stopping usually fails because the link is already gone. A failure matters only if the
-    // link is still up, so it is only a warning.
+    stop_stream(&mut tracker, rec).await;
+    // Returning drops `tracker`, which releases the Bluetooth link before the retry wait.
+    Ok(Attempt::Failed(e.context("session ended")))
+}
+
+/// Switch the earbuds' stream off. This usually fails because the link is already gone; a failure
+/// matters only if the link is still up, so it is only a warning.
+async fn stop_stream(tracker: &mut AnyTracker, rec: &mut Recorder) {
     if let Err(e) = tracker.stop().await {
         rec.warn(&format!("could not stop the stream: {e:#}"));
     }
-    // Returning drops `tracker`, which releases the Bluetooth link before the retry wait.
-    Ok(Attempt::Failed(format!("session ended: {e:#}")))
 }
 
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<()> {
+fn main() -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let result = runtime.block_on(run());
+    // Dropping the runtime would wait for every blocking thread, including one playing a sound
+    // that is stuck in a sound server that stopped answering (see `audio::play_bounded`), possibly
+    // forever. The stream is off and the logs are written by now, so exit without waiting.
+    runtime.shutdown_background();
+    result
+}
+
+async fn run() -> Result<()> {
     let args = Args::parse();
-    let cues = Cues::new()?;
+    let player = DesktopPlayer::new()?;
     let mut rec = Recorder::new(args.log.as_deref().map(open_append).transpose()?);
     let bt = Host::new().await?;
     if let Some(addr) = args.device {
@@ -149,7 +160,7 @@ async fn main() -> Result<()> {
 
     let mut waiting_noted = false;
     loop {
-        match attempt(&bt, &args, &cues, &mut rec, &mut stop).await? {
+        match attempt(&bt, &args, &player, &mut rec, &mut stop).await? {
             Attempt::Stopped => return Ok(()),
             Attempt::Waiting => {
                 if !waiting_noted {
@@ -157,9 +168,9 @@ async fn main() -> Result<()> {
                     waiting_noted = true;
                 }
             }
-            Attempt::Failed(what) => {
+            Attempt::Failed(e) => {
                 waiting_noted = false;
-                rec.warn(&format!("{what}; retrying in {}s", RETRY.as_secs()));
+                rec.warn(&format!("{e:#}; retrying in {}s", RETRY.as_secs()));
             }
         }
         if sleep_or_stop(RETRY, &mut stop).await? {

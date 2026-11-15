@@ -1,6 +1,6 @@
 //! The FreeClip 2 protocol without I/O: bytes and the time come in; events for the session, frames
-//! to send and `--raw-log` records go out. [`super::FreeClip2`] only moves bytes between this and the socket, so
-//! every protocol decision here can be tested without earbuds.
+//! to send and `--raw-log` records go out. [`super::FreeClip2`] only moves bytes between this and
+//! the socket, so every protocol decision here can be tested without earbuds.
 
 use super::mbb::{Decoder, Frame};
 use super::protocol::{
@@ -142,8 +142,8 @@ impl Link {
 
 /// The orientation frame of the current stretch of available tracking: a [`Rebuilder`], created at
 /// the stretch's first reading and ended when tracking stops (taking an earbud off included, so a
-/// stream restarted after re-wearing starts a new frame too). Readings are not rebuilt while tracking is unavailable, so no frame lives across
-/// an interruption.
+/// stream restarted after re-wearing starts a new frame too). Readings are not rebuilt while
+/// tracking is unavailable, so no frame lives across an interruption.
 ///
 /// While tracking is unavailable the earbuds keep tracking and re-centring unseen (they also hold
 /// while the user walks), so their reference may end up anywhere. A frame kept across that would

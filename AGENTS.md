@@ -18,7 +18,8 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   - `session.rs`: the session loop: waits, calibration prompts, monitoring.
   - `calibration.rs`: calibration decisions as a state machine without I/O (like `detector.rs`).
   - `steady.rs`: whether the head holds steady over the last stretch of time (`Window`, `Stillness`).
-  - `detector.rs`: slouch detection.
+  - `detector.rs`: slouch detection: when a slouch starts and ends, and re-anchoring upright.
+  - `reminders.rs`: when to remind the user during a slouch (the schedule, the tink on recovery).
   - `cues.rs`, `audio.rs`, `wav.rs`: sounds and notifications (`audio.rs` plays a sound to the end).
   - `record.rs`: console output and logs.
   - `quat.rs`: orientation math.
@@ -90,7 +91,8 @@ Run everything inside `nix develop`.
 - **Logging.** Log lines are JSON written with serde_json; never build JSON by hand. Session output goes through
   `Recorder` (event names in `LogEvent`). A backend's raw data goes to its `DeviceLog` (`--raw-log`).
 - **Make illegal states unrepresentable.** Fields that are valid only together, or that exclude each other, go into
-  one enum or struct (for example `Posture`, `Episode`).
+  one enum or struct (for example `session::Tracking`, `link::Availability` with its `Blocker`,
+  `Option<reminders::Slouch>`).
 - **Fail loudly.** A malformed frame or a broken precondition is an error, not a silent fallback.
 - **Comments describe the current code.** Say what the code does and why, when the reason is useful. Do not
   narrate history ("it used to…", the old value of a constant, old-versus-new results, release or commit

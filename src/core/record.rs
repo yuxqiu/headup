@@ -11,7 +11,7 @@
 //! The live status line is redrawn in place with `\r`. It is shown only when stdout is a
 //! terminal. Under systemd the journal gets one clean line per message instead.
 
-use super::detector::Cue;
+use super::cues::Cue;
 use super::quat::Euler;
 use anyhow::Result;
 use serde::Serialize;
@@ -75,7 +75,7 @@ pub enum LogEvent {
         #[serde(serialize_with = "two_places")]
         upright: f64,
     },
-    /// A reminder cue was played.
+    /// A reminder cue started (logged when it starts; [`LogEvent::CueFailed`] may follow).
     Cue { cue: Cue },
     /// A reminder cue could not be played (the console shows why).
     CueFailed { cue: Cue },

@@ -80,7 +80,7 @@ enum Arrival {
     /// The sequence number went backwards: a new stream, measured from the head pose at its start.
     NewStream,
     /// An exact identity sample after a non-identity one: a glide has ended, or a hold started.
-    GlideEnd,
+    ToIdentity,
     /// Any other sample.
     Sample,
 }
@@ -90,7 +90,7 @@ impl Arrival {
         if now.seq < prev.seq {
             Arrival::NewStream
         } else if now.raw == Quat::IDENTITY && prev.raw != Quat::IDENTITY {
-            Arrival::GlideEnd
+            Arrival::ToIdentity
         } else {
             Arrival::Sample
         }
@@ -244,7 +244,7 @@ impl GlideFilter {
                 steps.push(Step::Rebase);
                 sample.seq.saturating_sub(1)
             }
-            Some((prev, Arrival::GlideEnd)) => {
+            Some((prev, Arrival::ToIdentity)) => {
                 self.end_glide(&prev, &sample, &mut steps);
                 sample.seq.saturating_sub(prev.seq + 1)
             }
@@ -268,19 +268,20 @@ impl GlideFilter {
         match self.glides.ending_at(end) {
             // A full glide: the hypothesis that predicts this identity sample started it.
             Some(start) => self.drop_after(start),
-            // No hypothesis predicts it: the earbuds cut the glide short because the head moved.
+            // No hypothesis predicts it: either a hold starts, or the earbuds cut a glide short
+            // because the head moved.
             None => {
-                // If nothing is held, no live hypothesis covers the samples before it: they are
-                // taken for head movement, and the identity sample for the start of a hold. A glide
-                // whose readings left the formula partway would look the same, but the firmware's
-                // glide does not depend on the head, and no recording has one
+                // A hold: nothing is held, so no live hypothesis covers the samples before it;
+                // they are taken for head movement, and the identity sample for the start of a
+                // hold. A glide whose readings left the formula partway would look the same, but
+                // the firmware's glide does not depend on the head, and no recording has one
                 // (`holds_are_found_only_where_recorded`). Not when the last reading was too small
                 // for a glide to be tracked (within `FIT_TOL_DEG` of identity).
                 if self.held.is_empty() && prev.raw.angle_to(Quat::IDENTITY) > FIT_TOL_DEG {
                     steps.push(Step::HoldStarted(end.seq));
                 }
-                // Otherwise the glide's hypothesis is still alive and is the oldest: drop what
-                // is held after its start.
+                // A glide cut short: its hypothesis is still alive and is the oldest; drop what is
+                // held after its start.
                 if let Some(start) = self.glides.earliest_start() {
                     self.drop_after(start);
                 }

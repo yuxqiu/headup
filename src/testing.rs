@@ -1,8 +1,8 @@
 //! Test support shared across modules: run the real posture session against any tracker and
 //! record what it did.
 
-use crate::core::cues::{CueSink, Sound};
-use crate::core::detector::Cue;
+use crate::core::cues::Cue;
+use crate::core::cues::{Player, Sound};
 use crate::core::record::Recorder;
 use crate::core::session;
 use crate::core::tracker::HeadTracker;
@@ -14,21 +14,21 @@ use tokio::time::Instant;
 
 /// Records each prompt and cue with when it started, measured from the session start. Speaking a
 /// prompt takes `prompt`. The reminder `failing`, if any, cannot be played.
-struct FakeCues {
+struct FakePlayer {
     start: Instant,
     prompt: Duration,
     failing: Option<Cue>,
     log: RefCell<Vec<(Sound, Duration)>>,
 }
 
-impl FakeCues {
+impl FakePlayer {
     fn record(&self, sound: Sound) {
         let at = self.start.elapsed();
         self.log.borrow_mut().push((sound, at));
     }
 }
 
-impl CueSink for FakeCues {
+impl Player for FakePlayer {
     fn play(&self, sound: Sound) -> impl Future<Output = Result<()>> + 'static {
         self.record(sound);
         // A prompt takes `prompt` from now; a reminder is done at once.
@@ -100,27 +100,27 @@ impl SessionRun {
     }
 }
 
-/// Run the real session on `tracker` (on tokio's paused clock) until the tracker fails with
-/// `"script finished"`, and report what it did. Each spoken prompt takes `prompt`.
-pub async fn run_session(tracker: &mut impl HeadTracker, prompt: Duration) -> SessionRun {
-    run_session_failing(tracker, prompt, None).await
+/// How the fake player behaves.
+#[derive(Default)]
+pub struct PlayerSim {
+    /// Each spoken prompt takes this long.
+    pub prompt: Duration,
+    /// This reminder cannot be played.
+    pub failing: Option<Cue>,
 }
 
-/// [`run_session`], where the reminder `failing` cannot be played.
-pub async fn run_session_failing(
-    tracker: &mut impl HeadTracker,
-    prompt: Duration,
-    failing: Option<Cue>,
-) -> SessionRun {
+/// Run the real session on `tracker` (on tokio's paused clock) until the tracker fails with
+/// `"script finished"`, and report what it did, with a fake player that behaves as `sim` says.
+pub async fn run_session(tracker: &mut impl HeadTracker, sim: PlayerSim) -> SessionRun {
     let log = SharedBuf::default();
     let mut rec = Recorder::new(Some(Box::new(log.clone())));
-    let cues = FakeCues {
+    let player = FakePlayer {
         start: Instant::now(),
-        prompt,
-        failing,
+        prompt: sim.prompt,
+        failing: sim.failing,
         log: RefCell::default(),
     };
-    let Err(err) = session::run(tracker, &cues, &mut rec).await;
+    let Err(err) = session::run(tracker, &player, &mut rec).await;
     assert_eq!(err.to_string(), "script finished");
     let events = log
         .text()
@@ -129,7 +129,7 @@ pub async fn run_session_failing(
         .filter_map(|v| v["event"].as_str().map(String::from))
         .collect();
     SessionRun {
-        cues: cues.log.into_inner(),
+        cues: player.log.into_inner(),
         events,
     }
 }

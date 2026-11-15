@@ -1,11 +1,11 @@
 //! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session.
 
 use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay};
+use crate::core::cues::Cue::{self, Recovered, Speak, Tone};
 use crate::core::cues::Phrase;
 use crate::core::cues::Sound::Prompt;
-use crate::core::detector::Cue::{self, Recovered, Speak, Tone};
-use crate::testing::run_session;
 use crate::testing::secs;
+use crate::testing::{PlayerSim, run_session};
 use std::time::Duration;
 
 // Ground truth (guided.py --slouch): five cycles of upright, then look down (held ~25 s, the stream
@@ -41,15 +41,19 @@ async fn repeated_slouches_stay_detectable_end_to_end() {
 /// (since the recording began).
 async fn session_cues(name: &str) -> Vec<(Cue, Duration)> {
     let mut tracker = ReplayTracker::new(&read_csv(name));
-    run_session(&mut tracker, Duration::ZERO).await.reminders()
+    run_session(&mut tracker, PlayerSim::default())
+        .await
+        .reminders()
 }
 
-/// The cues, without the spoken reminder (its timing depends on exactly how long a hold lasted).
+/// The cues without the spoken reminder (its timing depends on exactly how long a hold lasted).
+fn without_speech(cues: &[(Cue, Duration)]) -> impl Iterator<Item = (Cue, Duration)> + '_ {
+    cues.iter().copied().filter(|&(cue, _)| cue != Speak)
+}
+
+/// The kinds of [`without_speech`].
 fn kinds(cues: &[(Cue, Duration)]) -> Vec<Cue> {
-    cues.iter()
-        .map(|&(cue, _)| cue)
-        .filter(|&cue| cue != Speak)
-        .collect()
+    without_speech(cues).map(|(cue, _)| cue).collect()
 }
 
 // The real long-hold recording. Each 30 s look-down hold must cue, and sitting back up must
@@ -59,10 +63,8 @@ async fn long_holds_trigger_cues_end_to_end() {
     let rows = read_csv("hold_test.csv");
     let ph = phases(&rows);
     let cues = session_cues("hold_test.csv").await;
-    let key: Vec<(Cue, &str)> = cues
-        .iter()
-        .filter(|&&(cue, _)| cue != Speak)
-        .map(|&(cue, t)| (cue, ph[phase_at(&ph, t)].0.as_str()))
+    let key: Vec<(Cue, &str)> = without_speech(&cues)
+        .map(|(cue, t)| (cue, ph[phase_at(&ph, t)].0.as_str()))
         .collect();
     let want = [
         (Tone, "down"),
@@ -124,7 +126,7 @@ async fn live_session_with_two_slouches_end_to_end() {
 async fn walking_around_gives_no_reminder_end_to_end() {
     for name in ["walk_reconnect.csv", "turn_walk.csv", "walk_near_far.csv"] {
         let mut tracker = ReplayTracker::new(&read_csv(name));
-        let run = run_session(&mut tracker, Duration::ZERO).await;
+        let run = run_session(&mut tracker, PlayerSim::default()).await;
         let reminders = run.reminders();
         assert!(reminders.is_empty(), "{name}: {reminders:?}");
         let moved = run.count(Prompt(Phrase::Moved));
@@ -145,7 +147,7 @@ async fn walking_around_gives_no_reminder_end_to_end() {
 #[tokio::test(start_paused = true)]
 async fn looking_down_after_a_walk_still_cues_end_to_end() {
     let mut tracker = ReplayTracker::new(&read_csv("walk_slouch.csv"));
-    let run = run_session(&mut tracker, Duration::ZERO).await;
+    let run = run_session(&mut tracker, PlayerSim::default()).await;
     let prompts = run.times(Prompt(Phrase::SitUpright));
     assert!(
         prompts.iter().all(|&t| t < secs(24.0) || t > secs(100.0)),
@@ -175,7 +177,7 @@ async fn after_a_hold_only_a_head_movement_brings_a_prompt_end_to_end() {
         r.t += delay;
     }
     let mut tracker = ReplayTracker::new(&rows);
-    let run = run_session(&mut tracker, Duration::ZERO).await;
+    let run = run_session(&mut tracker, PlayerSim::default()).await;
     let mut prompts = run.times(Prompt(Phrase::SitUpright));
     prompts.extend(run.times(Prompt(Phrase::MoveHead)));
     assert!(

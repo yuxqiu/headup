@@ -9,7 +9,10 @@ pub struct Pcm {
 }
 
 impl Pcm {
-    /// Consecutive sine notes (Hz, seconds) at 44.1 kHz with 10 ms fades.
+    /// Consecutive sine notes (Hz, seconds) at 44.1 kHz with 10 ms fades, at 0.3 of full scale.
+    /// The rate matters little: playback resamples to the output's rate (`audio::convert`). The
+    /// fades keep each note from clicking at its edges; the level was chosen by ear next to the
+    /// spoken prompts, not measured \[unmeasured\].
     pub fn tones(notes: &[(f64, f64)]) -> Pcm {
         const RATE: u32 = 44_100;
         let mut samples = Vec::new();
