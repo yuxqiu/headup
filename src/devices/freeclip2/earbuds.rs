@@ -19,8 +19,10 @@
 //!    a new 43/88, data/grounding_test.log "rewear") or by another device starting to stream (no
 //!    poses after this computer streams again until a new 43/88, data/grounding_test3.log
 //!    "phone_takeover"). Rule 2 then sends it again.
-//! 4. **A hold** (the earbuds' activity detector locks the reference to the head while the user
-//!    walks; FINDINGS "Instant resets while walking") starts when the rebuilder recognises it
+//! 4. **A hold** (the earbuds' accelerometer activity detector locks the reference to the head
+//!    while they sense movement: the user walking, or the earbuds handled; FINDINGS "Instant resets
+//!    while walking", "A hold after putting the earbuds back in") starts when the rebuilder
+//!    recognises it
 //!    ([`super::rebuild::Rebuilt::HoldStarted`]) and ends at the first reading that is not
 //!    identity, or when the earbuds go back in.
 
@@ -43,8 +45,8 @@ pub(super) enum Blocker {
     NotStreaming,
     /// The two earbuds cannot reach each other (43/88 reply 1).
     PeerLinkDown,
-    /// The earbuds hold while the user walks around (rule 4).
-    Walking,
+    /// The earbuds hold while they sense movement (rule 4).
+    Moving,
 }
 
 impl Blocker {
@@ -61,9 +63,9 @@ impl Blocker {
                 "the two earbuds have lost their link to each other; \
                  FreeClip 2 tracks your head only while they are linked"
             }
-            Blocker::Walking => {
-                "FreeClip 2 does not track your head while you walk around; \
-                 it resumes when you move your head after you stop"
+            Blocker::Moving => {
+                "FreeClip 2 pauses head tracking while it senses movement, such as walking around \
+                 or handling the earbuds; it resumes when you move your head after you stop"
             }
         }
     }
@@ -160,7 +162,7 @@ impl Earbuds {
                 None | Some(SwitchReply::Accepted) if !self.streaming? => {
                     Some(Blocker::NotStreaming)
                 }
-                None | Some(SwitchReply::Accepted) if self.holding => Some(Blocker::Walking),
+                None | Some(SwitchReply::Accepted) if self.holding => Some(Blocker::Moving),
                 None | Some(SwitchReply::Accepted) => None,
             }
         };

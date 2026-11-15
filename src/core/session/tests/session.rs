@@ -481,7 +481,7 @@ async fn failed_calibration_retries_later() {
 }
 
 // Tracking resumes while the user is still on the move (a device can stop tracking while the
-// user walks around). "Sit upright" waits until the head has held still for 2 s: here the head
+// user moves around). "Sit upright" waits until the head has held still for 2 s: here the head
 // moves for 5 s after tracking resumes at STILL + 4 s.
 #[tokio::test(start_paused = true)]
 async fn prompt_after_tracking_resumes_waits_until_the_head_is_still() {

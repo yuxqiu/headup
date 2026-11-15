@@ -14,7 +14,7 @@ import json, os, statistics, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from quat import GLIDE_LEN, IDENTITY, angle, conj, euler, glide_point, mul  # noqa: E402
 
-RAMP_STEP = 0.05  # deg; walking back, a sample is on the ramp if it is this much farther from I (arbitrary)
+RAMP_STEP = 0.05  # deg; stepping back, a sample is on the ramp if it is this much farther from I (arbitrary)
 MIN_HELD = 8  # deg; nearer held poses give glides too small to fit meaningfully (arbitrary)
 CUT_SHORT = 3  # deg; a glide off the formula by more than this was cut short by movement (526 clean fits: < 0.001)
 STILL_BOX = 10  # deg per Euler axis around the run's first sample; what counts as still (arbitrary)
@@ -36,7 +36,7 @@ def main(paths):
         for i, (seq, q) in enumerate(s):
             if q != IDENTITY or i < GLIDE_LEN or s[i - 1][1] == q:
                 continue
-            k = i - 1  # walk back over the ramp: angles rise toward the held pose
+            k = i - 1  # step back over the ramp: angles rise toward the held pose
             while k > 0 and s[k][0] == s[k + 1][0] - 1 and angle(s[k - 1][1]) > angle(s[k][1]) + RAMP_STEP:
                 k -= 1
             lengths.append(i - k)

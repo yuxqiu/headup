@@ -9,7 +9,7 @@ use std::time::Duration;
 /// `Available` and `Unavailable` move between the phases; poses never do. Every `Available` leads
 /// through `Settling`, at startup as after an interruption: the user may be on the move when
 /// tracking becomes available (putting the earbuds in, or a device that stops tracking while the
-/// user walks around), and "sit upright" should not be spoken to a moving head.
+/// user moves around), and "sit upright" should not be spoken to a moving head.
 pub(super) enum Tracking {
     /// Tracking is unavailable: it has not started yet, or the tracker said it stopped. The head
     /// may move unseen. `Available` makes it `Settling`.

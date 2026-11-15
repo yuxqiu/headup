@@ -153,9 +153,9 @@ impl Link {
 /// tracking is unavailable, so no frame lives across an interruption.
 ///
 /// While tracking is unavailable the earbuds keep tracking and re-centring unseen (they also hold
-/// while the user walks), so their reference may end up anywhere. A frame kept across that would
-/// rotate the axes later movements are measured about (a reference off by ~180° reads looking down
-/// as looking up), which recalibrating does not undo. So each stretch gets a new frame, and the
+/// while they sense movement), so their reference may end up anywhere. A frame kept across that
+/// would rotate the axes later movements are measured about (a reference off by ~180° reads looking
+/// down as looking up), which recalibrating does not undo. So each stretch gets a new frame, and the
 /// session recalibrates in it.
 struct PoseFrame(Option<Rebuilder>);
 

@@ -612,8 +612,8 @@ the firmware; they are read below ("Re-centre and stillness"). The chain, from t
   gives one start pose) explains both resumes exactly and matches none of the other 109 resumes in `data/`.
 - **An identity sample without a glide** (data/live4_raw.jsonl, third stream): after a wear flicker (43/37 off and
   on at the same instant, then 43/88), the stream read identity for seq 1–11, rose to 3.34° by seq 33 and read
-  identity from seq 34 on, with no glide before it. Which firmware path does this is `[unverified]` (candidates:
-  the stage's forced-identity flag `S+28` or its warm-up counter `S+32`). headup's rebuilder reports it as a missed
+  identity from seq 34 on, with no glide before it: the activity detector's hold path (`S+28`), see "A hold after
+  putting the earbuds back in" [code]. headup's rebuilder reports it as a missed
   glide and moves its reference to the last pose, the same as for a glide cut short.
 - **Which pose becomes the reference.** During the countdown, the input two samples back; on the step after the
   identity sample (countdown 1), the current input. With a still head that is the held pose. It is not the glide's
@@ -936,6 +936,31 @@ identity sample as ground truth for each glide's end.
   released the first one while the user paused in another room (tracking resumed 8.5 s later, then held again).
   After the walk the user's look-downs read +46° raw, as at the desk, so the earbuds' own frame is fine; the
   readings are relative to the head pose where the hold ended.
+
+## A hold after putting the earbuds back in (data/rewear_raw.jsonl, data/full_live_raw.jsonl, live4, live7; 2026-11-15)
+
+- After a re-wear, the new stream (seq from 1, after the 43/88 sent on re-wear) can jump straight to identity with
+  no glide a few seconds in, then follow the head again from there:
+
+  | Recording | Earbuds out | Jump to identity |
+  |---|---|---|
+  | data/full_live_raw.jsonl | 18.4 s | seq 69, 2.0 s after 43/37 both worn, from 8.6° |
+  | data/rewear_raw.jsonl | 23.6 s | seq 69, 2.0 s after, from 21.4° |
+  | data/live4_raw.jsonl | 10.4 s | seq 34, from 3.3° (the "identity sample without a glide" above) |
+  | data/live4_raw.jsonl | wear flicker | seq 34, from 3.3° |
+  | data/live7_raw.jsonl | 4.6 s | none |
+
+  No fresh stream that did not follow a re-wear (29 in data/*_raw.jsonl) jumps at seq 34 or 69, so this is not a
+  start-up step of every stream.
+- **It is a hold [code, 7.0.0.526].** After the 20-sample warm-up (`S+32 < 20` outputs identity), the only path in
+  the re-centre stage that outputs identity without a glide is the activity detector's rising edge
+  (`0x600fa906`–`0x600fa982`: `S+28` rises, `ref := q_in`, identity with the pause flag; see "Instant resets while
+  walking"). So the earbuds sensed enough accelerometer activity: handling them, out of the ears and while putting
+  them in, is the only movement these runs had `[inferred]`. Why the edge falls at seq 34 or 69 (the detector's
+  state across a stream start) is `[unverified]`.
+- headup reports it as the hold it is ("pauses head tracking while it senses movement, such as walking around or
+  handling the earbuds"). It lasted 0.18–0.2 s and came while the session still waited for a still head, so no
+  reminder or calibration was affected.
 
 ## 43/44 does not report walking (firmware 7.0.0.526, read 2026-11-14) [code]
 

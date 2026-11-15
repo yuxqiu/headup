@@ -12,14 +12,15 @@ each point is in [FINDINGS.md](FINDINGS.md).
   once the earbuds report that this computer is not playing; until they report anything, it shows only "using …".
 - **Both earbuds must be worn.** Taking either one off pauses monitoring; putting it back on calibrates again.
 
-## Walking around
+## Moving around
 
-FreeClip 2 stops tracking your head while you walk around. headup pauses monitoring then, so no reminder comes from
-where your head was before the walk.
+FreeClip 2 stops tracking your head while it senses movement: when you walk around, and sometimes for a moment just
+after you put the earbuds back in. headup pauses monitoring then, so no reminder comes from where your head was
+before.
 
 When you are back, **move your head a little**. The earbuds resume only once your head moves; headup then waits until
 you hold still and asks you to sit upright. If you sit down and keep perfectly still, the earbuds stay silent, and
-headup cannot tell that from walking, so it waits for that movement.
+headup cannot tell that from still moving around, so it waits for that movement.
 
 ## Drift
 

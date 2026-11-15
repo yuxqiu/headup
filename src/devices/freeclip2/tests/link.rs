@@ -139,10 +139,10 @@ fn rewearing_during_a_hold_ends_it_and_starts_a_new_frame() {
     let mut link = link();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     assert_eq!(reading(&mut link, 1, turned()), [Event::Available]);
-    let walking = Event::Unavailable {
-        reason: Blocker::Walking.reason(),
+    let moving = Event::Unavailable {
+        reason: Blocker::Moving.reason(),
     };
-    assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
+    assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [moving]);
     link.on_bytes(now, &wear(0, 1)).unwrap();
     link.on_bytes(now, &wear(1, 1)).unwrap();
     let not_worn = Event::Unavailable {
@@ -281,7 +281,8 @@ fn rewearing_after_a_refusal_makes_tracking_available_again() {
     assert_eq!(events(&mut link), []);
 }
 
-// While the user walks around, the earbuds hold: the reading jumps to identity with no glide
+// While the earbuds sense movement (walking around, handling them), they hold: the reading jumps
+// to identity with no glide
 // and stays there while their reference follows the head. Head tracking is unavailable until
 // the reading moves again (FINDINGS "Instant resets while walking").
 #[test]
@@ -291,10 +292,10 @@ fn a_hold_makes_tracking_unavailable_until_the_reading_moves() {
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(events(&mut link), [Event::Available]);
     assert_eq!(reading(&mut link, 1, turned()), []);
-    let walking = Event::Unavailable {
-        reason: Blocker::Walking.reason(),
+    let moving = Event::Unavailable {
+        reason: Blocker::Moving.reason(),
     };
-    assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
+    assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [moving]);
     assert_eq!(reading(&mut link, 3, Quat::IDENTITY), []);
     assert_eq!(reading(&mut link, 400, turned()), [Event::Available]);
 }
@@ -306,10 +307,10 @@ fn a_hold_makes_tracking_unavailable_until_the_reading_moves() {
 fn readings_show_this_computer_streams_when_no_audio_push_came() {
     let mut link = link();
     assert_eq!(reading(&mut link, 1, turned()), [Event::Available]);
-    let walking = Event::Unavailable {
-        reason: Blocker::Walking.reason(),
+    let moving = Event::Unavailable {
+        reason: Blocker::Moving.reason(),
     };
-    assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [walking]);
+    assert_eq!(reading(&mut link, 2, Quat::IDENTITY), [moving]);
     assert_eq!(reading(&mut link, 400, turned()), [Event::Available]);
 }
 

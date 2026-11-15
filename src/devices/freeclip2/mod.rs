@@ -12,7 +12,8 @@
 //!   refuse headup's 43/88 while another device is current, so headup sends it again once this
 //!   computer streams.
 //! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts_up`]).
-//! - While the user walks around, the earbuds hold the reading and lose the head's movement, so
+//! - While the earbuds sense movement (walking around, handling them), they hold the reading and
+//!   lose the head's movement, so
 //!   tracking is unavailable until the reading moves again (`link`; `rebuild` finds where a hold
 //!   starts).
 

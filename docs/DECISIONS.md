@@ -1521,3 +1521,23 @@
 - **Kept.** `Availability`/`Blocker` (the session's view, one sentence per blocker; an `Option<Blocker>` would
   make "available" implicit) and `SwitchOn` (the handlers' one request).
 - **Behaviour unchanged**: refactor; every test passes as it was.
+
+## 2026-11-15: The hold blocker says "movement", not "walking" (user)
+- **What.** `Blocker::Walking` is `Blocker::Moving`: "FreeClip 2 pauses head tracking while it senses movement, such
+  as walking around or handling the earbuds; it resumes when you move your head after you stop".
+- **Why.** A 0.2 s "walking" unavailability appeared right after putting the earbuds back in, without walking
+  (data/rewear_raw.jsonl, data/full_live_raw.jsonl). Grounded in the firmware: after the 20-sample warm-up, the only
+  way the re-centre stage outputs identity without a glide is the accelerometer activity detector's rising edge
+  (`0x600fa906`–`0x600fa982`), so these are real holds, raised by movement other than walking (handling the
+  earbuds `[inferred]`). A hold appeared after 4 of 5 re-wears in the recordings and in none of 29 other fresh
+  streams (FINDINGS "A hold after putting the earbuds back in"). Treating it as a re-centre instead was considered
+  and rejected: the firmware path is the hold path, so tracking really is paused until the head moves.
+- **Rejected first, then confirmed.** A guess that the jump was a fixed start-up step (two runs both at seq 69):
+  ruled out by live4 (seq 34) and by the 29 fresh streams without it.
+- **Behaviour.** Only the sentence changes; link tests expect the new name.
+- **Wording follows (user: no "walking" for the hold).** The test variables are `moving`; comments in rebuild.rs,
+  link.rs, freeclip2/mod.rs, earbuds.rs, session tracking and tests describe the hold as the earbuds sensing
+  movement (walking around, or handling them); the RUNBOOK and the FreeClip 2 user page ("Moving around") say the
+  same, and `glide_check.py` says "step back" for iterating backwards. "Walk" stays only where it names real walks:
+  the recordings and fixtures from walks (`walk_*.csv`, `turn_walk.csv`, `data/walk3*`), the end-to-end tests named
+  after them, walking as one listed cause, and the FINDINGS section "Instant resets while walking" that others cite.

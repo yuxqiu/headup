@@ -8,8 +8,9 @@
 //! match it within 0.0002° (docs/devices/freeclip2/FINDINGS.md "Re-centre and stillness"). It
 //! counts samples, so it holds at any sample rate.
 //!
-//! While the user walks around, the earbuds also **hold**: an activity detector on the accelerometer
-//! (`0x600fab40`) makes them move the reference onto the head at every sample, so the reading jumps
+//! While they sense movement (the user walking around, or the earbuds handled), the earbuds also
+//! **hold**: an activity detector on the accelerometer (`0x600fab40`) makes them move the reference
+//! onto the head at every sample, so the reading jumps
 //! to identity with no glide and stays there, the stream pauses, and it resumes relative to
 //! wherever the head is once the user has been quiet (FINDINGS "Instant resets while walking"). The
 //! head movement in between never reaches the stream, so a hold cannot be undone. The rebuilder
