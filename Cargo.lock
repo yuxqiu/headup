@@ -670,6 +670,7 @@ dependencies = [
  "clap",
  "cpal",
  "csv",
+ "futures-util",
  "notify-rust",
  "serde",
  "serde_json",

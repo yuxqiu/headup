@@ -3,12 +3,12 @@
 use super::*;
 use crate::core::calibration::CALIBRATION_TRIES;
 use crate::core::cues::Phrase::*;
+use crate::core::cues::Sound::{self, Prompt, Reminder};
 use crate::core::detector::Cue::*;
 use crate::core::steady::STILL;
 use crate::core::tracker::TrackerTraits;
-use crate::testing::Played::{self, Prompt, Reminder};
 use crate::testing::secs;
-use crate::testing::{SessionRun, run_session, wait_until_due};
+use crate::testing::{SessionRun, run_session_failing, wait_until_due};
 use anyhow::bail;
 use std::collections::VecDeque;
 
@@ -132,12 +132,14 @@ struct Sim {
     drifts: bool,
     /// Each spoken prompt takes this long.
     prompt: Duration,
+    /// This reminder cannot be played.
+    failing: Option<Cue>,
 }
 
 /// Run `script` to its end and report what the session did.
 async fn simulate(script: Vec<Script>, sim: Sim) -> SessionRun {
     let mut tracker = FakeTracker::new(script, sim.drifts);
-    run_session(&mut tracker, sim.prompt).await
+    run_session_failing(&mut tracker, sim.prompt, sim.failing).await
 }
 
 use Script::*;
@@ -195,6 +197,33 @@ async fn sustained_slouch_cues_even_while_head_is_still() {
             Reminder(Tone),
             Reminder(Speak)
         ]
+    );
+}
+
+// A reminder that cannot be played (the sound server stopped answering, say) is shown and logged
+// as `CueFailed`, and monitoring goes on: the next reminder still comes.
+#[tokio::test(start_paused = true)]
+async fn failed_reminder_is_logged_and_monitoring_goes_on() {
+    let script = vec![
+        Ev(Event::Available),
+        Poses(0.0, STILL + secs(4.0)),
+        Poses(40.0, secs(2.0)),
+        Quiet(secs(35.0)),
+    ];
+    let sim = Sim {
+        failing: Some(Tone),
+        ..Sim::default()
+    };
+    let run = simulate(script, sim).await;
+    assert_eq!(
+        run.events,
+        ["TrackingAvailable", "Cue", "CueFailed", "Cue"],
+        "{:?}",
+        run.played()
+    );
+    assert_eq!(
+        run.reminders().iter().map(|&(c, _)| c).collect::<Vec<_>>(),
+        [Tone, Speak]
     );
 }
 
@@ -425,7 +454,7 @@ async fn failed_calibration_retries_later() {
     ];
     let run = simulate(script, Sim::default()).await;
     assert_eq!(run.events, ["TrackingAvailable", "CalibrationFailed"]);
-    let expected: Vec<Played> = [Prompt(SitUpright)]
+    let expected: Vec<Sound> = [Prompt(SitUpright)]
         .into_iter()
         .chain([Prompt(Moved); CALIBRATION_TRIES])
         // The retry prompts at once; the head is still and silent, so it is asked to move.

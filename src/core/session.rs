@@ -1,13 +1,17 @@
 //! Device-agnostic posture session: spoken calibration, then monitoring with cues.
 
 use super::calibration::{Calibration, Outcome, Output};
-use super::cues::{CueSink, Phrase};
+use super::cues::{CueSink, Phrase, Sound};
+use super::detector::Cue;
 use super::detector::{Config, Detector};
 use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
 use super::steady::Stillness;
 use super::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::{Context, Result, ensure};
+use futures_util::StreamExt;
+use futures_util::future::LocalBoxFuture;
+use futures_util::stream::FuturesUnordered;
 use std::convert::Infallible;
 use std::time::Duration;
 use tokio::time::Instant;
@@ -142,9 +146,45 @@ impl Tracking {
     }
 }
 
+/// The session's sounds: calibration waits for a prompt to be heard, because it measures the head
+/// only after it. Monitoring does not wait for a reminder: it keeps judging while one plays, so the
+/// recovery tink is on time even if the user sits up during speech. A reminder keeps playing to its
+/// end even if monitoring stops, and its outcome is collected whenever the session next waits.
+struct Sounds<'a, C: CueSink> {
+    sink: &'a C,
+    /// Reminders still playing, each ending with its outcome.
+    reminders: FuturesUnordered<LocalBoxFuture<'static, (Cue, Result<()>)>>,
+}
+
+impl<'a, C: CueSink> Sounds<'a, C> {
+    fn new(sink: &'a C) -> Self {
+        Sounds {
+            sink,
+            reminders: FuturesUnordered::new(),
+        }
+    }
+
+    /// Speak a calibration prompt and return once it has been heard.
+    async fn prompt(&self, p: Phrase) -> Result<()> {
+        self.sink.play(Sound::Prompt(p)).await
+    }
+
+    /// Start a reminder and return at once; [`Sounds::ended`] gives its outcome.
+    fn remind(&mut self, cue: Cue) {
+        let playing = self.sink.play(Sound::Reminder(cue));
+        self.reminders
+            .push(Box::pin(async move { (cue, playing.await) }));
+    }
+
+    /// The next reminder to end, with its outcome. `None` at once if none is playing.
+    async fn ended(&mut self) -> Option<(Cue, Result<()>)> {
+        self.reminders.next().await
+    }
+}
+
 struct Session<'a, T: HeadTracker, C: CueSink> {
     tracker: &'a mut T,
-    cues: &'a C,
+    sounds: Sounds<'a, C>,
     rec: &'a mut Recorder,
     time: Timeline,
     tracking: Tracking,
@@ -160,7 +200,7 @@ pub async fn run<T: HeadTracker, C: CueSink>(
 ) -> Result<Infallible> {
     let mut s = Session {
         tracker,
-        cues,
+        sounds: Sounds::new(cues),
         rec,
         time: Timeline::new(),
         tracking: Tracking::Waiting,
@@ -196,15 +236,30 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     /// Wait up to `timeout` for tracker events, then take every event already waiting, and return
     /// the poses among them. Afterwards the tracker has nothing left to deliver, so the posture is
     /// known up to now: silence means the head has not moved. Taking the earbuds off, or tracking
-    /// becoming unavailable, interrupts.
+    /// becoming unavailable, interrupts. A reminder that ends meanwhile is reported, and ends the
+    /// wait like an event.
     async fn next(&mut self, timeout: Duration) -> Flow<Vec<Pose>> {
         let mut poses = Vec::new();
         let mut wait = timeout;
-        while let Some(event) = self.tracker.next_event(wait).await? {
-            poses.extend(self.handle(event)?);
+        loop {
+            tokio::select! {
+                event = self.tracker.next_event(wait) => match event? {
+                    Some(event) => poses.extend(self.handle(event)?),
+                    None => return Ok(poses),
+                },
+                Some((cue, played)) = self.sounds.ended() => self.reminder_ended(cue, played)?,
+            }
             wait = Duration::ZERO;
         }
-        Ok(poses)
+    }
+
+    /// A reminder ended. One that could not be played is shown and logged; monitoring goes on.
+    fn reminder_ended(&mut self, cue: Cue, played: Result<()>) -> Result<()> {
+        if let Err(e) = played {
+            self.rec.warn(&format!("{e:#}"));
+            self.rec.event(LogEvent::CueFailed { cue })?;
+        }
+        Ok(())
     }
 
     /// Record one tracker event. Returns the pose if it was one.
@@ -264,7 +319,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     /// every attempt.
     async fn calibrate(&mut self) -> Flow<Option<Quat>> {
         self.wait_for_tracking().await?;
-        self.cues.say(Phrase::SitUpright).await?;
+        self.sounds.prompt(Phrase::SitUpright).await?;
         let mut cal = Calibration::new(self.now());
         loop {
             for pose in self.next(JUDGE_EVERY).await? {
@@ -273,22 +328,22 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             match cal.check(self.now()) {
                 None => {}
                 Some(Output::Nudge) => {
-                    self.cues.say(Phrase::MoveHead).await?;
+                    self.sounds.prompt(Phrase::MoveHead).await?;
                     cal.prompt_ended(self.now());
                 }
                 Some(Output::AttemptEnded { report, outcome }) => {
                     self.rec.note(&report.to_string());
                     match outcome {
                         Outcome::Calibrated(upright) => {
-                            self.cues.say(Phrase::Calibrated).await?;
+                            self.sounds.prompt(Phrase::Calibrated).await?;
                             return Ok(Some(upright));
                         }
                         Outcome::Retry => {
-                            self.cues.say(Phrase::Moved).await?;
+                            self.sounds.prompt(Phrase::Moved).await?;
                             cal.prompt_ended(self.now());
                         }
                         Outcome::GaveUp => {
-                            self.cues.say(Phrase::Moved).await?;
+                            self.sounds.prompt(Phrase::Moved).await?;
                             return Ok(None);
                         }
                     }
@@ -321,7 +376,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                 }
                 for cue in update.cues {
                     self.rec.event(LogEvent::Cue { cue })?;
-                    self.cues.play(cue);
+                    self.sounds.remind(cue);
                 }
             }
             if last_status.is_none_or(|last| t - last >= STATUS_EVERY) {

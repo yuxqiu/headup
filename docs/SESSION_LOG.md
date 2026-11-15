@@ -588,3 +588,9 @@
 ## 2026-11-15 04:34 UTC
 - Live stop test under systemd passed (data/stop_live*); README calibration step rewritten for clarity.
 - Released v0.4.5 (CI and Release workflow green; x86_64 and aarch64 tarballs).
+
+## 2026-11-15 06:06 UTC
+- Live hearing check passed (data/hear_live*). Design pass on misplaced rules: `Window::silent_for` moved into
+  `Stillness`; `request_switch` returns nothing; `Window::span` documents that it discards; one bounded playback
+  path with its hang limit documented; one `CueSink::play`, reminders' outcomes return to the session (`Sounds`,
+  `LogEvent::CueFailed`). 114 tests pass. All staged, not committed.

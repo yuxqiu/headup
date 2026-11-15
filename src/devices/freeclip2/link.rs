@@ -333,7 +333,8 @@ impl Earbuds {
             return false;
         }
         self.holding = false;
-        self.request_switch()
+        self.request_switch();
+        true
     }
 
     /// 43/89: a hold started (see [`Earbuds::holding`]).
@@ -378,7 +379,10 @@ impl Earbuds {
             Switch::Refused => streaming,
             Switch::Unconfirmed => started,
         };
-        resend && self.request_switch()
+        if resend {
+            self.request_switch();
+        }
+        resend
     }
 
     /// 43/88 reply. A refusal is undone by [`Earbuds::on_audio`] when this computer streams, or by
@@ -416,11 +420,10 @@ impl Earbuds {
         })
     }
 
-    /// Ask the link to switch the stream on: returns `true`. The switch is unconfirmed until the
-    /// earbuds answer.
-    fn request_switch(&mut self) -> bool {
+    /// Record that the stream switch is being sent: it is unconfirmed until the earbuds answer.
+    /// The caller returns `true`, so the link sends it.
+    fn request_switch(&mut self) {
         self.switch = Switch::Unconfirmed;
-        true
     }
 
     /// The earbuds cancelled an accepted switch.

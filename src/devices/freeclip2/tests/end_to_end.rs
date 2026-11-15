@@ -2,8 +2,8 @@
 
 use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay};
 use crate::core::cues::Phrase;
+use crate::core::cues::Sound::Prompt;
 use crate::core::detector::Cue::{self, Recovered, Speak, Tone};
-use crate::testing::Played::Prompt;
 use crate::testing::run_session;
 use crate::testing::secs;
 use std::time::Duration;

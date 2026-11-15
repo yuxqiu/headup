@@ -77,6 +77,8 @@ pub enum LogEvent {
     },
     /// A reminder cue was played.
     Cue { cue: Cue },
+    /// A reminder cue could not be played (the console shows why).
+    CueFailed { cue: Cue },
 }
 
 /// Serialise an angle rounded to two decimals, so log lines stay short.
@@ -95,6 +97,7 @@ impl std::fmt::Display for LogEvent {
             }
             LogEvent::Reanchored { upright } => write!(f, "upright re-anchored to {upright:.1}°"),
             LogEvent::Cue { cue } => write!(f, "cue: {cue:?}"),
+            LogEvent::CueFailed { cue } => write!(f, "cue failed: {cue:?}"),
         }
     }
 }

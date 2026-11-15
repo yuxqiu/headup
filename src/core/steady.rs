@@ -36,18 +36,20 @@ impl<T: Copy> Window<T> {
         }
     }
 
+    /// When the window started.
+    pub(crate) fn start(&self) -> Duration {
+        self.start
+    }
+
     /// When the first sample since the start was measured.
     pub(crate) fn first(&self) -> Option<Duration> {
         self.first
     }
 
-    /// Whether `len` has passed since the start with no sample: the head held still that long.
-    pub(crate) fn silent_for(&self, now: Duration, len: Duration) -> bool {
-        self.first.is_none() && now >= self.start + len
-    }
-
     /// The samples that cover the `len` before `now`, if samples do: the latest measured at least
     /// `len` before `now` (the head stayed there until the next one) and every one after it.
+    /// Samples before that one can cover no later span, so they are discarded: `now` must not go
+    /// backwards between calls (with a fixed `len`).
     pub(crate) fn span(&mut self, now: Duration, len: Duration) -> Option<Vec<T>> {
         let from = now.checked_sub(len)?;
         let begin = self.samples.iter().rposition(|&(m, _)| m <= from)?;
@@ -82,8 +84,9 @@ impl Stillness {
     /// Whether the head has held still up to `now`. Every pose measured before `now` must have
     /// been passed to [`Stillness::pose`].
     pub fn check(&mut self, now: Duration) -> bool {
+        // Nothing since the wait began: the head has not moved (silence means unchanged).
         if self.0.first().is_none() {
-            return self.0.silent_for(now, STILL);
+            return now >= self.0.start() + STILL;
         }
         let Some(span) = self.0.span(now, STILL) else {
             return false;

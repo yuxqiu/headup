@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-15 04:34 UTC
+Last updated: 2026-11-15 06:06 UTC
 
 ## Current state
 - The protocol works.
@@ -34,6 +34,11 @@ Last updated: 2026-11-15 04:34 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- After v0.4.5 (staged, 114 tests, `nix flake check` passes): `Stillness` owns "no data means still"
+  (`Window::start`); one bounded playback path (`audio::play_bounded`, hang limit documented); `CueSink::play(Sound)`
+  with the session's `Sounds` (prompts awaited, reminders collected in `Session::next`, failures logged as
+  `CueFailed`). Live slouch run (data/slouch_live*.jsonl, 2026-11-15) passed: Tone, Speak 20 s later, Recovered, no
+  CueFailed, re-anchor −9.7°. Next: release when the user wants.
 - 2026-11-15: v0.4.5 released (commit 7ce0fe8; CI and Release green). Live check data/stop_live*.jsonl: under
   systemd, `systemctl --user stop` logs "stopping" and exits 0. Hearing check (data/hear_live*): the user heard
   headup's "Sit upright…" and "Calibrated…" on the earbuds. `View` stays as is (user, 2026-11-15). Next:

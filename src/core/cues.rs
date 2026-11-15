@@ -8,7 +8,7 @@
 use super::audio;
 use super::detector::Cue;
 use super::wav::Pcm;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use std::sync::Arc;
 
 /// Generates [`Phrase`] and [`PhraseClips`] (one decoded clip per phrase) from `Variant => "clip"`
@@ -72,13 +72,20 @@ impl Phrase {
     }
 }
 
-/// Where the session sends reminders and prompts. [`Cues`] plays them; tests record them.
-#[allow(async_fn_in_trait)] // used through generics only
+/// Something to play: a spoken calibration prompt, or a reminder cue.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Sound {
+    Prompt(Phrase),
+    Reminder(Cue),
+}
+
+/// Where the session sends sounds. [`Cues`] plays them; tests record them.
 pub trait CueSink {
-    /// Start a reminder cue without waiting for it to finish.
-    fn play(&self, cue: Cue);
-    /// Speak a prompt and wait until it has been played.
-    async fn say(&self, p: Phrase) -> Result<()>;
+    /// Start `sound` now, and return a future that ends once it has been heard (a notification:
+    /// once shown), with an error if it could not be played. Playback starts on the call, not
+    /// when the future is first polled, so a caller may keep the future and do other work while
+    /// the sound plays.
+    fn play(&self, sound: Sound) -> impl Future<Output = Result<()>> + 'static;
 }
 
 pub struct Cues {
@@ -107,38 +114,30 @@ impl Cues {
 }
 
 impl CueSink for Cues {
-    fn play(&self, cue: Cue) {
-        let pcm = match cue {
-            Cue::Tone => self.tone.clone(),
-            Cue::Recovered => self.tink.clone(),
-            Cue::Speak => self.phrase(Phrase::LiftHead),
-            Cue::Notify => {
-                tokio::spawn(notify());
-                return;
+    fn play(&self, sound: Sound) -> impl Future<Output = Result<()>> + 'static {
+        let pcm = match sound {
+            Sound::Prompt(p) => self.phrase(p),
+            Sound::Reminder(Cue::Tone) => self.tone.clone(),
+            Sound::Reminder(Cue::Recovered) => self.tink.clone(),
+            Sound::Reminder(Cue::Speak) => self.phrase(Phrase::LiftHead),
+            Sound::Reminder(Cue::Notify) => {
+                let shown = tokio::spawn(notify());
+                return finished(shown, sound);
             }
         };
-        tokio::task::spawn_blocking(move || {
-            if let Err(e) = audio::play(&pcm) {
-                report(&e);
-            }
-        });
-    }
-
-    async fn say(&self, p: Phrase) -> Result<()> {
-        let pcm = self.phrase(p);
-        let limit = audio::time_limit(&pcm);
-        let playing = tokio::task::spawn_blocking(move || audio::play(&pcm));
-        // A sound server that stops answering would block `play` forever; the session moves on.
-        tokio::time::timeout(limit, playing)
-            .await
-            .map_err(|_| anyhow!("the sound server did not answer"))?
-            .context("audio task")?
-            .with_context(|| format!("playing {p:?}"))
+        finished(tokio::spawn(audio::play_bounded(pcm)), sound)
     }
 }
 
+/// The outcome of the task playing `sound`.
+async fn finished(task: tokio::task::JoinHandle<Result<()>>, sound: Sound) -> Result<()> {
+    task.await
+        .context("cue task")?
+        .with_context(|| format!("playing {sound:?}"))
+}
+
 /// Show the "sit up" desktop notification.
-async fn notify() {
+async fn notify() -> Result<()> {
     let shown = notify_rust::Notification::new()
         .appname("headup")
         .summary("Sit up straight")
@@ -146,16 +145,8 @@ async fn notify() {
         .body("You have been looking down for a while.")
         .show_async()
         .await;
-    if let Err(e) = shown {
-        report(&anyhow::Error::from(e).context("desktop notification"));
-    }
-}
-
-/// Report a failed cue. It does not stop monitoring. It goes straight to stderr, not through
-/// `Recorder`, because the cue runs in its own task, which cannot borrow the recorder. Failures
-/// are rare, so breaking into a terminal status line is acceptable.
-fn report(e: &anyhow::Error) {
-    eprintln!("cue failed: {e:#}");
+    shown.context("desktop notification")?;
+    Ok(())
 }
 
 #[cfg(test)]

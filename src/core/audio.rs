@@ -12,7 +12,7 @@ use super::wav::Pcm;
 use anyhow::{Context, Result, anyhow, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{ErrorKind, FromSample, SampleFormat, SizedSample, StreamConfig};
-use std::sync::mpsc;
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 
 /// How much audio the output asks for at a time. The output asks for the next buffer while the
@@ -29,10 +29,29 @@ const OPEN: Duration = Duration::from_secs(2);
 /// 62–72 ms (0.3 s and 3.0 s sounds; DECISIONS "Cues play in-process with cpal").
 const STALL: Duration = Duration::from_secs(2);
 
+/// Play `pcm` on the default output and return once its last sample has been heard. Fails if the
+/// output cannot be opened, reports an error, or stalls. Playback runs on a blocking thread, and
+/// the wait for it is bounded (open + the sound's length + stall), so a sound server that stops
+/// answering cannot hang the caller.
+///
+/// Known limit: the wait ends then, but the playing thread stays blocked until the server answers,
+/// and each later sound that hits the same hang blocks another. A thread cannot be stopped from
+/// outside, and `cpal` makes the same trade: it bounds its server handshake and stream creation
+/// the same way and leaks the waiting thread. `default_output_device` and starting the stream have
+/// no bound in `cpal`. Ending a hang cleanly would take an async client (cancel by dropping the
+/// request) or a child process; see DECISIONS "Rules live with the facts they need".
+pub async fn play_bounded(pcm: Arc<Pcm>) -> Result<()> {
+    let limit = time_limit(&pcm);
+    let playing = tokio::task::spawn_blocking(move || play(&pcm));
+    tokio::time::timeout(limit, playing)
+        .await
+        .map_err(|_| anyhow!("the sound server did not answer"))?
+        .context("audio task")?
+}
+
 /// The longest [`play`] should take for `pcm`. `play` gives up on an output that stops asking for
-/// audio, but not on a sound server that stops answering while the output is opened or closed;
-/// a caller that must not hang waits for `play` at most this long.
-pub fn time_limit(pcm: &Pcm) -> Duration {
+/// audio, but not on a sound server that stops answering while the output is opened or closed.
+fn time_limit(pcm: &Pcm) -> Duration {
     OPEN + length(pcm) + STALL
 }
 
@@ -42,7 +61,7 @@ fn length(pcm: &Pcm) -> Duration {
 
 /// Play `pcm` on the default output and return once its last sample has been heard. Blocks the
 /// thread. Fails if the output cannot be opened, reports an error, or stalls.
-pub fn play(pcm: &Pcm) -> Result<()> {
+fn play(pcm: &Pcm) -> Result<()> {
     let device = cpal::default_host()
         .default_output_device()
         .context("no audio output device")?;

@@ -1293,3 +1293,42 @@
   (any raw sample); `tracker.rs` says "two things"; `Link::new` mentions the capability query.
 - **Not done.** Inlining `View` (one field) into `reported: Option<Availability>`: AGENTS.md names `View` as the
   pattern for a backend's derived state, so that is the user's call.
+
+## 2026-11-15: Rules live with the facts they need (user review of misplaced helpers)
+- **Stillness owns "no data means still".** `Window::silent_for` encoded `Stillness`'s rule as if it were a fact
+  about every window; calibration reads an empty window the opposite way (no pose: nudge). `Window` now reports
+  facts only (`start`, `first`, `span`); `Stillness::check` states its rule. Refactor: tests unchanged.
+- **One bounded playback path.** `audio::play_bounded` plays on a blocking thread and waits at most open + length
+  + stall; `play` and `time_limit` are private. Spoken prompts and the tone, tink and spoken reminder all use it,
+  so a sound server that stops answering is reported for every sound (the reminders were fire-and-forget on a
+  blocking thread and failed silently).
+- **Known limit, kept (user: "fine for now").** On a hang the wait ends but the playing thread stays blocked until
+  the server answers, and every later sound that hits the hang blocks one more thread; a thread cannot be stopped
+  from outside. cpal 0.18.2 makes the same trade (`src/host/pulseaudio/mod.rs`: the server handshake and
+  `create_playback_stream` run on a helper thread behind `recv_timeout`, "no other option than to leak the
+  thread"); headup already passes it `Some(OPEN)` for stream creation. Still unbounded inside cpal:
+  `default_output_device` (lists sinks) and `stream.play()` (`block_on(uncork)`, `block_on(started)`,
+  `stream.rs:102-107`). Rejected for now: an async client (the `pulseaudio` crate directly, cancel by dropping the
+  request; loses cpal's portability), a child process per sound (killable, but loses the exact end time that
+  moved playback in-process), and a one-sound-in-flight guard (limits the leak to one thread; not needed yet).
+- **`Earbuds::request_switch` returns nothing.** It returned a constant `true` so that `resend &&
+  self.request_switch()` read as one expression, hiding the state change; callers now return `true` themselves.
+- **`Window::span` states that it discards samples** no later span can need, so `now` must not go backwards.
+- **Kept.** `GlideFilter::drop_after` (its doc names both effects, and every caller needs both); "unit
+  quaternion" in quat.rs (true of every orientation that flows; only intermediate values inside `glide_point` and
+  `Quat::mean` are not unit, and normalising at the 43/89 parse would make `--raw-log` differ from what the earbuds
+  sent).
+- **One `CueSink::play`; the session decides whether to wait** (replaces `say`/`play`, briefly renamed
+  `prompt`/`remind`; user: `report`'s `eprintln!` was "so weird"). Both behaviours are needed: calibration
+  measures only after a prompt has been heard, so it waits; monitoring must not wait for a reminder, or a sit-up
+  during the ~2 s spoken reminder would get its tink only after the speech. But that is the session's decision, not
+  the sink's: `play(Sound)` starts a sound at once and returns a future of its outcome. Calibration awaits it
+  (`Sounds::prompt`); monitoring keeps the future in `Sounds::reminders` (`Sounds`, in session.rs, holds the sink
+  and the reminders still playing; user: they belong together), and `Session::next`, the session's one wait point,
+  also waits on those (`Sounds::ended`), so a failed reminder reaches `Recorder` (console warning and
+  `LogEvent::CueFailed { cue }`) as soon as it fails. Before, a reminder ran in a detached task that printed its own
+  failure to stderr, past the status line and outside the log. Test
+  `failed_reminder_is_logged_and_monitoring_goes_on`. New direct dependency `futures-util` (`FuturesUnordered`;
+  already in the tree through cpal). Rejected: returning a `JoinHandle` collected on each monitoring pass (a second,
+  poll-based way to learn things beside the wait) and a shared `Arc<Mutex<Recorder>>` (output from anywhere, no
+  single owner). On an interruption the reminders keep playing and their outcome is still collected later.
