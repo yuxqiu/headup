@@ -11,8 +11,9 @@
 //! The live status line is redrawn in place with `\r`. It is shown only when stdout is a
 //! terminal. Under systemd the journal gets one clean line per message instead.
 
-use super::cues::Cue;
+use super::monitor::Status;
 use super::quat::Euler;
+use super::sound::Cue;
 use anyhow::Result;
 use serde::Serialize;
 use std::io::{IsTerminal, Write};
@@ -189,12 +190,18 @@ impl Recorder {
     }
 
     /// Overwrite the live status line (terminals only).
-    pub fn status(&mut self, smoothed_pitch: Option<f64>, slouching: bool) -> Result<()> {
+    pub fn status(&mut self, status: Status) -> Result<()> {
         if !self.live {
             return Ok(());
         }
-        let pitch = smoothed_pitch.map_or("  --  ".into(), |p| format!("{p:5.1}°"));
-        let state = if slouching { "SLOUCHING" } else { "ok       " };
+        let pitch = status
+            .pitch
+            .map_or("  --  ".into(), |p| format!("{p:5.1}°"));
+        let state = if status.slouching {
+            "SLOUCHING"
+        } else {
+            "ok       "
+        };
         print!("\rpitch {pitch}  {state}   ");
         std::io::stdout().flush()?;
         self.status_shown = true;

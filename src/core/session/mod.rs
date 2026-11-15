@@ -1,21 +1,22 @@
 //! Device-agnostic posture session: spoken calibration, then monitoring with cues.
 
+mod sounds;
+mod timeline;
+mod tracking;
+
 use super::calibration::{Calibration, Outcome, Output};
-use super::cues::Cue;
-use super::cues::{Phrase, Player, Sound};
-use super::detector::{Config, Detector, PostureChange};
+use super::monitor::{self, Monitor};
 use super::quat::Quat;
 use super::record::{LogEvent, Recorder};
-use super::reminders::{Reminders, Schedule};
-use super::steady::Stillness;
-use super::tracker::{Event, HeadTracker, TrackerTraits};
-use anyhow::{Context, Result, ensure};
-use futures_util::StreamExt;
-use futures_util::future::LocalBoxFuture;
-use futures_util::stream::FuturesUnordered;
+use super::sound::{Cue, Phrase, Player};
+use super::tracker::{Event, HeadTracker};
+use anyhow::Result;
+use sounds::Sounds;
 use std::convert::Infallible;
 use std::time::Duration;
+use timeline::Timeline;
 use tokio::time::Instant;
+use tracking::Tracking;
 
 /// After a failed calibration (head kept moving), wait this long before asking again (DECISIONS
 /// "Refactor (user approved)", 2026-11-11).
@@ -58,126 +59,6 @@ struct Pose {
     /// When it was measured, as the tracker gave it (for logging).
     at: Instant,
     orientation: Quat,
-}
-
-/// The session's timeline. Session time is the time since the session started. It is monotonic,
-/// unlike log time, and counts exact integer nanoseconds.
-struct Timeline {
-    start: Instant,
-    /// Measurement time of the latest pose.
-    measured: Duration,
-}
-
-impl Timeline {
-    fn new() -> Self {
-        Timeline {
-            start: Instant::now(),
-            measured: Duration::ZERO,
-        }
-    }
-
-    /// Time since the session started.
-    fn now(&self) -> Duration {
-        self.start.elapsed()
-    }
-
-    /// Take delivery of a pose measured at `at`, and return its measurement time in session time.
-    /// A pose from before the session, or out of order, is a tracker bug and an error.
-    fn deliver(&mut self, at: Instant) -> Result<Duration> {
-        let measured = at
-            .checked_duration_since(self.start)
-            .context("tracker sent a pose from before the session started")?;
-        ensure!(
-            measured >= self.measured,
-            "tracker sent poses out of order: {measured:?} after {:?}",
-            self.measured
-        );
-        self.measured = measured;
-        Ok(measured)
-    }
-}
-
-/// What the session's head tracking is doing, from what the tracker reported. Only the tracker's
-/// `Available` and `Unavailable` move between the phases; poses never do. Every `Available` leads
-/// through `Settling`, at startup as after an interruption: the user may be on the move when
-/// tracking becomes available (putting the earbuds in, or a device that stops tracking while the
-/// user walks around), and "sit upright" should not be spoken to a moving head.
-enum Tracking {
-    /// Tracking is unavailable: it has not started yet, or the tracker said it stopped. The head
-    /// may move unseen. `Available` makes it `Settling`.
-    Waiting,
-    /// Tracking is available. Poses flow, but the head is not judged until it holds still
-    /// ([`Stillness`]); then `Live`.
-    Settling(Stillness),
-    /// The head can be judged. Silence means the head is still.
-    Live,
-}
-
-impl Tracking {
-    /// `Available` arrived at `now`.
-    fn available(&mut self, now: Duration) {
-        if let Tracking::Waiting = self {
-            *self = Tracking::Settling(Stillness::new(now));
-        }
-    }
-
-    /// `Unavailable` arrived. Returns `true` if the head was being judged and no longer can be.
-    fn unavailable(&mut self) -> bool {
-        matches!(std::mem::replace(self, Tracking::Waiting), Tracking::Live)
-    }
-
-    /// A pose measured at `measured` arrived: while settling, it counts towards stillness.
-    fn pose_arrived(&mut self, measured: Duration, q: Quat) {
-        if let Tracking::Settling(still) = self {
-            still.pose(measured, q);
-        }
-    }
-
-    /// Advance to `now`: settling ends once the head holds still. Every pose measured before `now`
-    /// must have been passed to [`Tracking::pose_arrived`].
-    fn settle(&mut self, now: Duration) {
-        if let Tracking::Settling(still) = self
-            && still.check(now)
-        {
-            *self = Tracking::Live;
-        }
-    }
-}
-
-/// The session's sounds: calibration waits for a prompt to be heard, because it measures the head
-/// only after it. Monitoring does not wait for a reminder: it keeps judging while one plays, so the
-/// recovery tink is on time even if the user sits up during speech. A reminder keeps playing to its
-/// end even if monitoring stops, and its outcome is collected whenever the session next waits.
-struct Sounds<'a, C: Player> {
-    player: &'a C,
-    /// Reminders still playing, each ending with its outcome.
-    reminders: FuturesUnordered<LocalBoxFuture<'static, (Cue, Result<()>)>>,
-}
-
-impl<'a, C: Player> Sounds<'a, C> {
-    fn new(player: &'a C) -> Self {
-        Sounds {
-            player,
-            reminders: FuturesUnordered::new(),
-        }
-    }
-
-    /// Speak a calibration prompt and return once it has been heard.
-    async fn prompt(&self, p: Phrase) -> Result<()> {
-        self.player.play(Sound::Prompt(p)).await
-    }
-
-    /// Start a reminder and return at once; [`Sounds::ended`] gives its outcome.
-    fn remind(&mut self, cue: Cue) {
-        let playing = self.player.play(Sound::Reminder(cue));
-        self.reminders
-            .push(Box::pin(async move { (cue, playing.await) }));
-    }
-
-    /// The next reminder to end, with its outcome. `None` at once if none is playing.
-    async fn ended(&mut self) -> Option<(Cue, Result<()>)> {
-        self.reminders.next().await
-    }
 }
 
 struct Session<'a, T: HeadTracker, C: Player> {
@@ -251,20 +132,10 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
         }
     }
 
-    /// Log and start each reminder in `cues`.
-    fn remind(&mut self, cues: impl IntoIterator<Item = Cue>) -> Result<()> {
-        for cue in cues {
-            self.rec.event(LogEvent::Cue { cue })?;
-            self.sounds.remind(cue);
-        }
-        Ok(())
-    }
-
-    /// Log a re-anchored upright, if there is one.
-    fn log_reanchored(&mut self, upright: Option<f64>) -> Result<()> {
-        if let Some(upright) = upright {
-            self.rec.event(LogEvent::Reanchored { upright })?;
-        }
+    /// Log a reminder and start it.
+    fn remind(&mut self, cue: Cue) -> Result<()> {
+        self.rec.event(LogEvent::Cue { cue })?;
+        self.sounds.remind(cue);
         Ok(())
     }
 
@@ -369,45 +240,34 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
 
     /// Monitor until interrupted: earbuds off, tracking unavailable, or an error.
     async fn monitor(&mut self, baseline: Quat) -> Flow<()> {
-        let mut det = Detector::new(detector_config(self.tracker.traits()));
-        let mut reminders = Reminders::new(Schedule::default());
+        let mut monitor = Monitor::new(baseline, self.tracker.traits());
         let mut last_status: Option<Duration> = None;
         loop {
             // Wake for the next status refresh, or when the next reminder is due if that is sooner.
             // Times are exact, so the reminder falls due at that point.
             let status_due = last_status.map_or(Duration::ZERO, |last| last + STATUS_EVERY);
-            let wake = reminders
+            let wake = monitor
                 .next_due()
                 .map_or(status_due, |due| due.min(status_due));
             let wait = wake.saturating_sub(self.now());
             for pose in self.next(wait).await? {
-                let angles = (baseline.conj() * pose.orientation).euler();
+                let angles = monitor.pose(pose.measured, pose.orientation);
                 self.rec.pose(pose.at, angles)?;
-                let update = det.update(pose.measured, angles.pitch);
-                self.log_reanchored(update.reanchored)?;
-                match update.posture {
-                    Some(PostureChange::SlouchStarted) => reminders.slouch_started(pose.measured),
-                    Some(PostureChange::Recovered) => self.remind(reminders.recovered())?,
-                    None => {}
-                }
-                self.remind(reminders.due(pose.measured))?;
             }
             let t = self.now();
-            self.log_reanchored(det.tick(t))?;
-            self.remind(reminders.due(t))?;
+            for output in monitor.check(t) {
+                match output {
+                    monitor::Output::Remind(cue) => self.remind(cue)?,
+                    monitor::Output::Reanchored { upright } => {
+                        self.rec.event(LogEvent::Reanchored { upright })?
+                    }
+                }
+            }
             if last_status.is_none_or(|last| t - last >= STATUS_EVERY) {
                 last_status = Some(t);
-                self.rec.status(det.smoothed(), det.slouching())?;
+                self.rec.status(monitor.status())?;
             }
         }
-    }
-}
-
-/// Detector settings for a tracker: the defaults, plus corrections for what it declares.
-fn detector_config(traits: TrackerTraits) -> Config {
-    Config {
-        reanchor_after_recovery: traits.pose_drifts_up,
-        ..Config::default()
     }
 }
 

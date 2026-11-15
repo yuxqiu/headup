@@ -1,10 +1,10 @@
 //! Test support shared across modules: run the real posture session against any tracker and
 //! record what it did.
 
-use crate::core::cues::Cue;
-use crate::core::cues::{Player, Sound};
 use crate::core::record::Recorder;
 use crate::core::session;
+use crate::core::sound::Cue;
+use crate::core::sound::{Player, Sound};
 use crate::core::tracker::HeadTracker;
 use anyhow::{Result, ensure};
 use std::cell::RefCell;

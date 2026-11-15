@@ -1,9 +1,9 @@
 //! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session.
 
 use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay};
-use crate::core::cues::Cue::{self, Recovered, Speak, Tone};
-use crate::core::cues::Phrase;
-use crate::core::cues::Sound::Prompt;
+use crate::core::sound::Cue::{self, Recovered, Speak, Tone};
+use crate::core::sound::Phrase;
+use crate::core::sound::Sound::Prompt;
 use crate::testing::secs;
 use crate::testing::{PlayerSim, run_session};
 use std::time::Duration;

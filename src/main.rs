@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use clap::Parser;
 use headup::core::record::{DeviceLog, LogSink, Recorder};
-use headup::core::{cues::DesktopPlayer, session, tracker::HeadTracker};
+use headup::core::{session, sound::DesktopPlayer, tracker::HeadTracker};
 use headup::devices::bluetooth::{Address, Host};
 use headup::devices::{self, AnyTracker};
 use std::path::{Path, PathBuf};

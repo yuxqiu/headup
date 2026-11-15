@@ -2,9 +2,9 @@
 
 use super::*;
 use crate::core::calibration::CALIBRATION_TRIES;
-use crate::core::cues::Cue::*;
-use crate::core::cues::Phrase::*;
-use crate::core::cues::Sound::{self, Prompt, Reminder};
+use crate::core::sound::Cue::*;
+use crate::core::sound::Phrase::*;
+use crate::core::sound::Sound::{self, Prompt, Reminder};
 use crate::core::steady::STILL;
 use crate::core::tracker::TrackerTraits;
 use crate::testing::secs;

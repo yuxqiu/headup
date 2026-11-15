@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-15 06:59 UTC
+Last updated: 2026-11-15 07:18 UTC
 
 ## Current state
 - The protocol works.
@@ -34,6 +34,11 @@ Last updated: 2026-11-15 06:59 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- Staged on top (128 tests, `nix flake check` passes): `core/monitor/` (`Monitor` composes the private detector and
+  reminders), `core/session/` (loop + private `tracking`, `timeline`, `sounds`), `core/sound/` (`Sound`, `Cue`,
+  `Phrase`, `Player`; private `desktop`, `audio`, `wav`). Moves and one new composition; behaviour unchanged. Next:
+  user commits, then bump to 0.4.6 and release (live test of this structure passed before the moves; rerun if
+  wanted).
 - Staged (117 tests, `nix flake check` incl. the new rustdoc check passes): `Cue` in cues.rs; detector reports
   posture, `core::reminders` owns the schedule; whole-codebase thermos fixes (exit without waiting on a stuck
   sound, `stop_stream`, no `POLL`, `Player`/`DesktopPlayer`, `ReplayTracker` on the real backend). Next: a short

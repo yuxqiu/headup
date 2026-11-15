@@ -15,12 +15,17 @@ user, through the earbuds, when they look down for too long. Everything runs loc
 
 - `src/core/`: device-agnostic logic.
   - `tracker.rs`: the `HeadTracker` interface that backends implement.
-  - `session.rs`: the session loop: waits, calibration prompts, monitoring.
-  - `calibration.rs`: calibration decisions as a state machine without I/O (like `detector.rs`).
+  - `session/`: the session loop (`mod.rs`: waits, calibration, monitoring, interruptions). Inside, private:
+    `tracking.rs` (whether the head can be judged: `Waiting`, `Settling`, `Live`; no I/O), `timeline.rs`
+    (session time, pose order) and `sounds.rs` (prompts the session waits for, reminders still playing).
+  - `calibration.rs`: calibration decisions as a state machine without I/O (like `monitor/`).
   - `steady.rs`: whether the head holds steady over the last stretch of time (`Window`, `Stillness`).
-  - `detector.rs`: slouch detection: when a slouch starts and ends, and re-anchoring upright.
-  - `reminders.rs`: when to remind the user during a slouch (the schedule, the tink on recovery).
-  - `cues.rs`, `audio.rs`, `wav.rs`: sounds and notifications (`audio.rs` plays a sound to the end).
+  - `monitor/`: monitoring after calibration, without I/O: `Monitor` takes poses and the time and says what to
+    do (remind, re-anchored). Inside, private: `detector.rs` (when a slouch starts and ends, re-anchoring upright)
+    and `reminders.rs` (when to remind during a slouch, the tink on recovery).
+  - `sound/`: what headup plays (`mod.rs`: `Sound`, `Cue`, `Phrase`, the `Player` trait). Inside, private:
+    `desktop.rs` (`DesktopPlayer`: plays on this computer, shows notifications), `audio.rs` (plays a sound to the
+    end, bounded) and `wav.rs` (clips and tones).
   - `record.rs`: console output and logs.
   - `quat.rs`: orientation math.
 - `src/devices/`: the backend registry (`mod.rs`), discovery (`discovery.rs`), and `bluetooth/`: the Bluetooth
@@ -137,5 +142,5 @@ Run everything inside `nix develop`.
   describe one device's quirks.
 - Release steps: bump `version` in `Cargo.toml`, wait for green CI, then the user publishes a `v<version>` GitHub
   release. The `Release` workflow builds the tarballs (see `docs/RUNBOOK.md`).
-- Voice prompts: add a line to `phrases!` in `src/core/cues.rs` and the text to `tools/gen_voice.sh`, then run
+- Voice prompts: add a line to `phrases!` in `src/core/sound/mod.rs` and the text to `tools/gen_voice.sh`, then run
   the script.

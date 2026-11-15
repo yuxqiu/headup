@@ -9,7 +9,7 @@
 //! Times are session time, like the detector's. A time earlier than one already judged (a pose
 //! delivered late) adds nothing: the schedule has been judged up to the later time.
 
-use super::cues::Cue;
+use crate::core::sound::Cue;
 use std::time::Duration;
 
 /// When each reminder falls due, as time since the slouch started.

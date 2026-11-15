@@ -32,7 +32,7 @@ Device MAC used in examples: `AA:BB:CC:DD:EE:01`, a made-up address; use your ea
     starts or comes back; stop with Ctrl-C or SIGTERM (`systemctl --user stop headup`), which disables the stream; a second
     one quits without waiting for that.
 - Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match the `phrases!` list in
-  `src/core/cues.rs`.
+  `src/core/sound/mod.rs`.
 - Home Manager module: `homeManagerModules.default` in `nix/hm-module.nix`. To verify it evaluates, build a minimal
   `home-manager.lib.homeManagerConfiguration` with `services.headup.enable = true` and read
   `xdg.configFile."systemd/user/headup.service".source`.

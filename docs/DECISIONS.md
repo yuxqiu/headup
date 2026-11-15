@@ -1397,3 +1397,38 @@
   replacing `run_session_failing`. Detector tests share one `feed` helper; replay tests one `without_speech`
   filter. All 117 tests pass unchanged in what they assert.
 - **Left as they are (deliberate):** the one-field `View` (user: not now), `request_switch` returning nothing.
+
+## 2026-11-15: `Monitor` composes the detector and the reminders (user)
+- **What.** `core::monitor::Monitor` is the monitoring phase's decision type without I/O, like `Calibration`:
+  `new(baseline, traits)`, `pose(measured, orientation) -> Euler` (angles relative to calibration, for the log),
+  `check(now) -> Vec<Output>` (`Remind(Cue)`, `Reanchored { upright }`, in order), `next_due`, `status() ->
+  Status`. The detector and the reminders are its private submodules (`core/monitor/`), so the session cannot call
+  them. The session's monitoring loop only passes poses and the time and acts on the outputs; the baseline maths,
+  `detector_config`, `log_reanchored`, the posture-change `match` and the two `due` calls moved into `Monitor`.
+  `Recorder::status` takes a `Status`.
+- **Why.** User: the detector, reminders and session APIs were easy to misuse (call `due` after every update with
+  the right time, handle a recovery before `due`, tick with the same `now`, keep two slouch states in step), all
+  coupled in `Session::monitor`. Now the wiring has one home and its own tests
+  (`a_slouch_reminds_then_sitting_up_tinks`, `a_glance_says_nothing`, `a_silent_slouch_reminds_at_the_due_time`,
+  `sitting_up_past_upright_reanchors_after_the_tink`, `angles_are_relative_to_the_baseline`).
+- **Behaviour unchanged:** every session test and replay passes as it was; detector and reminders tests moved
+  with their modules unchanged.
+- **Rejected.** One `step(Input) -> Vec<Output>` with `Input = Pose | Time`: equally safe, but it breaks the
+  pose-then-check rhythm that calibration and "take every waiting event, then judge up to now" use. Keeping pitch
+  maths in the session: a wrong pitch (absolute, or against a stale baseline) would compile.
+
+## 2026-11-15: Session and sound output split into modules (user)
+- **What.** `core/session/`: `mod.rs` keeps the loop (`run`, `Session`: the wait point, interruptions, the
+  calibration and monitoring phases); private `tracking.rs` (`Tracking`: `Waiting`/`Settling`/`Live`, no I/O),
+  `timeline.rs` (`Timeline`) and `sounds.rs` (`Sounds`). `core/sound/`: `mod.rs` holds what the rest of core uses
+  (`Sound`, `Cue`, `Phrase`, `Player`, the `phrases!` registry); private `desktop.rs` (`DesktopPlayer`,
+  re-exported), `audio.rs` and `wav.rs`, so nothing else can call playback directly (for example past
+  `play_bounded`). Paths in AGENTS.md, the RUNBOOK and tools/gen_voice.sh follow.
+- **Why.** User asked whether the session and other core modules could be modularized further. The session file
+  mixed the loop with three pure parts; `Tracking`, a decision type without I/O like `Calibration` and `Monitor`,
+  was tested only through whole sessions. Six direct tests now cover it (`waiting_ignores_poses_and_time`,
+  `a_still_head_goes_live_after_two_seconds`, `silence_goes_live_after_two_seconds`,
+  `a_moving_head_keeps_settling`, `unavailable_interrupts_only_a_live_head`, `available_again_changes_nothing`).
+- **Behaviour unchanged:** moves only; every existing test passes as it was.
+- **Kept flat:** `calibration.rs` (one decision type, parallel to `monitor/`), `steady.rs` (shared by calibration,
+  the detector and `Tracking`), `record.rs`, `tracker.rs`, `quat.rs`.

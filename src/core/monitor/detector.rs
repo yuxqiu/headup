@@ -21,7 +21,7 @@
 //! upright, not beyond it. So a reading above upright after a recovery is accumulated tracker
 //! error. Drift the other way is not corrected.
 
-use super::steady::Window;
+use crate::core::steady::Window;
 use std::time::Duration;
 
 #[derive(Debug, Clone, Copy)]
