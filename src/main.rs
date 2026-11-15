@@ -7,6 +7,7 @@ use headup::devices::{self, AnyTracker};
 use std::path::{Path, PathBuf};
 use std::pin::Pin;
 use std::time::Duration;
+use tokio::signal::unix::{SignalKind, signal};
 
 /// Head-posture reminders from earbud head tracking.
 ///
@@ -26,9 +27,23 @@ struct Args {
     raw_log: Option<PathBuf>,
 }
 
+/// How long to wait before looking for the earbuds again, or reconnecting (DECISIONS "Wear pause,
+/// auto-detect, daemon, Home Manager").
 const RETRY: Duration = Duration::from_secs(5);
 
-type CtrlC = Pin<Box<dyn Future<Output = std::io::Result<()>>>>;
+/// Resolves when headup is asked to stop: Ctrl-C (SIGINT) in a terminal, or SIGTERM, which
+/// systemd sends on `systemctl stop`, on logout and on a Home Manager switch.
+type StopSignal = Pin<Box<dyn Future<Output = std::io::Result<()>>>>;
+
+fn stop_signal() -> std::io::Result<StopSignal> {
+    let mut terminate = signal(SignalKind::terminate())?;
+    Ok(Box::pin(async move {
+        tokio::select! {
+            r = tokio::signal::ctrl_c() => r,
+            _ = terminate.recv() => Ok(()),
+        }
+    }))
+}
 
 fn open_append(p: &Path) -> Result<LogSink> {
     if let Some(dir) = p.parent().filter(|d| !d.as_os_str().is_empty()) {
@@ -42,17 +57,18 @@ fn open_append(p: &Path) -> Result<LogSink> {
     Ok(Box::new(file))
 }
 
-/// Sleep for `d`; `true` if Ctrl-C arrived instead.
-async fn sleep_or_ctrl_c(d: Duration, ctrl_c: &mut CtrlC) -> Result<bool> {
+/// Sleep for `d`; `true` if a stop signal arrived instead.
+async fn sleep_or_stop(d: Duration, stop: &mut StopSignal) -> Result<bool> {
     tokio::select! {
         _ = tokio::time::sleep(d) => Ok(false),
-        r = ctrl_c => { r?; Ok(true) }
+        r = stop => { r?; Ok(true) }
     }
 }
 
 /// How one attempt ended.
 enum Attempt {
-    /// Ctrl-C arrived and headup stops. If a tracker was connected, its stream was switched off.
+    /// A stop signal arrived and headup stops. If a tracker was connected, its stream was switched
+    /// off, unless a second stop signal cut that short.
     Stopped,
     /// No supported earbuds are connected yet; try again after RETRY.
     Waiting,
@@ -67,11 +83,11 @@ async fn attempt(
     args: &Args,
     cues: &Cues,
     rec: &mut Recorder,
-    ctrl_c: &mut CtrlC,
+    stop: &mut StopSignal,
 ) -> Result<Attempt> {
     let found = tokio::select! {
         r = devices::find(bt, args.device) => r,
-        r = &mut *ctrl_c => { r?; return Ok(Attempt::Stopped); }
+        r = &mut *stop => { r?; return Ok(Attempt::Stopped); }
     };
     let found = match found {
         Ok(Some(found)) => found,
@@ -87,16 +103,27 @@ async fn attempt(
         found.device.name, found.device.address
     ));
     let device_log = DeviceLog::new(args.raw_log.as_deref().map(open_append).transpose()?);
-    let mut tracker = match AnyTracker::connect(bt, &found, device_log).await {
+    let connected = tokio::select! {
+        r = AnyTracker::connect(bt, &found, device_log) => r,
+        r = &mut *stop => { r?; return Ok(Attempt::Stopped); }
+    };
+    let mut tracker = match connected {
         Ok(t) => t,
         Err(e) => return Ok(Attempt::Failed(format!("connecting failed: {e:#}"))),
     };
     let Err(e) = tokio::select! {
         r = session::run(&mut tracker, cues, rec) => r,
-        r = &mut *ctrl_c => {
+        r = &mut *stop => {
             r?;
-            rec.note("stopping");
-            tracker.stop().await?;
+            rec.note("stopping (stop again to quit at once)");
+            // Switching the stream off waits on the link; a second stop signal gives up on it.
+            tokio::select! {
+                r = tracker.stop() => r?,
+                r = stop_signal()? => {
+                    r?;
+                    rec.warn("quit without switching the earbuds' stream off");
+                }
+            }
             return Ok(Attempt::Stopped);
         }
     };
@@ -118,11 +145,11 @@ async fn main() -> Result<()> {
     if let Some(addr) = args.device {
         devices::ensure_supported(&bt, addr).await?;
     }
-    let mut ctrl_c: CtrlC = Box::pin(tokio::signal::ctrl_c());
+    let mut stop = stop_signal()?;
 
     let mut waiting_noted = false;
     loop {
-        match attempt(&bt, &args, &cues, &mut rec, &mut ctrl_c).await? {
+        match attempt(&bt, &args, &cues, &mut rec, &mut stop).await? {
             Attempt::Stopped => return Ok(()),
             Attempt::Waiting => {
                 if !waiting_noted {
@@ -135,7 +162,7 @@ async fn main() -> Result<()> {
                 rec.warn(&format!("{what}; retrying in {}s", RETRY.as_secs()));
             }
         }
-        if sleep_or_ctrl_c(RETRY, &mut ctrl_c).await? {
+        if sleep_or_stop(RETRY, &mut stop).await? {
             return Ok(());
         }
     }

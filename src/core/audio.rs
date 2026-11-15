@@ -20,11 +20,13 @@ use std::time::{Duration, Instant};
 /// Left to itself, a PulseAudio server would use 2 s.
 const BUFFER: Duration = Duration::from_millis(20);
 
-/// How long opening the output may take.
+/// How long opening the output may take. A bound for a sound server that stops answering, far
+/// above the measured latency (35 ms; DECISIONS "Cues play in-process with cpal").
 const OPEN: Duration = Duration::from_secs(2);
 
 /// How much longer than the sound itself playback may take before the output counts as stalled.
-/// A stalled or vanished output would otherwise never report the end.
+/// A stalled or vanished output would otherwise never report the end. Measured overshoot is
+/// 62–72 ms (0.3 s and 3.0 s sounds; DECISIONS "Cues play in-process with cpal").
 const STALL: Duration = Duration::from_secs(2);
 
 /// The longest [`play`] should take for `pcm`. `play` gives up on an output that stops asking for

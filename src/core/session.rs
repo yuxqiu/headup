@@ -12,28 +12,30 @@ use std::convert::Infallible;
 use std::time::Duration;
 use tokio::time::Instant;
 
-/// After a failed calibration (head kept moving), wait this long before asking again.
+/// After a failed calibration (head kept moving), wait this long before asking again (DECISIONS
+/// "Refactor (user approved)", 2026-11-11).
 const CALIBRATION_RETRY: Duration = Duration::from_secs(60);
-/// Say that headup is waiting if head tracking has not started after this long.
-const TRACKING_WAIT_NOTE: Duration = Duration::from_secs(5);
-/// How often the live status line is refreshed.
+/// How often the live status line is refreshed (DECISIONS "Thermo review applied").
 const STATUS_EVERY: Duration = Duration::from_secs(1);
-/// How long to wait for a tracker event before re-checking timers.
+/// How long to wait for a tracker event before re-checking timers. Reminders wake at their own due
+/// time ([`Detector::next_due`]), so this only bounds how late the status line and the idle loop
+/// look again; it matches STATUS_EVERY.
 const POLL: Duration = Duration::from_secs(1);
 /// How often calibration and the wait for a still head judge the head. A prompt comes at most this
-/// long after the head meets its condition.
+/// long after the head meets its condition (DECISIONS "Calibration outputs, one window type, review
+/// fixes"); a delay that short was not measured for noticeability [unmeasured].
 const JUDGE_EVERY: Duration = Duration::from_millis(200);
 
 /// Why a cycle ended early. A cycle waits for tracking, calibrates, then monitors. `?` carries the
 /// interrupt, so every wait in the session gives up the same way when tracking stops.
 enum Interrupt {
-    /// The tracker became unavailable, for this reason (the earbuds taken off, a device
-    /// precondition, ...). The head may move unseen until tracking resumes, and resumed tracking
-    /// may measure in a new frame. So the posture reference can't be trusted: the session drops
+    /// The tracker became unavailable (the earbuds taken off, a device precondition, ...). The
+    /// head may move unseen until tracking resumes, and resumed tracking may measure in a new
+    /// frame. So the posture reference can't be trusted: the session drops
     /// the slouch state, so no reminder plays from stale data, and recalibrates once tracking
     /// resumes. Silence while tracking is available only means the head is still; it never ends a
     /// cycle.
-    Unavailable(&'static str),
+    Unavailable,
     /// A tracker or output error. It ends the session.
     Fatal(anyhow::Error),
 }
@@ -93,57 +95,33 @@ impl Timeline {
     }
 }
 
-/// What the session's head tracking is doing, from what the tracker reported. Two paths lead to
-/// `Live`: at startup from `NotStarted`, and after each interruption from `Interrupted` through
-/// `Settling`. Only the tracker's `Available` and `Unavailable` move between them; poses never do.
+/// What the session's head tracking is doing, from what the tracker reported. Only the tracker's
+/// `Available` and `Unavailable` move between the phases; poses never do. Every `Available` leads
+/// through `Settling`, at startup as after an interruption: the user may be on the move when
+/// tracking becomes available (putting the earbuds in, or a device that stops tracking while the
+/// user walks around), and "sit upright" should not be spoken to a moving head.
 enum Tracking {
-    /// Tracking has not started, for this reason. Silence here may mean "not yet", not a still
-    /// head. `Available` makes it `Live` at once: there is no posture yet that the user could have
-    /// moved away from.
-    NotStarted(&'static str),
-    /// Tracking had started, then the tracker said it stopped, for this reason. The head may move
-    /// unseen. `Available` makes it `Settling`.
-    Interrupted(&'static str),
-    /// Back after an interruption. Poses flow, but the user may still be on the move (a device
-    /// can stop tracking while the user walks around), so the head is not judged until it holds
-    /// still ([`Stillness`]); then `Live`.
+    /// Tracking is unavailable: it has not started yet, or the tracker said it stopped. The head
+    /// may move unseen. `Available` makes it `Settling`.
+    Waiting,
+    /// Tracking is available. Poses flow, but the head is not judged until it holds still
+    /// ([`Stillness`]); then `Live`.
     Settling(Stillness),
     /// The head can be judged. Silence means the head is still.
     Live,
 }
 
-/// The reason tracking has not started before the tracker reports anything.
-const NOT_REPORTED: &str = "the earbuds have not reported yet";
-
 impl Tracking {
-    /// Why tracking has not started or has stopped, in the tracker's words. `None` while settling
-    /// or live, when the session waits for nothing from the device.
-    fn reason(&self) -> Option<&'static str> {
-        match self {
-            Tracking::NotStarted(reason) | Tracking::Interrupted(reason) => Some(reason),
-            Tracking::Settling(_) | Tracking::Live => None,
-        }
-    }
-
     /// `Available` arrived at `now`.
     fn available(&mut self, now: Duration) {
-        match self {
-            Tracking::NotStarted(_) => *self = Tracking::Live,
-            Tracking::Interrupted(_) => *self = Tracking::Settling(Stillness::new(now)),
-            Tracking::Settling(_) | Tracking::Live => {}
+        if let Tracking::Waiting = self {
+            *self = Tracking::Settling(Stillness::new(now));
         }
     }
 
-    /// `Unavailable` arrived, for `reason`. Returns `true` if the head was being judged and no
-    /// longer can be.
-    fn unavailable(&mut self, reason: &'static str) -> bool {
-        let next = match self {
-            Tracking::NotStarted(_) => Tracking::NotStarted(reason),
-            Tracking::Interrupted(_) | Tracking::Settling(_) | Tracking::Live => {
-                Tracking::Interrupted(reason)
-            }
-        };
-        matches!(std::mem::replace(self, next), Tracking::Live)
+    /// `Unavailable` arrived. Returns `true` if the head was being judged and no longer can be.
+    fn unavailable(&mut self) -> bool {
+        matches!(std::mem::replace(self, Tracking::Waiting), Tracking::Live)
     }
 
     /// A pose measured at `measured` arrived: while settling, it counts towards stillness.
@@ -185,14 +163,14 @@ pub async fn run<T: HeadTracker, C: CueSink>(
         cues,
         rec,
         time: Timeline::new(),
-        tracking: Tracking::NotStarted(NOT_REPORTED),
+        tracking: Tracking::Waiting,
     };
     loop {
         match s.cycle().await {
             Ok(()) => {}
-            Err(Interrupt::Unavailable(reason)) => s.rec.note(&format!(
-                "head tracking is unavailable ({reason}); will calibrate when it resumes"
-            )),
+            Err(Interrupt::Unavailable) => s
+                .rec
+                .note("monitoring paused; will calibrate when tracking resumes"),
             Err(Interrupt::Fatal(e)) => return Err(e),
         }
     }
@@ -244,11 +222,12 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
             Event::Available => {
                 self.rec.event(LogEvent::TrackingAvailable)?;
                 self.tracking.available(self.time.now());
+                self.rec.note("waiting for your head to hold still…");
             }
             Event::Unavailable { reason } => {
                 self.rec.event(LogEvent::TrackingUnavailable { reason })?;
-                if self.tracking.unavailable(reason) {
-                    return Err(Interrupt::Unavailable(reason));
+                if self.tracking.unavailable() {
+                    return Err(Interrupt::Unavailable);
                 }
             }
         }
@@ -258,32 +237,24 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
     /// Consume events for `period`. Interrupts as [`Session::next`] does.
     async fn idle(&mut self, period: Duration) -> Flow<()> {
         let end = self.now() + period;
-        while self.now() < end {
-            let left = end - self.now();
-            self.next(left.min(POLL)).await?;
-        }
-        Ok(())
-    }
-
-    /// Wait until the head can be judged ([`Tracking::Live`]). Tracking may not start until a
-    /// device precondition is met (the tracker's reason says which). That can take a while, so this
-    /// waits without a deadline; a note gives the reason once the wait for the device gets long.
-    async fn wait_for_tracking(&mut self) -> Flow<()> {
-        let start = self.now();
-        let mut noted = false;
         loop {
-            self.tracking.settle(self.now());
-            if matches!(self.tracking, Tracking::Live) {
+            // One reading of the clock: a second could pass `end` after the first did not.
+            let now = self.now();
+            if now >= end {
                 return Ok(());
             }
-            // While settling, data flows: the session waits only for a still head.
-            if let Some(reason) = self.tracking.reason()
-                && !noted
-                && self.now() - start >= TRACKING_WAIT_NOTE
-            {
-                self.rec
-                    .note(&format!("waiting for head tracking ({reason})…"));
-                noted = true;
+            self.next((end - now).min(POLL)).await?;
+        }
+    }
+
+    /// Wait until the head can be judged ([`Tracking::Live`]): for the device, which may not track
+    /// until a precondition is met (its `Unavailable` line says which), then for a still head.
+    /// Either can take a while, so this waits without a deadline.
+    async fn wait_for_tracking(&mut self) -> Flow<()> {
+        loop {
+            self.tracking.settle(self.now());
+            if let Tracking::Live = self.tracking {
+                return Ok(());
             }
             self.next(JUDGE_EVERY).await?;
         }
@@ -306,13 +277,7 @@ impl<T: HeadTracker, C: CueSink> Session<'_, T, C> {
                     cal.prompt_ended(self.now());
                 }
                 Some(Output::AttemptEnded { report, outcome }) => {
-                    let spread = report
-                        .spread
-                        .map_or("poses never covered the span".into(), |s| {
-                            format!("{} samples, p90 deviation {:.1}°", s.samples, s.p90)
-                        });
-                    self.rec
-                        .note(&format!("calibration attempt {}: {spread}", report.attempt));
+                    self.rec.note(&report.to_string());
                     match outcome {
                         Outcome::Calibrated(upright) => {
                             self.cues.say(Phrase::Calibrated).await?;

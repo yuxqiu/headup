@@ -69,14 +69,17 @@ impl Message {
     }
 }
 
-/// 43/37: TLV 1 = left, TLV 2 = right, 1 = worn.
+/// 43/37: TLV 1 = left, TLV 2 = right, one byte each: 1 = worn, 0 = off (FINDINGS "Wear
+/// detection").
 fn wear(f: &Frame) -> Result<Message> {
-    let side = |t| f.tlv(t).and_then(|v| v.first().copied());
-    let (Some(left), Some(right)) = (side(1), side(2)) else {
-        bail!("no wear state for both earbuds");
+    let side = |t| match f.tlv(t) {
+        Some([0]) => Ok(false),
+        Some([1]) => Ok(true),
+        other => bail!("wear state TLV {t} is {other:?}, not 00 or 01"),
     };
+    let (left, right) = (side(1)?, side(2)?);
     Ok(Message::Wear {
-        both_worn: left == 1 && right == 1,
+        both_worn: left && right,
     })
 }
 
@@ -128,7 +131,11 @@ fn switch_reply(f: &Frame) -> Result<Message> {
     Ok(Message::StreamSwitch(reply))
 }
 
-/// 43/89: TLV 1 = u32 LE sequence number, TLV 2 = 4 x f32 LE (w, x, y, z).
+/// 43/89: TLV 1 = u32 LE sequence number, TLV 2 = 4 x f32 LE (w, x, y, z), a unit quaternion
+/// (FINDINGS "Hardware test"). A reading that is no rotation at all (a NaN or infinite component,
+/// or all zero) is malformed: nothing downstream could make sense of it. Its exact length is not
+/// checked: the angle math normalises, so a firmware that sends slightly longer or shorter
+/// quaternions still works.
 fn sample(f: &Frame) -> Result<Message> {
     let seq: [u8; 4] = f.tlv(1).context("no sequence number")?.try_into()?;
     let quat: [u8; 16] = f.tlv(2).context("no quaternion")?.try_into()?;
@@ -137,14 +144,19 @@ fn sample(f: &Frame) -> Result<Message> {
             quat[i * 4..i * 4 + 4].try_into().unwrap(),
         ))
     };
+    let raw = Quat {
+        w: c(0),
+        x: c(1),
+        y: c(2),
+        z: c(3),
+    };
+    let length = raw.norm();
+    if !length.is_finite() || length == 0.0 {
+        bail!("quaternion {raw:?} is not a rotation (length {length})");
+    }
     Ok(Message::Sample {
         seq: u32::from_le_bytes(seq),
-        raw: Quat {
-            w: c(0),
-            x: c(1),
-            y: c(2),
-            z: c(3),
-        },
+        raw,
     })
 }
 
@@ -218,6 +230,10 @@ mod tests {
         assert!(!worn(f(1, 0))); // right off
         assert!(!worn(f(0, 0))); // both off
         assert!(Message::parse(&Frame::new(43, 37, &[(3, &[0])])).is_err());
+        // Only 00 and 01 are wear states; anything else is a malformed frame, on either side.
+        assert!(Message::parse(&f(1, 2)).is_err());
+        assert!(Message::parse(&f(0, 2)).is_err());
+        assert!(Message::parse(&Frame::new(43, 37, &[(1, &[1, 0]), (2, &[1])])).is_err());
     }
 
     // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/device/single_bud_test.py,
@@ -280,6 +296,27 @@ mod tests {
             Message::parse(&sample_frame(seq, raw)).unwrap(),
             Message::Sample { seq, raw }
         );
+    }
+
+    // A reading that is no rotation is a malformed frame: NaN, infinity or zero would otherwise
+    // reach the session and break every angle. A length off 1 is still a rotation.
+    #[test]
+    fn readings_that_are_no_rotation_are_errors() {
+        let q = |w, x| Quat {
+            w,
+            x,
+            y: 0.0,
+            z: 0.0,
+        };
+        for bad in [q(f64::NAN, 0.0), q(1.0, f64::INFINITY), q(0.0, 0.0)] {
+            assert!(Message::parse(&sample_frame(1, bad)).is_err(), "{bad:?}");
+        }
+        for rotation in [q(0.6, 0.8), q(1.01, 0.0)] {
+            assert!(
+                Message::parse(&sample_frame(1, rotation)).is_ok(),
+                "{rotation:?}"
+            );
+        }
     }
 
     #[test]

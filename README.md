@@ -57,7 +57,8 @@ headup
 
 headup finds connected supported earbuds by itself and keeps running. If no supported earbuds are
 connected yet, or the connection drops (for example when you put them back in the case), it waits and
-reconnects. Stop it with Ctrl-C.
+reconnects. Stop it with Ctrl-C (or `systemctl --user stop headup` for the service): it switches the earbuds'
+head tracking off before it exits. Press Ctrl-C again to quit at once.
 
 If several supported earbuds are connected, pass the address of the ones to use:
 
@@ -71,9 +72,12 @@ To keep a record of your head angle and reminders, add `--log FILE` (JSON lines)
 
 ## What to expect
 
-1. **Calibration.** Once your earbuds track your head, a voice asks you to sit upright and look straight ahead. Hold
-   still for about 3 seconds. If you move, it asks again. If it hears nothing from the earbuds, it asks you to move
-   your head a little and then hold still.
+1. **Calibration.** When your earbuds start tracking your head, headup waits until you stop moving. Then a voice
+   says "Sit upright and look straight ahead." Sit the way you want to sit and stay there for about 3 seconds,
+   until it says "Calibrated". Small movements are fine.
+   - If you move too much, it says "You moved" and asks again.
+   - Some earbuds send nothing while your head is perfectly still. If headup gets nothing, it asks you to move your
+     head a little and then settle again.
 2. **Monitoring.** Looking down counts. Looking up, or turning your head to another screen, does not.
    Short glances down are fine.
 3. **Reminders.** If you keep looking down (more than about 20°):

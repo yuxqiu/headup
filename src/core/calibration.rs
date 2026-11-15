@@ -17,6 +17,11 @@ use super::quat::Quat;
 use super::steady::Window;
 use std::time::Duration;
 
+// Calibration: a 3 s steady capture, p90 under 8°, up to 4 tries (DECISIONS "Detector behaviour",
+// from docs/UX_RESEARCH.md). Each attempt fails 5 s after its first pose; with no pose 5 s after
+// an attempt starts, a nudge, repeated every 15 s (DECISIONS "Calibration asks a still head to
+// move").
+
 /// How long the head must hold steady, after the prompt, to calibrate.
 const CALIBRATION: Duration = Duration::from_secs(3);
 /// The 90th-percentile angle (degrees) from the mean pose below which the head counts as steady.
@@ -24,6 +29,7 @@ const CALIBRATION_MAX_P90_DEG: f64 = 8.0;
 /// An attempt fails if the head has not held steady for CALIBRATION by this long after the
 /// attempt's first pose.
 const CALIBRATION_ATTEMPT: Duration = Duration::from_secs(5);
+/// Attempts before calibration fails and headup asks again later.
 pub(crate) const CALIBRATION_TRIES: usize = 4;
 /// With no pose this long after an attempt starts, ask the user to move a little. Ask again every
 /// NUDGE_EVERY.
@@ -59,6 +65,18 @@ pub struct Report {
     pub attempt: usize,
     /// The span judged last, or `None` if poses never covered CALIBRATION.
     pub spread: Option<Spread>,
+}
+
+impl std::fmt::Display for Report {
+    /// The console line for the attempt, e.g. "calibration attempt 1: 151 samples, p90 deviation
+    /// 0.4°".
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "calibration attempt {}: ", self.attempt)?;
+        match self.spread {
+            Some(s) => write!(f, "{} samples, p90 deviation {:.1}°", s.samples, s.p90),
+            None => write!(f, "poses never covered the span"),
+        }
+    }
 }
 
 /// How spread out the poses of a judged span were.

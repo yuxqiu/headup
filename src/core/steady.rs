@@ -56,10 +56,13 @@ impl<T: Copy> Window<T> {
     }
 }
 
-/// How long the head must hold still, once head tracking resumes, before calibration asks the user
-/// to sit upright.
-const STILL: Duration = Duration::from_secs(2);
-/// The largest angle (degrees) from their mean that poses may have while the head holds still.
+/// How long the head must hold still, once head tracking becomes available, before calibration
+/// asks the user to sit upright. Chosen in DECISIONS "The earbuds' hold makes tracking unavailable"
+/// (2 s, 2°) so that the prompt waits for the end of a walk; checked on the walk recordings, not
+/// measured against alternatives [unmeasured].
+pub(crate) const STILL: Duration = Duration::from_secs(2);
+/// The largest angle (degrees) from their mean that poses may have while the head holds still
+/// (see STILL).
 const STILL_MAX_DEG: f64 = 2.0;
 
 /// Whether the head holds still, judged on the poses since the wait started. It does once its

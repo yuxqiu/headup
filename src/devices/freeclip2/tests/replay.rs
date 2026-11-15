@@ -7,7 +7,7 @@ use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use crate::devices::freeclip2::FreeClip2;
 use crate::devices::freeclip2::link::Link;
 use crate::devices::freeclip2::protocol::sample_frame;
-use crate::testing::wait_until_due;
+use crate::testing::{secs, wait_until_due};
 use anyhow::{Result, bail};
 use serde::Deserialize;
 use std::collections::VecDeque;
@@ -21,11 +21,6 @@ pub struct Row {
     pub t: Duration,
     pub seq: u32,
     pub raw: Quat,
-}
-
-/// `x` seconds, for recorded and hand-written test times.
-pub fn secs(x: f64) -> Duration {
-    Duration::from_secs_f64(x)
 }
 
 pub fn read_csv(name: &str) -> Vec<Row> {

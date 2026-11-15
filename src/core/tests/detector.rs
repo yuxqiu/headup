@@ -1,11 +1,7 @@
 //! Slouch detection on pitch samples and time.
 
 use super::*;
-
-/// `x` seconds.
-fn s(x: f64) -> Duration {
-    Duration::from_secs_f64(x)
-}
+use crate::testing::secs;
 
 fn reanchoring() -> Config {
     Config {
@@ -14,21 +10,21 @@ fn reanchoring() -> Config {
     }
 }
 
-/// Feed `pitch` at 50 Hz from `t0` for `secs`, collecting the uprights re-anchored to.
-fn reanchors(d: &mut Detector, t0: f64, secs: f64, pitch: f64, out: &mut Vec<f64>) -> f64 {
+/// Feed `pitch` at 50 Hz from `t0` for `span` seconds, collecting the uprights re-anchored to.
+fn reanchors(d: &mut Detector, t0: f64, span: f64, pitch: f64, out: &mut Vec<f64>) -> f64 {
     let mut t = t0;
-    while t < t0 + secs {
-        out.extend(d.update(s(t), pitch).reanchored);
+    while t < t0 + span {
+        out.extend(d.update(secs(t), pitch).reanchored);
         t += 0.02;
     }
     t
 }
 
-/// Feed `pitch` at 50 Hz from `t0` for `secs`, collecting (time, cue).
-fn run(d: &mut Detector, t0: f64, secs: f64, pitch: f64, out: &mut Vec<(f64, Cue)>) -> f64 {
+/// Feed `pitch` at 50 Hz from `t0` for `span` seconds, collecting (time, cue).
+fn run(d: &mut Detector, t0: f64, span: f64, pitch: f64, out: &mut Vec<(f64, Cue)>) -> f64 {
     let mut t = t0;
-    while t < t0 + secs {
-        out.extend(d.update(s(t), pitch).cues.into_iter().map(|c| (t, c)));
+    while t < t0 + span {
+        out.extend(d.update(secs(t), pitch).cues.into_iter().map(|c| (t, c)));
         t += 0.02;
     }
     t
@@ -76,7 +72,7 @@ fn silence_keeps_timers_running() {
     let t = run(&mut d, 0.0, 3.0, 30.0, &mut cues); // device then goes quiet: head held still
     let mut t2 = t;
     while t2 < 35.0 {
-        cues.extend(d.tick(s(t2)).cues.into_iter().map(|c| (t2, c)));
+        cues.extend(d.tick(secs(t2)).cues.into_iter().map(|c| (t2, c)));
         t2 += 1.0;
     }
     let kinds: Vec<Cue> = cues.iter().map(|c| c.1).collect();
@@ -95,7 +91,7 @@ fn next_due_tracks_the_next_reminder() {
     );
     assert_eq!(d.tick(tone - Duration::from_nanos(1)).cues, []);
     assert_eq!(d.tick(tone).cues, [Cue::Tone]);
-    assert_eq!(d.next_due(), Some(tone + s(20.0)), "speak next");
+    assert_eq!(d.next_due(), Some(tone + secs(20.0)), "speak next");
     run(&mut d, t + 10.0, 1.0, 0.0, &mut vec![]);
     assert_eq!(d.next_due(), None);
 }
@@ -137,11 +133,27 @@ fn silent_head_after_a_recovery_reanchors() {
     // A few samples back up past upright (the smoothing crosses below off_deg), then silence.
     let t = reanchors(&mut d, t, 0.3, -10.0, &mut re);
     assert!(re.is_empty(), "re-anchored before settling: {re:?}");
-    let reanchored = d.tick(s(t + 1.0)).reanchored;
+    let reanchored = d.tick(secs(t + 1.0)).reanchored;
     assert!(
         reanchored.is_some_and(|u| (u + 10.0).abs() < 0.5),
         "re-anchored {reanchored:?}"
     );
+}
+
+// The same when the tracker goes quiet at the very sample that ends the slouch: that sample alone
+// says where the head settled.
+#[test]
+fn head_silent_from_the_recovery_sample_reanchors() {
+    let mut d = Detector::new(reanchoring());
+    let mut re = vec![];
+    let mut t = reanchors(&mut d, 0.0, 15.0, 40.0, &mut re);
+    while d.slouching() {
+        re.extend(d.update(secs(t), -10.0).reanchored);
+        t += 0.02;
+    }
+    assert!(re.is_empty(), "re-anchored before settling: {re:?}");
+    let reanchored = d.tick(secs(t + 1.0)).reanchored;
+    assert_eq!(reanchored, Some(-10.0));
 }
 
 #[test]
@@ -193,7 +205,7 @@ fn smoothing_is_independent_of_sample_rate() {
         d.update(Duration::ZERO, 0.0);
         let steps = (0.24 * hz).round() as u32;
         for i in 1..=steps {
-            d.update(s(f64::from(i) / hz), 30.0);
+            d.update(secs(f64::from(i) / hz), 30.0);
         }
         d.smoothed().unwrap()
     };

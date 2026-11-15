@@ -1,6 +1,6 @@
 //! The interface every earbud backend implements.
 //!
-//! A tracker reports three things: poses, and whether poses can follow the head right now. The
+//! A tracker reports two things: poses, and whether poses can follow the head right now. The
 //! contract, in three rules:
 //!
 //! 1. **Availability.** Report [`Event::Available`] as soon as poses can follow the head, and

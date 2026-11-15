@@ -1,6 +1,7 @@
 //! Calibration decisions, driven directly with poses and times.
 
 use super::*;
+use crate::testing::secs;
 
 fn tilt(deg: f64) -> Quat {
     let h = deg.to_radians() / 2.0;
@@ -10,11 +11,6 @@ fn tilt(deg: f64) -> Quat {
         y: h.sin(),
         z: 0.0,
     }
-}
-
-/// `x` seconds, rounded to the millisecond.
-fn secs(x: f64) -> Duration {
-    Duration::from_millis((x * 1000.0).round() as u64)
 }
 
 const SAMPLE: Duration = Duration::from_millis(20);

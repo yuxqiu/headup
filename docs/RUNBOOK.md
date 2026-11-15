@@ -29,7 +29,8 @@ Device MAC used in examples: `AA:BB:CC:DD:EE:01`, a made-up address; use your ea
   - Run: `cargo run --release -- [AA:BB:CC:DD:EE:01] [--log data/session.jsonl]`
   - It needs the BlueZ D-Bus API, a desktop notification server, and a PulseAudio server (PipeWire provides one;
     without it sound goes to ALSA's default device). Calibration is spoken at start and after
-    re-wearing; stop with Ctrl-C, which disables the stream.
+    re-wearing; stop with Ctrl-C or SIGTERM (`systemctl --user stop headup`), which disables the stream; a second
+    one quits without waiting for that.
 - Voice clips: `tools/gen_voice.sh` regenerates `assets/voice/*.wav` (Piper alba). Phrases must match the `phrases!` list in
   `src/core/cues.rs`.
 - Home Manager module: `homeManagerModules.default` in `nix/hm-module.nix`. To verify it evaluates, build a minimal

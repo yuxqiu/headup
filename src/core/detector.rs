@@ -59,6 +59,9 @@ pub struct Update {
 
 impl Default for Config {
     fn default() -> Self {
+        // The design approved in docs/UX_RESEARCH.md (DECISIONS "Detector behaviour"): on at 20°,
+        // off below 15°; a tone at 10 s, speech at 30 s and every 120 s after, a notification at
+        // 60 s.
         Config {
             // Time constant of the smoothing (DECISIONS "Posture logic redesign").
             smoothing: Duration::from_millis(123),
@@ -74,7 +77,9 @@ impl Default for Config {
 }
 
 /// When the head counts as holding still, for the re-anchor: its pitch has stayed within
-/// `SETTLE_RANGE_DEG` for `SETTLE` (see [`Window`]: silence counts as still).
+/// `SETTLE_RANGE_DEG` for `SETTLE` (see [`Window`]: silence counts as still). Chosen in DECISIONS
+/// "Re-anchor upright after each recovery" and checked by replaying data/slouch_guided.csv; the
+/// values themselves were not measured against alternatives [unmeasured].
 const SETTLE: Duration = Duration::from_secs(1);
 const SETTLE_RANGE_DEG: f64 = 2.0;
 
@@ -209,10 +214,10 @@ impl State {
         (last < 0.0).then_some(last)
     }
 
-    /// Step on smoothed pitch `s` (relative to upright) at time `t`. Returns the next state and
-    /// the cues of the step. Cues come from entering a slouch, recovering from one, or a reminder
-    /// falling due.
-    fn step(self, t: Duration, s: f64, cfg: &Config) -> (State, Vec<Cue>) {
+    /// Step on smoothed pitch `s` and unsmoothed pitch `p` (both relative to upright) at time `t`.
+    /// Returns the next state and the cues of the step. Cues come from entering a slouch,
+    /// recovering from one, or a reminder falling due.
+    fn step(self, t: Duration, s: f64, p: f64, cfg: &Config) -> (State, Vec<Cue>) {
         match self {
             State::Upright | State::Settling(_) if s >= cfg.on_deg => {
                 let mut episode = Episode::new(t, cfg);
@@ -221,7 +226,11 @@ impl State {
             }
             State::Slouching(episode) if s < cfg.off_deg => {
                 let next = if cfg.reanchor_after_recovery {
-                    State::Settling(Window::new(t))
+                    // The sample that ends the slouch is the first the settling judges: if the
+                    // tracker goes quiet from here, it alone says where the head is.
+                    let mut window = Window::new(t);
+                    window.add(t, p);
+                    State::Settling(window)
                 } else {
                     State::Upright
                 };
@@ -278,7 +287,7 @@ impl Detector {
     pub fn update(&mut self, t: Duration, pitch: f64) -> Update {
         let smoothed = self.smoother.smooth(t, pitch);
         let reanchored = self.reanchor(t, Some(pitch - self.upright));
-        let cues = self.transition(t, smoothed - self.upright);
+        let cues = self.transition(t, smoothed - self.upright, pitch - self.upright);
         Update { cues, reanchored }
     }
 
@@ -311,8 +320,9 @@ impl Detector {
         }
     }
 
-    fn transition(&mut self, t: Duration, s: f64) -> Vec<Cue> {
-        let (next, cues) = std::mem::replace(&mut self.state, State::Upright).step(t, s, &self.cfg);
+    fn transition(&mut self, t: Duration, s: f64, p: f64) -> Vec<Cue> {
+        let (next, cues) =
+            std::mem::replace(&mut self.state, State::Upright).step(t, s, p, &self.cfg);
         self.state = next;
         cues
     }

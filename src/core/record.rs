@@ -85,13 +85,14 @@ fn two_places<S: serde::Serializer>(x: &f64, s: S) -> std::result::Result<S::Ok,
 }
 
 impl std::fmt::Display for LogEvent {
-    /// The console line for the event. The reason for unavailable tracking is shown in the
-    /// session's own note, so it is left out here.
+    /// The console line for the event.
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             LogEvent::CalibrationFailed => write!(f, "calibration failed; will ask again later"),
             LogEvent::TrackingAvailable => write!(f, "head tracking available"),
-            LogEvent::TrackingUnavailable { .. } => write!(f, "head tracking unavailable"),
+            LogEvent::TrackingUnavailable { reason } => {
+                write!(f, "head tracking unavailable ({reason})")
+            }
             LogEvent::Reanchored { upright } => write!(f, "upright re-anchored to {upright:.1}°"),
             LogEvent::Cue { cue } => write!(f, "cue: {cue:?}"),
         }

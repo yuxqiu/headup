@@ -92,6 +92,9 @@ impl Cues {
     pub fn new() -> Result<Self> {
         let phrases = PhraseClips::decode()?;
         Ok(Cues {
+            // Notes chosen by ear, not measured: the reminder falls from C5 to A4 (soft), the
+            // tink rises from A5 to E6 (bright). The user heard both on the earbuds in the
+            // 2026-11-13 live check (data/walk3*.jsonl).
             tone: Arc::new(Pcm::tones(&[(523.0, 0.18), (440.0, 0.25)])),
             tink: Arc::new(Pcm::tones(&[(880.0, 0.08), (1318.5, 0.14)])),
             phrases,

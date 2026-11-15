@@ -61,9 +61,14 @@ impl Quat {
         Quat { w, x, y, z }.normalized()
     }
 
+    /// The length of `self` as a 4-vector: 1 for a unit quaternion.
+    pub fn norm(self) -> f64 {
+        self.dot(self).sqrt()
+    }
+
     /// The unit quaternion in the direction of `self`.
     pub fn normalized(self) -> Quat {
-        let n = self.dot(self).sqrt();
+        let n = self.norm();
         Quat {
             w: self.w / n,
             x: self.x / n,

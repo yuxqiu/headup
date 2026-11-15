@@ -57,9 +57,9 @@ const GLIDE_LEN: u32 = 68;
 /// 0.00015° (FINDINGS "Re-centre and stillness"). Head movement is much farther off.
 const FIT_TOL_DEG: f64 = 0.001;
 
-/// A raw sample, received at `t`.
+/// A raw sample (a reading of the earbuds), received at `t`.
 #[derive(Clone, Copy)]
-struct Held {
+struct Reading {
     t: Instant,
     seq: u32,
     raw: Quat,
@@ -68,7 +68,7 @@ struct Held {
 /// A decision of the [`GlideFilter`], applied in order by the [`Stitch`].
 enum Step {
     /// This sample comes out.
-    Release(Held),
+    Release(Reading),
     /// The earbuds' reference has moved to where the head was at the last released sample.
     Rebase,
     /// See [`Rebuilt::HoldStarted`].
@@ -86,7 +86,7 @@ enum Arrival {
 }
 
 impl Arrival {
-    fn of(prev: &Held, now: &Held) -> Arrival {
+    fn of(prev: &Reading, now: &Reading) -> Arrival {
         if now.seq < prev.seq {
             Arrival::NewStream
         } else if now.raw == Quat::IDENTITY && prev.raw != Quat::IDENTITY {
@@ -128,7 +128,7 @@ impl Glide {
     /// `k < h.seq`. Its start pose turns about the same axis as `h`, only farther. With `a` the
     /// half-angle of `h` and `b` that of the start pose, the glide formula gives
     /// `t·sin(b − a) = (1 − t)·sin a`.
-    fn through(h: &Held, k: u32) -> Option<Glide> {
+    fn through(h: &Reading, k: u32) -> Option<Glide> {
         let q = h.raw.normalized();
         // `q` and `-q` are the same rotation; take the one with `w >= 0`.
         let q = if q.w < 0.0 { -q } else { q };
@@ -158,7 +158,7 @@ impl Glide {
     }
 
     /// Whether sample `h` matches this glide.
-    fn fits(&self, h: &Held) -> bool {
+    fn fits(&self, h: &Reading) -> bool {
         let k = h.seq - self.seq;
         k <= GLIDE_LEN && h.raw.angle_to(glide_point(self.from, k)) <= FIT_TOL_DEG
     }
@@ -178,7 +178,7 @@ impl Hypotheses {
     /// Nothing starts when `h` is within `FIT_TOL_DEG` of identity: a glide from there moves the
     /// reading by less than the tolerance. It cannot be told from holding still, and it does not
     /// matter whether it comes out.
-    fn start(&mut self, h: &Held, unsent: u32) {
+    fn start(&mut self, h: &Reading, unsent: u32) {
         if h.raw.angle_to(Quat::IDENTITY) <= FIT_TOL_DEG {
             return;
         }
@@ -193,7 +193,7 @@ impl Hypotheses {
     }
 
     /// Keep only the hypotheses that `h` fits.
-    fn observe(&mut self, h: &Held) {
+    fn observe(&mut self, h: &Reading) {
         self.0.retain(|g| g.fits(h));
     }
 
@@ -204,7 +204,7 @@ impl Hypotheses {
 
     /// The start of the full glide that the identity sample `end` ends: the live hypothesis that
     /// predicts identity at `end`. If several do, the one closest to `GLIDE_LEN` long.
-    fn ending_at(&self, end: &Held) -> Option<u32> {
+    fn ending_at(&self, end: &Reading) -> Option<u32> {
         self.0
             .iter()
             .filter(|g| g.fits(end))
@@ -221,14 +221,14 @@ impl Hypotheses {
 #[derive(Default)]
 struct GlideFilter {
     /// The last arrived sample.
-    last: Option<Held>,
+    last: Option<Reading>,
     /// Samples not yet out, oldest first.
-    held: VecDeque<Held>,
+    held: VecDeque<Reading>,
     glides: Hypotheses,
 }
 
 impl GlideFilter {
-    fn push(&mut self, sample: Held) -> Vec<Step> {
+    fn push(&mut self, sample: Reading) -> Vec<Step> {
         let mut steps = Vec::new();
         // Handle what the sample means, and count the samples the earbuds did not send just
         // before it.
@@ -264,7 +264,7 @@ impl GlideFilter {
     /// The identity sample `end`, after `prev`, ends a glide: drop the glide's held samples,
     /// release the rest, and move the reference to the last released pose. With no glide before
     /// it, it starts a hold.
-    fn end_glide(&mut self, prev: &Held, end: &Held, steps: &mut Vec<Step>) {
+    fn end_glide(&mut self, prev: &Reading, end: &Reading, steps: &mut Vec<Step>) {
         match self.glides.ending_at(end) {
             // A full glide: the hypothesis that predicts this identity sample started it.
             Some(start) => self.drop_after(start),
@@ -381,7 +381,7 @@ impl Rebuilder {
     /// Feed one raw sample, received at `t`. Returns what it releases,
     /// in order.
     pub fn push(&mut self, t: Instant, seq: u32, raw: Quat) -> Vec<Rebuilt> {
-        let steps = self.filter.push(Held { t, seq, raw });
+        let steps = self.filter.push(Reading { t, seq, raw });
         self.stitch.apply(steps)
     }
 }

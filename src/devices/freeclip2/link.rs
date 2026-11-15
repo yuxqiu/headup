@@ -27,8 +27,8 @@ pub struct Link {
 }
 
 impl Link {
-    /// A link to earbuds just connected. It starts by asking for the wear state and switching the
-    /// pose stream on.
+    /// A link to earbuds just connected. It starts by asking for the wear state, sending the
+    /// spatial-audio capability query (see [`capability_query`]) and switching the pose stream on.
     pub fn new(adapter: Address) -> Self {
         let mut out = Outputs::default();
         for f in [wear_query(), capability_query(), stream_switch(true)] {
@@ -74,32 +74,30 @@ impl Link {
     }
 
     /// Log the frame, update the earbuds' facts with it (a reading also goes into the pose
-    /// frame), send what the facts ask for, then tell the session what changed.
+    /// frame), send the stream switch if the facts ask for it, then tell the session what changed.
     fn on_frame(&mut self, now: Instant, f: &Frame) -> Result<()> {
         let msg = Message::parse(f);
         self.out.log(match msg {
             Ok(Message::Sample { seq, raw }) => LogRecord::Sample(RawSample::new(seq, raw)),
             _ => LogRecord::Frame(RawFrame::from(f)), // even if malformed, for debugging
         });
-        let request = match msg? {
+        let switch_on = match msg? {
             Message::Wear { both_worn } => self.earbuds.on_wear(both_worn),
             Message::DeviceAudio { address, streaming } => {
                 self.earbuds.on_audio(address == self.adapter, streaming)
             }
-            Message::StreamSwitch(reply) => self.earbuds.on_reply(reply),
+            Message::StreamSwitch(reply) => {
+                self.earbuds.on_reply(reply);
+                false
+            }
             Message::Sample { seq, raw } => {
                 self.on_reading(now, seq, raw);
-                None
+                false
             }
-            Message::Other => None,
+            Message::Other => false,
         };
-        match request {
-            Some(Request::SwitchOn) => self.out.send(stream_switch(true)),
-            Some(Request::Restart) => {
-                self.frame.end();
-                self.out.send(stream_switch(true));
-            }
-            None => {}
+        if switch_on {
+            self.out.send(stream_switch(true));
         }
         self.report();
         Ok(())
@@ -114,7 +112,7 @@ impl Link {
     /// tracking is unavailable, so that pose only goes unused.
     fn on_reading(&mut self, now: Instant, seq: u32, raw: Quat) {
         self.earbuds.on_reading(raw);
-        if let Some(Availability::Unavailable { .. }) = self.earbuds.availability() {
+        if let Some(Availability::Unavailable(_)) = self.earbuds.availability() {
             return;
         }
         for out in self.frame.push(now, seq, raw) {
@@ -143,8 +141,8 @@ impl Link {
 }
 
 /// The orientation frame of the current stretch of available tracking: a [`Rebuilder`], created at
-/// the stretch's first reading and ended when tracking stops or the earbuds start a new stream
-/// (re-wearing). Readings are not rebuilt while tracking is unavailable, so no frame lives across
+/// the stretch's first reading and ended when tracking stops (taking an earbud off included, so a
+/// stream restarted after re-wearing starts a new frame too). Readings are not rebuilt while tracking is unavailable, so no frame lives across
 /// an interruption.
 ///
 /// While tracking is unavailable the earbuds keep tracking and re-centring unseen (they also hold
@@ -269,19 +267,10 @@ impl Blocker {
     }
 }
 
-/// What the earbuds' state asks the link to send.
-#[derive(Debug, PartialEq)]
-enum Request {
-    /// Switch the pose stream on.
-    SwitchOn,
-    /// A new pose stream: start a fresh orientation frame (drop the [`Rebuilder`], the stream's
-    /// state) and switch the stream on.
-    Restart,
-}
-
 /// What the earbuds have said about themselves, and what became of the last "stream on" sent.
-/// Each message updates it and may ask the link to send a frame ([`Request`]). The link always
-/// sends what is asked, so a switch recorded here as sent really was sent.
+/// Each message updates it and may ask the link to switch the stream on (a handler returning
+/// `true`). The link always sends what is asked, so a switch recorded here as sent really was
+/// sent.
 #[derive(Default)]
 struct Earbuds {
     /// 43/37: both earbuds are in the ears (`None` until reported).
@@ -331,18 +320,20 @@ enum Switch {
 }
 
 impl Earbuds {
-    /// 43/37. Taking an earbud off cancels the switch. Putting the earbuds back on needs a fresh
-    /// orientation frame and a new switch, and starts a new stream, so no hold carries over.
-    fn on_wear(&mut self, worn: bool) -> Option<Request> {
+    /// 43/37. Taking an earbud off cancels the switch. Putting the earbuds back on needs a new
+    /// switch, and starts a new stream, so no hold carries over. Returns whether to switch the
+    /// stream on.
+    fn on_wear(&mut self, worn: bool) -> bool {
         let was = self.worn.replace(worn);
         if !worn {
             self.cancel_switch();
-            return None;
+            return false;
         }
-        (was == Some(false)).then(|| {
-            self.holding = false;
-            self.request_switch(Request::Restart)
-        })
+        if was != Some(false) {
+            return false;
+        }
+        self.holding = false;
+        self.request_switch()
     }
 
     /// 43/89: a hold started (see [`Earbuds::holding`]).
@@ -371,12 +362,14 @@ impl Earbuds {
     /// - Unconfirmed: sent when this computer starts streaming (see [`Switch::Unconfirmed`]), not
     ///   on every push.
     /// - Refused: sent on every push that says this computer streams.
-    fn on_audio(&mut self, this_computer: bool, streaming: bool) -> Option<Request> {
+    ///
+    /// Returns whether to switch the stream on.
+    fn on_audio(&mut self, this_computer: bool, streaming: bool) -> bool {
         if !this_computer {
             if streaming {
                 self.cancel_switch();
             }
-            return None;
+            return false;
         }
         let started = streaming && self.streaming != Some(true);
         self.streaming = Some(streaming);
@@ -385,17 +378,16 @@ impl Earbuds {
             Switch::Refused => streaming,
             Switch::Unconfirmed => started,
         };
-        resend.then(|| self.request_switch(Request::SwitchOn))
+        resend && self.request_switch()
     }
 
     /// 43/88 reply. A refusal is undone by [`Earbuds::on_audio`] when this computer streams, or by
     /// [`Earbuds::on_wear`] when the earbuds go back on.
-    fn on_reply(&mut self, reply: SwitchReply) -> Option<Request> {
+    fn on_reply(&mut self, reply: SwitchReply) {
         self.switch = match reply {
             SwitchReply::Accepted => Switch::Accepted,
             SwitchReply::PeerLinkDown | SwitchReply::NotCurrentDevice => Switch::Refused,
         };
-        None
     }
 
     fn view(&self) -> View {
@@ -424,11 +416,11 @@ impl Earbuds {
         })
     }
 
-    /// Ask the link to send the stream switch (`request`): the switch is unconfirmed until the
+    /// Ask the link to switch the stream on: returns `true`. The switch is unconfirmed until the
     /// earbuds answer.
-    fn request_switch(&mut self, request: Request) -> Request {
+    fn request_switch(&mut self) -> bool {
         self.switch = Switch::Unconfirmed;
-        request
+        true
     }
 
     /// The earbuds cancelled an accepted switch.

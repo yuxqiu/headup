@@ -2,7 +2,8 @@
 
 use super::super::rebuild::{Rebuilder, Rebuilt};
 use crate::core::quat::{Euler, Quat};
-use crate::devices::freeclip2::tests::replay::{Row, phase_at, phases, read_csv, replay, secs};
+use crate::devices::freeclip2::tests::replay::{Row, phase_at, phases, read_csv, replay};
+use crate::testing::secs;
 use std::time::Duration;
 use tokio::time::Instant;
 

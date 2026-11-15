@@ -8,7 +8,8 @@ each point is in [FINDINGS.md](FINDINGS.md).
 - **Audio must play on this computer.** FreeClip 2 sends head tracking only to the device it plays audio from. If
   you pause audio on the computer, or play something on your phone, tracking stops, and headup pauses monitoring.
   When you play something on this computer again, headup asks you to sit upright once more. Skipping a track does
-  not interrupt it. If nothing happens at start, play something on the computer: headup says so in its output.
+  not interrupt it. If nothing happens at start, play something on the computer. headup says so in its output
+  once the earbuds report that this computer is not playing; until they report anything, it shows only "using …".
 - **Both earbuds must be worn.** Taking either one off pauses monitoring; putting it back on calibrates again.
 
 ## Walking around

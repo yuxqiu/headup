@@ -576,3 +576,11 @@
   earbuds out → "put both earbuds in", back in → brief 0.2 s walking hold, recalibration, Tone/Recovered,
   Reanchored −3.34°.
 - Released v0.4.4 (CI and Release workflow green; x86_64 and aarch64 tarballs).
+
+## 2026-11-15 04:15 UTC
+- Every `Available` settles (startup included); `Tracking { Waiting, Settling, Live }`; console notes said at the
+  change (reason on "unavailable", "waiting for your head to hold still…" on "available"), no delayed note.
+- Two thermos reviews (the change, then the whole codebase); all findings fixed except inlining `View`
+  (left to the user). Bugs fixed with failing tests first where the clock allows: re-anchor with a silent head,
+  wear byte strictness, non-rotation quaternions; SIGTERM checked by running the binary with a made-up address.
+- 113 tests pass; `nix flake check` passes. All staged, not committed.

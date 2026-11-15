@@ -933,7 +933,7 @@
   - The session's `Tracking` has a fourth state, `Resuming`: `Available` after `Unavailable`. Poses flow, but the
     head is not judged until it holds still (`calibration::Stillness`, 2 s within 2°); then the state becomes
     `Available`. `TrackerStatus` makes the transitions, so `wait_for_tracking` just waits for `Available`. Startup never passes
-    through `Resuming` (since 2026-11-14, `Tracking::NotStarted`; see "The backend words every 'no tracking'"). Replaces the `resuming` flag and `if` in
+    through `Resuming` (since 2026-11-14, `Tracking::NotStarted`; see "The backend words every 'no tracking'"; replaced by "Every `Available` settles"). Replaces the `resuming` flag and `if` in
     `wait_for_tracking` (user: the resume state was missing and blended in as `if`s).
   - `Event::Available(bool)` became `Event::Available` and `Event::Unavailable { reason }`. `reason` is the
     backend's own sentence, shown as is in "head tracking is unavailable (…)" and the "waiting for head tracking"
@@ -1139,7 +1139,7 @@
   Stated in `rebuild.rs`'s module doc.
 - **Not done:** sending tracker status as one level event instead of changes (the backend's `reported: View` and
   the session's `TrackerStatus` both keep a copy); worth it only with a second backend.
-- **Startup never resumes** (user: "I thought we did not go through resume during startup?"). An `Unavailable`
+- **Startup never resumes** (replaced by "Every `Available` settles, startup included") (user: "I thought we did not go through resume during startup?"). An `Unavailable`
   before tracking ever started now puts the session in `Tracking::NotStarted(reason)`, not `Unavailable`; its
   `Available` goes straight to `Available`, with no wait for a still head: there is no posture yet that the user
   could have moved away from. Poses still do not end it. `Resuming` follows only a real interruption. Corrects
@@ -1169,7 +1169,8 @@
   silence (while available, nothing to deliver means a still head; a backend whose silence can mean a stall
   reports `Unavailable`, after a timeout derived from its report interval), frames (fixed while available; may
   change across an `Unavailable`). Supersedes "Until told otherwise, assume tracking is available".
-- **Session.** `Tracking { NotStarted(reason), Interrupted(reason), Settling(Stillness), Live }`, moved only by
+- **Session** (phases replaced by "Every `Available` settles, startup included"). `Tracking { NotStarted(reason),
+  Interrupted(reason), Settling(Stillness), Live }`, moved only by
   the tracker's `Available`/`Unavailable` (poses never move it): `Available` makes `NotStarted` live at once and
   `Interrupted` settle; `Unavailable` keeps `NotStarted` (new reason) and makes everything else `Interrupted`,
   interrupting the cycle when it was live. The initial reason is core's "the earbuds have not reported yet".
@@ -1210,3 +1211,85 @@
   the enum by hand, and the sink pattern (`if let Some(f) = …`) was written three times.
 - **Rejected.** Keeping cue names as top-level events (`{"event":"Tone"}`): it needs a hand-written serialiser or
   one variant per cue, so the enum and the log can drift apart again. No tool in the repo reads cue events.
+
+## 2026-11-14: Every `Available` settles, startup included; three session phases (user)
+- **Replaces** "Startup never resumes" (in "The backend words every 'no tracking'; the reason is logged") and the
+  `NotStarted` phase of "One availability concept; four session phases".
+- **What.** `NotStarted` and `Interrupted` are one phase, `Tracking::Waiting`, where the session starts. Every `Available` leads to `Settling`, so the first "sit upright" after
+  connecting waits, like the one after any break, until the head has held still for 2 s (or sent nothing for 2 s).
+- **Console notes at the change, no delayed note.** Each change is said when it happens: the `TrackingUnavailable`
+  line carries the reason ("head tracking unavailable (put both earbuds in; …)"), the session adds "monitoring
+  paused; will calibrate when tracking resumes" when it was monitoring, and on `Available` it says "waiting for
+  your head to hold still…" (the session's decision, so the session says it, not `LogEvent`). The note that came
+  5 s into a wait ("waiting for head tracking (reason)…", `TRACKING_WAIT_NOTE`) is gone, and with it the reason in
+  `Tracking::Waiting` and `Interrupt::Unavailable`, which only that note read. Until the earbuds report anything,
+  the console shows only "using …". Console notes are not captured by tests; the lines were checked with
+  `--nocapture`. Rejected (user): a 5 s note per phase of a wait, keyed by comparing the note text, a `Wait` enum,
+  or a `wait_note_due` field set on each availability event: state kept only to time a console line.
+- **Why.** The user asked whether `NotStarted` was needed. The startup shortcut rested on "no posture yet that the
+  user could have moved away from", but settling protects the prompt, not a posture: "sit upright" should not be
+  spoken to a moving head, and at connect the user is often moving (putting the earbuds in). A moving head at the
+  prompt fails calibration attempts ("you moved" up to 4 times, then a 60 s back-off). The same act, putting the
+  earbuds in, settled or not depending only on whether it was the first since `session::run` started (a new one
+  per Bluetooth connection). No surveyed earbud family (AirPods, Android head-tracker HID, Galaxy Buds, eSense)
+  signals that the user is still when tracking starts. An independent review agreed and found the silent settling
+  wait (no note), now fixed.
+- **Behaviour change in tests.** `startup_unavailability_needs_no_settling` becomes `startup_waits_for_a_still_head`
+  (prompt at 15 s instead of 10 s). Scripts that start with `Available` hold the head still 2 s longer before the
+  slouch or wobble they test, and expectations move by the same 2 s (`tone_is_on_time_while_head_is_still`: 16 s
+  instead of 14 s). `taking_earbuds_off_pauses_then_recalibrates` and
+  `unavailability_drops_the_slouch_and_recalibrates` now also assert that both calibrations finish and no reminder
+  plays: with the shorter lead-in, tracking stopped before the first calibration ended and the tests passed without
+  reaching monitoring (found by review). The replays through the real backend pass unchanged; their first prompt
+  comes at least 2 s later.
+- **Not changed.** The retry after `CalibrationFailed` prompts at once without settling: tracking stays live, and
+  the retry comes 60 s after a head that kept moving.
+- **Kept.** Settling's tolerance (2° for 2 s) is stricter than calibration's (p90 ≤ 8° over 3 s); a fidgety user
+  on a continuously streaming device could settle slowly. Not loosened without a measurement; the note makes such a
+  wait visible.
+- **Rejected.** Keeping `NotStarted` for the faster first prompt (2 s, unnoticed next to connecting); a backend
+  hint that tracking starts on a still head (no device can know it).
+
+## 2026-11-14: Whole-codebase thermos review applied (user: "fix all")
+- **Re-anchoring with a silent head (bug).** The detector's settling window after a recovery started empty: the
+  sample that ended the slouch went to the settle step before the transition created the window. If the tracker went
+  quiet from that sample on, the window never covered `SETTLE` and upright was never re-anchored, against "Review
+  fixes; one steady-head primitive; re-anchoring settles on silence". The window now starts with that sample
+  (`State::step` takes the unsmoothed pitch too). Test `head_silent_from_the_recovery_sample_reanchors` (fails
+  before: `None`).
+- **SIGTERM stops like Ctrl-C (bug).** Only SIGINT was handled; systemd stops the service with SIGTERM (stop,
+  logout, Home Manager switch), which killed headup before it switched the earbuds' stream off. `main` now waits on
+  either (`stop_signal`), also during the RFCOMM connect, and a second signal quits without waiting for the stream
+  switch (which waits on the link). What the earbuds do when the socket closes with the stream on is not known
+  [unverified]. Checked by running the binary with a made-up address (no RFCOMM) and sending SIGTERM: exit 0.
+  Rejected: `KillSignal=SIGINT` in the unit (covers only Home Manager installs).
+- **`Session::idle` reads the clock once (bug).** It compared and then subtracted two readings of `now()`;
+  if time passed `end` between them, `Duration` subtraction panicked. No test: the paused test clock cannot
+  advance between the two readings.
+- **Parse, don't validate, at the device boundary.** A 43/37 wear byte other than `00`/`01` is a malformed frame
+  (FINDINGS "Wear detection" documents only those), like an unknown 43/88 reply; before, it read as "not worn". A
+  43/89 reading that is no rotation (a NaN or infinite component, or all zero) is malformed; before, a NaN froze
+  the smoother and stopped (or stuck) reminders until the next break. The length is not otherwise checked (user:
+  a unit-length tolerance assumed too much): a rejected frame ends the session, and a firmware sending slightly
+  non-unit quaternions would then reconnect forever, while the angle math normalises anyway. Recorded fact
+  (FINDINGS): the largest |q| − 1 in 141,098 recorded samples is 7.8e-7. Tests `wear_state_needs_both_earbuds`
+  (extended) and `readings_that_are_no_rotation_are_errors`.
+- **`Link`: no frame end on re-wear.** Taking an earbud off already reports `Unavailable`, which ends the pose
+  frame, and readings are not rebuilt while unavailable, so the frame was always gone when the earbuds went back
+  on. `Request` (with `Restart`) is gone; the `Earbuds` handlers return whether to switch the stream on. Refactor:
+  no test changed.
+- **FreeClip 2 page.** "If nothing happens at start … headup says so" now says when: once the earbuds report this
+  computer is not playing. Until they report, the console shows only "using …" (no behaviour change; treating
+  "switch accepted, streaming unknown" as not streaming was rejected: it would report "unavailable" at every start
+  until the first sample).
+- **Sources next to constants.** Detector thresholds and reminder times, calibration timings, `CALIBRATION_RETRY`,
+  `STATUS_EVERY`, `POLL`, `JUDGE_EVERY`, `STILL`/`STILL_MAX_DEG`, `SETTLE`/`SETTLE_RANGE_DEG`, audio `OPEN`/`STALL`,
+  the cue notes and `RETRY` name their DECISIONS entry or measurement; values chosen without a measurement are
+  marked [unmeasured].
+- **Tests.** One `testing::secs` (rounded to the microsecond; recordings store 0.1 ms) replaces four helpers;
+  session scripts write the startup settling as `STILL + …`; `testing::Outcome` is `SessionRun` (no clash with
+  `calibration::Outcome`).
+- **Smaller.** `calibration::Report` formats its own console line (`Display`); `rebuild.rs`'s `Held` is `Reading`
+  (any raw sample); `tracker.rs` says "two things"; `Link::new` mentions the capability query.
+- **Not done.** Inlining `View` (one field) into `reported: Option<Availability>`: AGENTS.md names `View` as the
+  pattern for a backend's derived state, so that is the user's call.

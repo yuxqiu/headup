@@ -1,11 +1,12 @@
 //! [`FreeClip2`] on an in-memory socket: what reaches the session, and what reaches the earbuds.
 
-use super::replay::{Replay, read_csv, secs};
+use super::replay::{Replay, read_csv};
 use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker};
 use crate::devices::freeclip2::FreeClip2;
 use crate::devices::freeclip2::mbb::Decoder;
 use crate::devices::freeclip2::protocol::{sample_frame, stream_switch};
+use crate::testing::secs;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream};
 use tokio::time::Instant;

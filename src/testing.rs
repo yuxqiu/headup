@@ -45,15 +45,21 @@ impl CueSink for FakeCues {
     }
 }
 
+/// `x` seconds, rounded to the microsecond, for test times written by hand or read from a
+/// recording. Recordings store times to 0.1 ms, so they stay exact.
+pub fn secs(x: f64) -> Duration {
+    Duration::from_micros((x * 1e6).round() as u64)
+}
+
 /// What a session did.
-pub struct Outcome {
+pub struct SessionRun {
     /// Prompts and cues, with when each started (since the session began).
     pub cues: Vec<(Played, Duration)>,
     /// The `"event"` names in the session log, in order.
     pub events: Vec<String>,
 }
 
-impl Outcome {
+impl SessionRun {
     /// What played, in order.
     pub fn played(&self) -> Vec<Played> {
         self.cues.iter().map(|&(p, _)| p).collect()
@@ -95,7 +101,7 @@ impl Outcome {
 
 /// Run the real session on `tracker` (on tokio's paused clock) until the tracker fails with
 /// `"script finished"`, and report what it did. Each spoken prompt takes `prompt`.
-pub async fn run_session(tracker: &mut impl HeadTracker, prompt: Duration) -> Outcome {
+pub async fn run_session(tracker: &mut impl HeadTracker, prompt: Duration) -> SessionRun {
     let log = SharedBuf::default();
     let mut rec = Recorder::new(Some(Box::new(log.clone())));
     let cues = FakeCues {
@@ -111,7 +117,7 @@ pub async fn run_session(tracker: &mut impl HeadTracker, prompt: Duration) -> Ou
         .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
         .filter_map(|v| v["event"].as_str().map(String::from))
         .collect();
-    Outcome {
+    SessionRun {
         cues: cues.log.into_inner(),
         events,
     }

@@ -1,10 +1,11 @@
 //! Recorded FreeClip 2 sessions replayed through the protocol into the real posture session.
 
-use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay, secs};
+use super::replay::{ReplayTracker, phase_at, phases, read_csv, replay};
 use crate::core::cues::Phrase;
 use crate::core::detector::Cue::{self, Recovered, Speak, Tone};
 use crate::testing::Played::Prompt;
 use crate::testing::run_session;
+use crate::testing::secs;
 use std::time::Duration;
 
 // Ground truth (guided.py --slouch): five cycles of upright, then look down (held ~25 s, the stream

@@ -96,6 +96,8 @@ Logs: `data/probe_0*.log`, `data/headpose_run1.csv`.
 The stream arrives as unsolicited 43/89 frames at about 52 Hz:
 - TLV 1: uint32 LE sequence counter.
 - TLV 2: 4 × float32 LE, a unit quaternion (w, x, y, z). |q| = 1.0000 on every sample.
+  Over 141,098 recorded samples (tests/fixtures/freeclip2 and data/*_raw.jsonl, checked 2026-11-14) the largest
+  deviation of |q| from 1 is 7.8e-7, f32 rounding.
 - The quaternion starts at identity when the stream is enabled, so it is relative to the head pose at
   that moment. Angles changed by tens of degrees with head movement.
 

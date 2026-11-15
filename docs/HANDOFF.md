@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-14 06:20 UTC
+Last updated: 2026-11-15 04:15 UTC
 
 ## Current state
 - The protocol works.
@@ -34,7 +34,16 @@ Last updated: 2026-11-14 06:20 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
-- 2026-11-14: v0.4.4 released (commit ad8fd6f): one availability concept (wear folded in), four session phases,
+- After v0.4.4 (staged, `nix flake check` passes, 113 tests): whole-codebase thermos review applied (DECISIONS
+  "Whole-codebase thermos review applied"): re-anchor on a head silent from the recovery sample, SIGTERM stops
+  like Ctrl-C, `idle` clock fix, strict wear bytes and rotation check on 43/89, sources next to constants, one
+  `testing::secs`. Next: (1) user decides whether to inline the one-field `View` (AGENTS.md names the pattern);
+  (2) a live check that `systemctl --user stop headup` now switches the stream off (raw log ends with 43/88 off);
+  (3) release 0.4.5 when the user wants.
+- After v0.4.4 (staged): three session phases (`Waiting`, `Settling`, `Live`); every `Available` settles, startup
+  included; console lines say each change when it happens (reason on "unavailable", "waiting for your head to
+  hold still…" on "available"), no delayed note. DECISIONS "Every `Available` settles".
+- 2026-11-14: v0.4.4 released (commit ad8fd6f): one availability concept (wear folded in), then four session phases,
   `LogEvent` serialised by serde (cues logged as `{"event":"Cue","cue":…}`), `JsonLog` for both logs. Live check
   data/rewear*.jsonl passed (cue, recovery, earbuds out and back in, recalibration, cue, re-anchor). Next:
   (1) record in FreeClip 2 FINDINGS the 0.2 s "walking" hold seen right after re-insertion (data/rewear.jsonl),
