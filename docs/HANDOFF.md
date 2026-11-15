@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-15 04:15 UTC
+Last updated: 2026-11-15 04:34 UTC
 
 ## Current state
 - The protocol works.
@@ -34,6 +34,10 @@ Last updated: 2026-11-15 04:15 UTC
   mirrors unresolvable); a manual rerun (`gh workflow run release.yml -f tag=v0.1.0`) uploaded both tarballs.
 
 ## Next actions
+- 2026-11-15: v0.4.5 released (commit 7ce0fe8; CI and Release green). Live check data/stop_live*.jsonl: under
+  systemd, `systemctl --user stop` logs "stopping" and exits 0. Hearing check (data/hear_live*): the user heard
+  headup's "Sit upright…" and "Calibrated…" on the earbuds. `View` stays as is (user, 2026-11-15). Next:
+  Windows/macOS Bluetooth backends wait for a machine; FrameChanged waits for a backend that needs it.
 - After v0.4.4 (staged, `nix flake check` passes, 113 tests): whole-codebase thermos review applied (DECISIONS
   "Whole-codebase thermos review applied"): re-anchor on a head silent from the recovery sample, SIGTERM stops
   like Ctrl-C, `idle` clock fix, strict wear bytes and rotation check on 43/89, sources next to constants, one

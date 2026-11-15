@@ -584,3 +584,7 @@
   (left to the user). Bugs fixed with failing tests first where the clock allows: re-anchor with a silent head,
   wear byte strictness, non-rotation quaternions; SIGTERM checked by running the binary with a made-up address.
 - 113 tests pass; `nix flake check` passes. All staged, not committed.
+
+## 2026-11-15 04:34 UTC
+- Live stop test under systemd passed (data/stop_live*); README calibration step rewritten for clarity.
+- Released v0.4.5 (CI and Release workflow green; x86_64 and aarch64 tarballs).
