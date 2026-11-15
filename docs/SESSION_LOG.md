@@ -602,3 +602,11 @@
   `SwitchOn` tokens, refusal reasons kept (peer-link sentence), `Tracking::unavailable()?`, `Phrase` prompts-only
   over a private `Voice` registry, typed test errors, HANDOFF rewritten. One behaviour change recorded (sit-up as
   a reminder falls due plays it, then the tink). 131 tests; `nix flake check` passes. Staged, not committed.
+
+## 2026-11-15 16:48 UTC
+- Calibration paused state is its own value (`Paused`); the link records the switch where it sends it; `Earbuds`
+  in its own file, keeping the earbuds' answer (`Option<SwitchReply>`) and its rules as one list.
+- Grounded the brief hold after re-wearing in the firmware (activity detector's rising edge, `0x600fa906`); the
+  hold blocker is `Moving` ("senses movement, such as walking around or handling the earbuds"). FINDINGS updated.
+- Live run (data/full_live*) passed. Released v0.4.6: the earlier v0.4.6 (tag on fa2c072, a commit the user
+  removed from main) was deleted with its tag and re-published at 2dd465e; CI and Release green.

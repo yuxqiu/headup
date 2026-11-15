@@ -1,11 +1,11 @@
 # HANDOFF
 
-Last updated: 2026-11-15 15:17 UTC
+Last updated: 2026-11-15 16:48 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
   30 s and every 120 s, notification 60 s, tink on recovery), drift re-anchoring, pauses on any loss of tracking.
-  Latest release: v0.4.5. Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
+  Latest release: v0.4.6 (tag on 2dd465e). Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
 - Layout (AGENTS.md has the full map):
   - `src/core/`: `tracker.rs` (the `HeadTracker` contract, incl. "Late poses"), `calibration.rs` (decision type),
     `monitor/` (`Monitor`; private `detector.rs`, `reminders.rs`), `session/` (the loop; private `tracking.rs`,
@@ -21,13 +21,11 @@ Last updated: 2026-11-15 15:17 UTC
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
-1. User commits the staged work; then bump to 0.4.6, wait for CI, publish the release (notes draft: reminders that
-   cannot play are reported; a peer-link refusal says so instead of "play audio"; sitting up as a reminder falls
-   due plays it, then the tink).
-2. Optional: record in FINDINGS the 0.2 s "walking" hold seen right after putting the earbuds back in
-   (data/rewear.jsonl).
-3. Waiting on a need or a machine: `Event::FrameChanged` (a backend whose frame changes while available),
+1. Optional: find why the hold after a re-wear falls at seq 34 or 69 (the activity detector's state across a stream
+   start; FINDINGS "A hold after putting the earbuds back in").
+2. Waiting on a need or a machine: `Event::FrameChanged` (a backend whose frame changes while available),
    Windows/macOS Bluetooth backends.
+3. If a 43/88 reply 1 is ever recorded, check the peer-link sentence and the resend rule against it.
 
 ## Open questions
 - 43/88 reply 1 (peer link down) has never been recorded; its sentence and the resend rule are `[unverified]`. If
