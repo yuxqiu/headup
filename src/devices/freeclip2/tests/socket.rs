@@ -47,8 +47,9 @@ async fn poses_keep_their_arrival_time_while_nothing_reads() {
             .unwrap();
     }
     let mut got = Vec::new();
-    while let Some(event) = tracker.next_event(Duration::ZERO).await.unwrap() {
-        match event {
+    // Take what is waiting: a zero wait, dropped if nothing is (next_event is cancel-safe).
+    while let Ok(event) = tokio::time::timeout(Duration::ZERO, tracker.next_event()).await {
+        match event.unwrap() {
             Event::Pose { at, .. } => got.push(at - start),
             Event::Available => {} // the first reading shows this computer is the current device
             other => panic!("samples produced {other:?}"),

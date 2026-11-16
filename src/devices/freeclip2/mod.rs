@@ -29,7 +29,6 @@ use crate::devices::bluetooth::{Address, Host};
 use crate::devices::{Backend, Found};
 use anyhow::{Context, Result, bail};
 use link::Link;
-use std::time::Duration;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
@@ -47,7 +46,7 @@ pub struct FreeClip2 {
 }
 
 impl FreeClip2 {
-    pub const TRAITS: TrackerTraits = TrackerTraits {
+    const TRAITS: TrackerTraits = TrackerTraits {
         // The earbuds hide slow head movement in their re-centres (FINDINGS "Ground truth",
         // "Upright drift in normal use"), so the rebuilt pose drifts over a session.
         pose_drifts: true,
@@ -154,16 +153,18 @@ impl Backend for FreeClip2 {
             .connect_rfcomm(addr, RFCOMM_CHANNEL)
             .await
             .with_context(|| format!("RFCOMM connect to {addr} channel {RFCOMM_CHANNEL} (is the FreeClip 2 connected?)"))?;
-        Ok(FreeClip2::start(stream, found.adapter, log))
+        // The earbuds know this computer by its adapter's address.
+        let adapter = host.adapter_address().await?;
+        Ok(FreeClip2::start(stream, adapter, log))
     }
 }
 
 impl HeadTracker for FreeClip2 {
-    async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        match tokio::time::timeout(timeout, self.events.recv()).await {
-            Err(_) => Ok(None),
-            Ok(Some(event)) => event.map(Some),
-            Ok(None) => bail!("the connection to the earbuds has ended"),
+    async fn next_event(&mut self) -> Result<Event> {
+        // Cancel-safe: a channel receive.
+        match self.events.recv().await {
+            Some(event) => event,
+            None => bail!("the connection to the earbuds has ended"),
         }
     }
 

@@ -24,7 +24,6 @@
 
 use super::quat::Quat;
 use anyhow::Result;
-use std::time::Duration;
 use tokio::time::Instant;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -52,11 +51,11 @@ pub enum Event {
 /// A source of head orientation. Device quirks such as re-centring are the backend's job.
 #[allow(async_fn_in_trait)] // used through generics only, not as dyn or across threads
 pub trait HeadTracker {
-    /// Wait up to `timeout` for the next event. `Ok(None)` means nothing arrived. Trackers may go
-    /// quiet while the head is still, so callers treat silence as "unchanged", not as an error.
-    /// An event that is already waiting is returned at once, even with a zero `timeout`. Lost
-    /// connections and protocol errors are `Err`.
-    async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>>;
+    /// Wait for the next event; an event that is already waiting comes at once. Trackers may go
+    /// quiet while the head is still, so callers decide how long to wait and treat silence as
+    /// "unchanged", not as an error. Cancel-safe: the caller may drop the wait at any point, and
+    /// no event is lost. Lost connections and protocol errors are `Err`.
+    async fn next_event(&mut self) -> Result<Event>;
 
     /// Stop streaming and leave the device in its normal state.
     async fn stop(&mut self) -> Result<()>;

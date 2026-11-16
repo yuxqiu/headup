@@ -7,8 +7,10 @@
 //!
 //! [`Monitor`] is a decision type without I/O, like [`super::calibration::Calibration`]: the
 //! session passes in each pose and then the time, and gets back what to do, in order. Upright is
-//! the calibrated pose, with its pitch moved to where each head-up ends; the posture is judged
-//! against it, so moving it ends a slouch at the next judgement, even while the tracker is silent.
+//! the calibrated pose, with its pitch moved to where each head-up ends. Everything happens at its
+//! own time: each pose, a head-up when the head settled, and, in silence, the head staying at its
+//! last pose. So moving upright ends a slouch when the head-up ends, even while the tracker is
+//! silent.
 
 mod head_up;
 mod posture;
@@ -18,8 +20,8 @@ use super::quat::{Euler, Quat};
 use super::sound::Cue;
 use super::tracker::TrackerTraits;
 use head_up::HeadUp;
-use posture::{Change, Config, Posture};
-use reminders::{Reminders, Schedule};
+use posture::{Change, ON_DEG, Posture};
+use reminders::Reminders;
 use std::time::Duration;
 
 /// What the session should do.
@@ -51,29 +53,32 @@ pub struct Monitor {
     reminders: Reminders,
     /// What to do, in order, since the last [`Monitor::check`].
     outputs: Vec<Output>,
+    /// The latest time judged, for the status line.
+    judged: Duration,
 }
 
 impl Monitor {
     /// Start monitoring against the calibrated `baseline`, with the corrections `traits` asks for.
     pub fn new(baseline: Quat, traits: TrackerTraits) -> Self {
-        let config = Config::default();
         Monitor {
             baseline,
             upright: 0.0,
-            posture: Posture::new(config),
+            posture: Posture::default(),
             // A head-up goes as far down, and then up, as a slouch starts (DECISIONS "Re-anchor
-            // upright after each head-up").
-            head_up: traits.pose_drifts.then(|| HeadUp::new(config.on_deg)),
-            reminders: Reminders::new(Schedule::default()),
+            // upright after each head-up"). Calibration held the head still at upright, pitch 0.
+            head_up: traits.pose_drifts.then(|| HeadUp::new(ON_DEG, 0.0)),
+            reminders: Reminders::default(),
             outputs: Vec::new(),
+            judged: Duration::ZERO,
         }
     }
 
     /// A pose measured at `measured` (session time; not earlier than the previous pose's). Returns
-    /// its angles relative to calibration, for the log. It is judged at its own time; what it
-    /// causes comes out of the next [`Monitor::check`].
+    /// its angles relative to calibration, for the log. The silence before it, then the pose,
+    /// are judged at its own time; what they cause comes out of the next [`Monitor::check`].
     pub fn pose(&mut self, measured: Duration, orientation: Quat) -> Euler {
         let angles = (self.baseline.conj() * orientation).euler();
+        self.judge(measured);
         self.posture.pose(measured, angles.pitch);
         if let Some(head_up) = &mut self.head_up {
             head_up.pose(measured, angles.pitch);
@@ -90,16 +95,29 @@ impl Monitor {
         std::mem::take(&mut self.outputs)
     }
 
-    /// Judge the head at `t`: first the reminders due by then, then a head-up that ends there
-    /// (which moves upright), then the posture against upright.
+    /// Judge the head up to `t`. A head-up that ended by then counts at its own time: what was
+    /// due before it, then upright moves and the posture is judged against it. Then the rest up to
+    /// `t`.
     fn judge(&mut self, t: Duration) {
-        let due = self.reminders.due(t);
-        self.outputs.extend(due.into_iter().map(Output::Remind));
-        if let Some(held) = self.head_up.as_mut().and_then(|head_up| head_up.check(t)) {
+        if let Some((at, held)) = self.head_up.as_mut().and_then(|head_up| head_up.check(t)) {
+            self.advance(at);
             self.upright = held;
             self.outputs.push(Output::Reanchored { upright: held });
+            self.judge_posture(at);
         }
-        match self.posture.judge(self.upright) {
+        self.advance(t);
+    }
+
+    /// The reminders due by `t`, then the posture at `t`.
+    fn advance(&mut self, t: Duration) {
+        let due = self.reminders.due(t);
+        self.outputs.extend(due.into_iter().map(Output::Remind));
+        self.judge_posture(t);
+        self.judged = self.judged.max(t);
+    }
+
+    fn judge_posture(&mut self, t: Duration) {
+        match self.posture.judge(t, self.upright) {
             Some(Change::SlouchStarted) => self.reminders.slouch_started(t),
             Some(Change::Recovered) => {
                 let tink = self.reminders.recovered();
@@ -109,15 +127,19 @@ impl Monitor {
         }
     }
 
-    /// When the next reminder falls due if the slouch goes on: check by then for it to be on
-    /// time. `None` while not slouching.
+    /// When to check next if the tracker stays silent: when the next reminder falls due if the
+    /// slouch goes on, or when a head-up would end, whichever is sooner. `None` if neither.
     pub fn next_due(&self) -> Option<Duration> {
-        self.reminders.next_due()
+        let head_up = self.head_up.as_ref().and_then(HeadUp::next_end);
+        [self.reminders.next_due(), head_up]
+            .into_iter()
+            .flatten()
+            .min()
     }
 
     pub fn status(&self) -> Status {
         Status {
-            pitch: self.posture.smoothed(self.upright),
+            pitch: self.posture.smoothed(self.judged, self.upright),
             slouching: self.posture.slouching(),
         }
     }

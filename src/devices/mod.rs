@@ -13,7 +13,6 @@ use crate::core::record::DeviceLog;
 use crate::core::tracker::{Event, HeadTracker, TrackerTraits};
 use anyhow::Result;
 use bluetooth::Host;
-use std::time::Duration;
 
 /// What the registry needs from a backend on top of [`HeadTracker`].
 #[allow(async_fn_in_trait)] // used through generics only, not as dyn or across threads
@@ -64,9 +63,9 @@ macro_rules! backends {
         }
 
         impl HeadTracker for AnyTracker {
-            async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
+            async fn next_event(&mut self) -> Result<Event> {
                 match self {
-                    $(AnyTracker::$model(t) => t.next_event(timeout).await,)+
+                    $(AnyTracker::$model(t) => t.next_event().await,)+
                 }
             }
 

@@ -21,8 +21,7 @@ use tracking::Tracking;
 /// After a failed calibration (head kept moving), wait this long before asking again (DECISIONS
 /// "Refactor (user approved)", 2026-11-11).
 const CALIBRATION_RETRY: Duration = Duration::from_secs(60);
-/// How often the live status line is refreshed (DECISIONS "Thermo review applied"). Monitoring
-/// wakes at least this often, which also lets re-anchoring settle on a silent head.
+/// How often the live status line is refreshed (DECISIONS "Thermo review applied").
 const STATUS_EVERY: Duration = Duration::from_secs(1);
 /// How often calibration and the wait for a still head judge the head. A prompt comes at most this
 /// long after the head meets its condition (DECISIONS "Calibration outputs, one window type, review
@@ -119,16 +118,16 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
     /// wait like an event.
     async fn next(&mut self, timeout: Duration) -> Flow<Vec<Pose>> {
         let mut poses = Vec::new();
-        let mut wait = timeout;
+        let mut deadline = Instant::now() + timeout;
         loop {
+            // Biased, tracker first: an event that is waiting at the deadline is still taken.
             tokio::select! {
-                event = self.tracker.next_event(wait) => match event? {
-                    Some(event) => poses.extend(self.handle(event)?),
-                    None => return Ok(poses),
-                },
+                biased;
+                event = self.tracker.next_event() => poses.extend(self.handle(event?)?),
                 Some((cue, played)) = self.sounds.ended() => self.reminder_ended(cue, played)?,
+                () = tokio::time::sleep_until(deadline) => return Ok(poses),
             }
-            wait = Duration::ZERO;
+            deadline = Instant::now();
         }
     }
 
@@ -243,8 +242,8 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
         // When the live status line is next refreshed: at once, then every STATUS_EVERY.
         let mut status_due = Duration::ZERO;
         loop {
-            // Wake for the next status refresh, or when the next reminder is due if that is sooner.
-            // Times are exact, so the reminder falls due at that point.
+            // Wake for the next status refresh, or when the monitor is next due (a reminder, or a
+            // head-up ending in silence) if that is sooner. Times are exact, so it falls due then.
             let wake = monitor
                 .next_due()
                 .map_or(status_due, |due| due.min(status_due));

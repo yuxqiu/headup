@@ -150,8 +150,8 @@ impl ReplayTracker {
 }
 
 impl HeadTracker for ReplayTracker {
-    async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
-        self.0.next_event(timeout).await.map_err(|e| {
+    async fn next_event(&mut self) -> Result<Event> {
+        self.0.next_event().await.map_err(|e| {
             if e.downcast_ref::<ConnectionClosed>().is_some() {
                 ScriptFinished.into()
             } else {

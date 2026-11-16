@@ -1,9 +1,9 @@
 //! When to remind the user during a slouch (design: docs/UX_RESEARCH.md).
 //!
 //! The posture says when a slouch starts and ends; [`Reminders`] turns that into cues. The
-//! schedule is a function of how long the slouch has lasted: a tone at `tone_after`, a spoken
-//! reminder at `speak_after` and every `renudge` after it, a desktop notification at
-//! `notify_after`. Recovering plays the "tink" only if a reminder started during the slouch. A
+//! schedule is a function of how long the slouch has lasted: a tone at `TONE_AFTER`, a spoken
+//! reminder at `SPEAK_AFTER` and every `RENUDGE` after it, a desktop notification at
+//! `NOTIFY_AFTER`. Recovering plays the "tink" only if a reminder started during the slouch. A
 //! reminder that then failed to play still counts: it was due, and the failure is reported.
 //!
 //! Times are session time, like the monitor's. A time earlier than one already judged (a pose
@@ -12,63 +12,47 @@
 use crate::core::sound::Cue;
 use std::time::Duration;
 
-/// When each reminder falls due, as time since the slouch started.
-#[derive(Debug, Clone, Copy)]
-pub struct Schedule {
-    pub tone_after: Duration,
-    pub speak_after: Duration,
-    /// The spoken reminder repeats this often while the slouch goes on.
-    pub renudge: Duration,
-    pub notify_after: Duration,
+// When each reminder falls due, as time since the slouch started: the design approved in
+// docs/UX_RESEARCH.md (DECISIONS "Detector behaviour"), a tone at 10 s, speech at 30 s and every
+// 120 s after, a notification at 60 s.
+const TONE_AFTER: Duration = Duration::from_secs(10);
+const SPEAK_AFTER: Duration = Duration::from_secs(30);
+/// The spoken reminder repeats this often while the slouch goes on.
+const RENUDGE: Duration = Duration::from_secs(120);
+const NOTIFY_AFTER: Duration = Duration::from_secs(60);
+
+/// The first spoken reminder after slouch time `after` (strictly later).
+fn next_speak(after: Duration) -> Duration {
+    let Some(past) = after.checked_sub(SPEAK_AFTER) else {
+        return SPEAK_AFTER;
+    };
+    let repeats = past.as_nanos() / RENUDGE.as_nanos() + 1;
+    let repeats = u32::try_from(repeats).expect("a slouch shorter than 2^32 re-nudges");
+    SPEAK_AFTER + RENUDGE * repeats
 }
 
-impl Default for Schedule {
-    /// The design approved in docs/UX_RESEARCH.md (DECISIONS "Detector behaviour"): a tone at
-    /// 10 s, speech at 30 s and every 120 s after, a notification at 60 s.
-    fn default() -> Self {
-        Schedule {
-            tone_after: Duration::from_secs(10),
-            speak_after: Duration::from_secs(30),
-            renudge: Duration::from_secs(120),
-            notify_after: Duration::from_secs(60),
-        }
-    }
+/// The reminders due after slouch time `after`, up to and including `until`, each once, in play
+/// order.
+fn due_between(after: Duration, until: Duration) -> Vec<Cue> {
+    let falls = |at: Duration| after < at && at <= until;
+    [
+        (Cue::Tone, falls(TONE_AFTER)),
+        (Cue::Speak, next_speak(after) <= until),
+        (Cue::Notify, falls(NOTIFY_AFTER)),
+    ]
+    .into_iter()
+    .filter_map(|(cue, due)| due.then_some(cue))
+    .collect()
 }
 
-impl Schedule {
-    /// The first spoken reminder after slouch time `after` (strictly later).
-    fn next_speak(&self, after: Duration) -> Duration {
-        let Some(past) = after.checked_sub(self.speak_after) else {
-            return self.speak_after;
-        };
-        let repeats = past.as_nanos() / self.renudge.as_nanos() + 1;
-        let repeats = u32::try_from(repeats).expect("a slouch shorter than 2^32 re-nudges");
-        self.speak_after + self.renudge * repeats
-    }
-
-    /// The reminders due after slouch time `after`, up to and including `until`, each once, in
-    /// play order.
-    fn due(&self, after: Duration, until: Duration) -> Vec<Cue> {
-        let falls = |at: Duration| after < at && at <= until;
-        [
-            (Cue::Tone, falls(self.tone_after)),
-            (Cue::Speak, self.next_speak(after) <= until),
-            (Cue::Notify, falls(self.notify_after)),
-        ]
+/// The first reminder after slouch time `after`.
+fn next_after(after: Duration) -> Duration {
+    [TONE_AFTER, NOTIFY_AFTER]
         .into_iter()
-        .filter_map(|(cue, due)| due.then_some(cue))
-        .collect()
-    }
-
-    /// The first reminder after slouch time `after`.
-    fn next(&self, after: Duration) -> Duration {
-        [self.tone_after, self.notify_after]
-            .into_iter()
-            .filter(|&at| at > after)
-            .chain([self.next_speak(after)])
-            .min()
-            .expect("the spoken reminder always comes again")
-    }
+        .filter(|&at| at > after)
+        .chain([next_speak(after)])
+        .min()
+        .expect("the spoken reminder always comes again")
 }
 
 /// One slouch.
@@ -81,19 +65,12 @@ struct Slouch {
 }
 
 /// The reminders of the current slouch, if any.
+#[derive(Default)]
 pub struct Reminders {
-    schedule: Schedule,
     slouch: Option<Slouch>,
 }
 
 impl Reminders {
-    pub fn new(schedule: Schedule) -> Self {
-        Reminders {
-            schedule,
-            slouch: None,
-        }
-    }
-
     /// A slouch started at `at`.
     pub fn slouch_started(&mut self, at: Duration) {
         self.slouch = Some(Slouch {
@@ -120,7 +97,7 @@ impl Reminders {
         if elapsed <= slouch.judged {
             return vec![];
         }
-        let cues = self.schedule.due(slouch.judged, elapsed);
+        let cues = due_between(slouch.judged, elapsed);
         slouch.judged = elapsed;
         slouch.cued |= !cues.is_empty();
         cues
@@ -129,7 +106,7 @@ impl Reminders {
     /// When the next reminder falls due if the slouch goes on. `None` while not slouching.
     pub fn next_due(&self) -> Option<Duration> {
         let slouch = self.slouch.as_ref()?;
-        Some(slouch.since + self.schedule.next(slouch.judged))
+        Some(slouch.since + next_after(slouch.judged))
     }
 }
 

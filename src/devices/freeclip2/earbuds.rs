@@ -4,8 +4,8 @@
 //!
 //! The rules:
 //!
-//! 1. **Tracking flows** when both earbuds are worn, this computer streams audio to them, the
-//!    "stream on" switch is not refused, and the earbuds do not hold. Checked in that order; the
+//! 1. **Tracking flows** when both earbuds are worn, the "stream on" switch is not refused, this
+//!    computer streams audio to them, and the earbuds do not hold. Checked in that order; the
 //!    first that fails is the [`Blocker`]. A removed earbud stops tracking within about 1 s
 //!    (FINDINGS "Single earbud"); the earbuds send poses only to their current device, the last
 //!    one to start streaming (FINDINGS "Tracking runs only while this computer streams audio").

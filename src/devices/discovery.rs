@@ -9,8 +9,6 @@ use anyhow::{Result, bail};
 pub struct Found {
     pub device: Device,
     pub model: Model,
-    /// This computer's Bluetooth adapter, as the earbuds know it.
-    pub adapter: Address,
 }
 
 /// The connected supported earbuds at `want`, or the first connected supported earbuds if `want`
@@ -37,18 +35,13 @@ pub async fn ensure_supported(host: &Host, address: Address) -> Result<()> {
 
 /// Connected devices that have a backend.
 async fn connected(host: &Host) -> Result<Vec<Found>> {
-    let adapter = host.adapter_address().await?;
     Ok(host
         .connected()
         .await?
         .into_iter()
         .filter_map(|device| {
             let model = Model::from_bluetooth_name(&device.name)?;
-            Some(Found {
-                device,
-                model,
-                adapter,
-            })
+            Some(Found { device, model })
         })
         .collect())
 }

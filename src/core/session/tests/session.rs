@@ -8,30 +8,9 @@ use crate::core::sound::Sound::{self, Prompt, Reminder};
 use crate::core::steady::STILL;
 use crate::core::tracker::TrackerTraits;
 use crate::testing::secs;
+use crate::testing::tilt;
 use crate::testing::{PlayerSim, ScriptFinished, SessionRun, run_session};
 use std::collections::VecDeque;
-
-/// Wait as a tracker does for an event due at `due`: until it is due, or until `timeout` has passed
-/// if that comes first. Returns whether it is due.
-async fn wait_until_due(due: Instant, timeout: Duration) -> bool {
-    let deadline = Instant::now() + timeout;
-    if due > deadline {
-        tokio::time::sleep_until(deadline).await;
-        return false;
-    }
-    tokio::time::sleep_until(due).await;
-    true
-}
-
-fn tilt(deg: f64) -> Quat {
-    let h = deg.to_radians() / 2.0;
-    Quat {
-        w: h.cos(),
-        x: 0.0,
-        y: h.sin(),
-        z: 0.0,
-    }
-}
 
 // --- Scripted session tests (tokio's paused clock makes the waits instant). ---
 
@@ -111,18 +90,15 @@ fn pose(at: Instant, pitch: f64) -> Event {
 }
 
 impl HeadTracker for FakeTracker {
-    async fn next_event(&mut self, timeout: Duration) -> Result<Option<Event>> {
+    async fn next_event(&mut self) -> Result<Event> {
         let Some(&(due, event)) = self.events.front() else {
-            if wait_until_due(self.start + self.end, timeout).await {
-                return Err(ScriptFinished.into());
-            }
-            return Ok(None);
+            tokio::time::sleep_until(self.start + self.end).await;
+            return Err(ScriptFinished.into());
         };
-        if !wait_until_due(self.start + due, timeout).await {
-            return Ok(None);
-        }
+        // Cancel-safe: the event leaves the script only once it is due.
+        tokio::time::sleep_until(self.start + due).await;
         self.events.pop_front();
-        Ok(Some(event))
+        Ok(event)
     }
 
     async fn stop(&mut self) -> Result<()> {
@@ -159,7 +135,7 @@ fn unavailable() -> Script {
     })
 }
 
-// A head-up past upright re-anchors only for trackers whose pose drifts.
+// A head-up re-anchors only for trackers whose pose drifts.
 #[tokio::test(start_paused = true)]
 async fn reanchors_only_for_drifting_trackers() {
     let script = || {

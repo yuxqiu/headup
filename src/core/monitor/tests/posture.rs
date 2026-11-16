@@ -17,7 +17,7 @@ fn run(
     let mut t = t0;
     while t < t0 + span {
         p.pose(secs(t), pitch);
-        out.extend(p.judge(upright).map(|c| (t, c)));
+        out.extend(p.judge(secs(t), upright).map(|c| (t, c)));
         t += 0.02;
     }
     t
@@ -29,7 +29,7 @@ fn kinds(changes: &[(f64, Change)]) -> Vec<Change> {
 
 #[test]
 fn upright_never_changes_posture() {
-    let mut p = Posture::new(Config::default());
+    let mut p = Posture::default();
     let mut changes = vec![];
     run(&mut p, 0.0, 30.0, 5.0, 0.0, &mut changes);
     assert!(changes.is_empty(), "{changes:?}");
@@ -38,7 +38,7 @@ fn upright_never_changes_posture() {
 // A slouch starts as the smoothed pitch reaches 20° and ends as it drops below 15°.
 #[test]
 fn slouch_starts_and_ends_at_the_thresholds() {
-    let mut p = Posture::new(Config::default());
+    let mut p = Posture::default();
     let mut changes = vec![];
     let t = run(&mut p, 0.0, 5.0, 0.0, 0.0, &mut changes);
     let t = run(&mut p, t, 5.0, 30.0, 0.0, &mut changes);
@@ -52,7 +52,7 @@ fn slouch_starts_and_ends_at_the_thresholds() {
 
 #[test]
 fn hysteresis_keeps_the_slouch_between_thresholds() {
-    let mut p = Posture::new(Config::default());
+    let mut p = Posture::default();
     let mut changes = vec![];
     let t = run(&mut p, 0.0, 12.0, 25.0, 0.0, &mut changes);
     run(&mut p, t, 30.0, 17.0, 0.0, &mut changes); // between off (15) and on (20): still slouching
@@ -66,7 +66,7 @@ fn hysteresis_keeps_the_slouch_between_thresholds() {
 fn posture_is_judged_against_the_given_upright() {
     let mut changes = vec![];
     run(
-        &mut Posture::new(Config::default()),
+        &mut Posture::default(),
         0.0,
         15.0,
         12.0,
@@ -75,14 +75,7 @@ fn posture_is_judged_against_the_given_upright() {
     );
     assert_eq!(kinds(&changes), [SlouchStarted]);
     let mut changes = vec![];
-    run(
-        &mut Posture::new(Config::default()),
-        0.0,
-        15.0,
-        12.0,
-        0.0,
-        &mut changes,
-    );
+    run(&mut Posture::default(), 0.0, 15.0, 12.0, 0.0, &mut changes);
     assert!(changes.is_empty(), "{changes:?}");
 }
 
@@ -90,11 +83,11 @@ fn posture_is_judged_against_the_given_upright() {
 // tracker may be silent when the head holds still.
 #[test]
 fn upright_moved_to_the_head_ends_a_slouch_at_once() {
-    let mut p = Posture::new(Config::default());
+    let mut p = Posture::default();
     let mut changes = vec![];
-    run(&mut p, 0.0, 5.0, 25.0, 0.0, &mut changes);
+    let t = run(&mut p, 0.0, 5.0, 25.0, 0.0, &mut changes);
     assert!(p.slouching());
-    assert_eq!(p.judge(25.0), Some(Recovered));
+    assert_eq!(p.judge(secs(t), 25.0), Some(Recovered));
     assert!(!p.slouching());
 }
 
@@ -103,13 +96,13 @@ fn upright_moved_to_the_head_ends_a_slouch_at_once() {
 #[test]
 fn smoothing_is_independent_of_sample_rate() {
     let after_step = |hz: f64| {
-        let mut p = Posture::new(Config::default());
+        let mut p = Posture::default();
         p.pose(Duration::ZERO, 0.0);
         let steps = (0.24 * hz).round() as u32;
         for i in 1..=steps {
             p.pose(secs(f64::from(i) / hz), 30.0);
         }
-        p.smoothed(0.0).unwrap()
+        p.smoothed(secs(0.24), 0.0).unwrap()
     };
     let (slow, fast) = (after_step(25.0), after_step(100.0));
     assert!(
@@ -120,8 +113,21 @@ fn smoothing_is_independent_of_sample_rate() {
 
 #[test]
 fn looking_up_is_not_slouching() {
-    let mut p = Posture::new(Config::default());
+    let mut p = Posture::default();
     let mut changes = vec![];
     run(&mut p, 0.0, 60.0, -40.0, 0.0, &mut changes);
     assert!(changes.is_empty());
+}
+
+// Silence means the head stays at its last sample: the smoothed pitch catches up with it as time
+// passes, without a new sample. One sample back at 0° after a slouch at 30°, then a second of
+// silence, ends the slouch.
+#[test]
+fn smoothed_pitch_catches_up_in_silence() {
+    let mut p = Posture::default();
+    let mut changes = vec![];
+    let t = run(&mut p, 0.0, 5.0, 30.0, 0.0, &mut changes);
+    p.pose(secs(t), 0.0);
+    assert_eq!(p.judge(secs(t), 0.0), None, "one sample barely moves it");
+    assert_eq!(p.judge(secs(t + 1.0), 0.0), Some(Recovered));
 }

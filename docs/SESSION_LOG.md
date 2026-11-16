@@ -664,3 +664,11 @@
   `judge(t)`; `Detector` became `Posture` (smoothing and hysteresis against a given upright). Behaviour unchanged:
   existing monitor, head-up, session and end-to-end tests untouched, replays identical. 141 tests, clippy, fmt and
   rustdoc pass.
+
+## 2026-11-16 21:47 UTC
+- Thermos round 2 plus a ground-up review. Behaviour fixes (monitor judges everything at its own time): posture
+  smoothing catches up in silence; a head-up counts when the head settled and the monitor wakes for it; the
+  head-up's descent starts only from a hold (a quick glance up no longer arms it). Replays: identical reminders.
+- Simplifications: `next_event` without a timeout (cancel-safe contract, the session owns the deadline);
+  `Found.adapter` removed; posture and reminder settings are constants; one `testing::tilt`; small doc fixes.
+  145 tests, clippy, fmt and rustdoc pass. Not committed; live run still pending.

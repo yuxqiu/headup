@@ -19,7 +19,7 @@ fn judge_every_second(r: &mut Reminders, from: u64, to: u64) -> Vec<(u64, Cue)> 
 // 60 s. Sitting up then plays the tink.
 #[test]
 fn a_long_slouch_escalates_then_recovers() {
-    let mut r = Reminders::new(Schedule::default());
+    let mut r = Reminders::default();
     r.slouch_started(secs(5.0));
     let cues = judge_every_second(&mut r, 5, 205);
     assert_eq!(cues, [(15, Tone), (35, Speak), (65, Notify), (155, Speak)]);
@@ -30,7 +30,7 @@ fn a_long_slouch_escalates_then_recovers() {
 // A glance shorter than the tone's 10 s plays nothing, not even the tink.
 #[test]
 fn a_short_slouch_plays_nothing() {
-    let mut r = Reminders::new(Schedule::default());
+    let mut r = Reminders::default();
     r.slouch_started(secs(0.0));
     assert_eq!(judge_every_second(&mut r, 0, 9), []);
     assert_eq!(r.recovered(), None);
@@ -39,7 +39,7 @@ fn a_short_slouch_plays_nothing() {
 // The next reminder is due exactly on time: one nanosecond earlier nothing falls due.
 #[test]
 fn next_due_is_exact() {
-    let mut r = Reminders::new(Schedule::default());
+    let mut r = Reminders::default();
     assert_eq!(r.next_due(), None);
     r.slouch_started(secs(2.5));
     let tone = r.next_due().unwrap();
@@ -56,7 +56,7 @@ fn next_due_is_exact() {
 // A time earlier than one already judged (a pose delivered late) plays nothing twice.
 #[test]
 fn late_times_play_nothing_again() {
-    let mut r = Reminders::new(Schedule::default());
+    let mut r = Reminders::default();
     r.slouch_started(secs(0.0));
     assert_eq!(r.due(secs(10.0)), [Tone]);
     assert_eq!(r.due(secs(9.9)), []);
@@ -66,7 +66,7 @@ fn late_times_play_nothing_again() {
 // A tone that started earns the tink even if the slouch then ends on a pose measured before it.
 #[test]
 fn recovery_after_a_started_reminder_tinks() {
-    let mut r = Reminders::new(Schedule::default());
+    let mut r = Reminders::default();
     r.slouch_started(secs(0.0));
     assert_eq!(r.due(secs(10.0)), [Tone]);
     assert_eq!(r.recovered(), Some(Recovered));

@@ -2,16 +2,7 @@
 
 use super::*;
 use crate::testing::secs;
-
-fn tilt(deg: f64) -> Quat {
-    let h = deg.to_radians() / 2.0;
-    Quat {
-        w: h.cos(),
-        x: 0.0,
-        y: h.sin(),
-        z: 0.0,
-    }
-}
+use crate::testing::tilt;
 
 /// A tracker without quirks, and one whose pose drifts (so a head-up re-anchors upright).
 fn traits(drifts: bool) -> TrackerTraits {
@@ -80,9 +71,9 @@ fn a_silent_slouch_reminds_at_the_due_time() {
     assert_eq!(m.check(due), [Output::Remind(Cue::Tone)]);
 }
 
-// For a tracker whose pose drifts, a head-up past upright re-anchors after the tink.
+// For a tracker whose pose drifts, a head-up re-anchors after the tink.
 #[test]
-fn sitting_up_past_upright_reanchors_after_the_tink() {
+fn a_head_up_reanchors_after_the_tink() {
     let mut m = Monitor::new(Quat::IDENTITY, traits(true));
     let mut out = vec![];
     let t = hold(&mut m, 0.0, 3.0, 0.0, &mut out);
@@ -182,4 +173,39 @@ fn sitting_up_as_a_reminder_falls_due_plays_it_then_tinks() {
         m.check(due),
         [Output::Remind(Cue::Tone), Output::Remind(Cue::Recovered)]
     );
+}
+
+// Silence means the head stays at its last pose: one pose back at 0° after a slouch, then
+// silence, ends the slouch as the smoothed pitch catches up, before any reminder.
+#[test]
+fn smoothed_pitch_catches_up_in_silence() {
+    let mut m = Monitor::new(Quat::IDENTITY, traits(false));
+    let mut out = vec![];
+    let t = hold(&mut m, 0.0, 3.0, 50.0, &mut out);
+    m.pose(secs(t), tilt(0.0));
+    let mut now = t;
+    while now < t + 60.0 {
+        out.extend(m.check(secs(now)).into_iter().map(|o| (now, o)));
+        now += 0.5;
+    }
+    assert_eq!(outputs(&out), []);
+    assert!(!m.status().slouching);
+}
+
+// A head-up that settles in silence counts when it settled, not at the next check: it settles at
+// 12.5 s, before the tone due at about 13.1 s, so no tone plays. The monitor asks to be checked
+// when it settles.
+#[test]
+fn a_head_up_counts_when_it_settles() {
+    let mut m = Monitor::new(Quat::IDENTITY, traits(true));
+    let mut out = vec![];
+    let t = hold(&mut m, 0.0, 3.0, 0.0, &mut out);
+    hold(&mut m, t, 8.5, 40.0, &mut out);
+    m.pose(secs(11.5), tilt(-5.0));
+    assert_eq!(m.next_due(), Some(secs(12.5)));
+    out.extend(m.check(secs(13.5)).into_iter().map(|o| (13.5, o)));
+    let [Output::Reanchored { upright }] = outputs(&out)[..] else {
+        panic!("{out:?}");
+    };
+    assert!((upright + 5.0).abs() < 1e-9, "{upright}");
 }

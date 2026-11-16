@@ -1,6 +1,7 @@
 //! Test support shared across modules: run the real posture session against any tracker and
 //! record what it did.
 
+use crate::core::quat::Quat;
 use crate::core::record::Recorder;
 use crate::core::session;
 use crate::core::sound::Cue;
@@ -63,6 +64,17 @@ impl std::fmt::Display for ScriptFinished {
 }
 
 impl std::error::Error for ScriptFinished {}
+
+/// The head pitched forward by `deg` degrees (looking down is positive), level and facing ahead.
+pub fn tilt(deg: f64) -> Quat {
+    let h = deg.to_radians() / 2.0;
+    Quat {
+        w: h.cos(),
+        x: 0.0,
+        y: h.sin(),
+        z: 0.0,
+    }
+}
 
 /// What a session did.
 pub struct SessionRun {

@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-16 21:29 UTC
+Last updated: 2026-11-16 21:47 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
@@ -17,7 +17,7 @@ Last updated: 2026-11-16 21:29 UTC
 - Decision types (`Calibration`, `Monitor`, `Tracking`) share one rhythm: pass poses, then
   `check(now)`. A calibration waiting for a prompt is a separate `Paused` value; the link records the stream switch
   where it sends it (`Link::send_switch_on`).
-- Tests: 141 pass; `nix flake check` (build + tests, clippy, rustdoc with warnings denied, fmt) passes.
+- Tests: 145 pass; `nix flake check` (build + tests, clippy, rustdoc with warnings denied, fmt) passes.
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions

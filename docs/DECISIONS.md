@@ -1621,3 +1621,46 @@
   posture tests on `judge(upright)` (`posture_is_judged_against_the_given_upright`,
   `upright_moved_to_the_head_ends_a_slouch_at_once`); the batch-ordering test moved to the monitor
   (`a_batch_is_judged_at_each_pose_time`, failing when poses are not judged at their own time).
+
+## 2026-11-16: The monitor judges everything at its own time (thermos round 2)
+- **What.** Three fixes, one rule: every decision in the monitor happens at the time it happens.
+  - `Posture::judge(t, upright)`: the smoothed pitch is evaluated at `t`, with the head at the last sample since
+    then (tracker rule 2: silence means unchanged). Before, it moved only when a sample arrived, so one sample
+    after a move and then silence left a stale value: a head back up kept reminding (probe: Tone, Speak, Notify for
+    60 s), and a re-anchor in silence could fail to end the slouch.
+  - A head-up counts when the head settled: `HeadUp::check` returns `(settled at, pitch)`, and `Monitor::judge`
+    runs what was due before it, moves upright, judges the posture at that time, then the rest. `Monitor::pose`
+    first judges the silence up to the pose, then the pose, so a settle that a new sample would hide still counts.
+    `Monitor::next_due` includes `HeadUp::next_end` (when a head-up would end in silence), so the session wakes
+    for it; the status refresh no longer stands in for that. Before, a tone due between the settle and the next
+    check still played (probe: Tone, Reanchored, tink instead of Reanchored).
+  - The head-up's descent starts only where the head last held still (`Phase::Level { held }`), and calibration
+    counts as the first hold (pitch 0). Before, the top was the highest pitch since the last hold, so a 0.3 s
+    glance up armed the gesture for the rest of the session: any later held look-up re-anchored there and caused
+    false reminders. Still accepted: a held look-up, back down, then a held look-up again; no time limit on the
+    "down" half (reading at the desk for minutes, then looking up, must count).
+- **Measured.** Replays of session6, session7, live8 and slouch_guided against `ec90bf7`: identical reminders;
+  uprights within 0.1° except live8's first re-anchor (−3.8° → −6.2°: the pitch at the moment the head settled,
+  not one sample later).
+- **Tests.** `smoothed_pitch_catches_up_in_silence` (monitor and posture), `a_head_up_counts_when_it_settles`,
+  `a_quick_glance_up_starts_nothing`: the monitor and head-up ones failed before the fix. Head-up tests construct
+  `HeadUp::new(TRAVEL_DEG, 0.0)`; settle-time expectations count from the first sample of the hold.
+
+## 2026-11-16: Simplifications from a ground-up review (thermos round 2)
+- `HeadTracker::next_event()` takes no timeout and returns `Result<Event>`; it must be cancel-safe (the session
+  already dropped it in its `select!`, now stated). `Session::next` owns the deadline: a biased `select!` (tracker,
+  reminder ended, deadline), so an event waiting at the deadline is still taken. Gone: `wait_until_due`, the
+  `Option` layer, the timeout in `FreeClip2`, `AnyTracker`, `ReplayTracker`. The socket test drains with a zero
+  `tokio::time::timeout` (a single poll would not let the backend's task run).
+- `Found.adapter` removed: `FreeClip2::connect` asks the host for the adapter address once; discovery no longer
+  queries it on every poll for every model.
+- `posture::Config` and `reminders::Schedule` became module constants with their sources (`ON_DEG`, `OFF_DEG`,
+  `SMOOTHING`, `TONE_AFTER`, …; `const` assert `OFF_DEG < ON_DEG`); they were only ever built from `Default`.
+- One `testing::tilt` replaces five identical test copies. `FreeClip2::TRAITS` is private. The `Earbuds` rule 1
+  doc lists the checks in the code's order (the "stream on" answer before streaming). Test names no longer say
+  "past upright".
+- Considered and kept (recorded decisions): calibration returning the phrase to say; the `Earbuds` handler
+  recording the switch itself; inlining the one-field `View` (user: "not now"); settling as a local wait; merging
+  the rebuild stages; the link creating the pose frame only in `report()`; `Link::on_bytes` returning outputs; one
+  stop `select!` around find and connect in `main.rs`.
+- Behaviour unchanged: all session, monitor and end-to-end tests pass as they were.

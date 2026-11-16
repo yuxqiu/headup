@@ -2,16 +2,7 @@
 
 use super::*;
 use crate::testing::secs;
-
-fn tilt(deg: f64) -> Quat {
-    let h = deg.to_radians() / 2.0;
-    Quat {
-        w: h.cos(),
-        x: 0.0,
-        y: h.sin(),
-        z: 0.0,
-    }
-}
+use crate::testing::tilt;
 
 const SAMPLE: Duration = Duration::from_millis(20);
 
