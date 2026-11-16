@@ -1,12 +1,12 @@
 //! When to remind the user during a slouch (design: docs/UX_RESEARCH.md).
 //!
-//! The detector says when a slouch starts and ends; [`Reminders`] turns that into cues. The
+//! The posture says when a slouch starts and ends; [`Reminders`] turns that into cues. The
 //! schedule is a function of how long the slouch has lasted: a tone at `tone_after`, a spoken
 //! reminder at `speak_after` and every `renudge` after it, a desktop notification at
 //! `notify_after`. Recovering plays the "tink" only if a reminder started during the slouch. A
 //! reminder that then failed to play still counts: it was due, and the failure is reported.
 //!
-//! Times are session time, like the detector's. A time earlier than one already judged (a pose
+//! Times are session time, like the monitor's. A time earlier than one already judged (a pose
 //! delivered late) adds nothing: the schedule has been judged up to the later time.
 
 use crate::core::sound::Cue;

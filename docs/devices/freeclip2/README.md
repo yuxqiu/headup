@@ -24,5 +24,7 @@ headup cannot tell that from still moving around, so it waits for that movement.
 
 ## Drift
 
-The earbuds re-centre themselves while your head is still, and each re-centre lands a little off, towards "looking
-up". headup corrects this after each time you sit back up from a slouch.
+The earbuds re-centre themselves while your head is still and hide slow head movement, so over time headup's idea of
+upright drifts. headup corrects it whenever you look down and then back up: where your head comes to rest after
+looking back up becomes upright. If reminders seem off, do it on purpose: look down at your desk, then look back up
+at your screen and hold still for a second.

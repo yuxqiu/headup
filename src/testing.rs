@@ -70,6 +70,8 @@ pub struct SessionRun {
     pub sounds: Vec<(Sound, Duration)>,
     /// The `"event"` names in the session log, in order.
     pub events: Vec<String>,
+    /// The uprights re-anchored to (relative to calibration), in order.
+    pub uprights: Vec<f64>,
 }
 
 impl SessionRun {
@@ -134,15 +136,24 @@ pub async fn run_session(tracker: &mut impl HeadTracker, sim: PlayerSim) -> Sess
     };
     let Err(err) = session::run(tracker, &player, &mut rec).await;
     assert!(err.downcast_ref::<ScriptFinished>().is_some(), "{err:#}");
-    let events = log
+    let lines: Vec<serde_json::Value> = log
         .text()
         .lines()
-        .map(|l| serde_json::from_str::<serde_json::Value>(l).unwrap())
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let events = lines
+        .iter()
         .filter_map(|v| v["event"].as_str().map(String::from))
+        .collect();
+    let uprights = lines
+        .iter()
+        .filter(|v| v["event"] == "Reanchored")
+        .map(|v| v["upright"].as_f64().expect("a re-anchor logs its upright"))
         .collect();
     SessionRun {
         sounds: player.log.into_inner(),
         events,
+        uprights,
     }
 }
 

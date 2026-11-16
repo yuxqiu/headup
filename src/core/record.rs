@@ -70,8 +70,8 @@ pub enum LogEvent {
     /// The device can no longer deliver head tracking, for the tracker's `reason`. If headup was
     /// calibrating or monitoring, that ends: it recalibrates when tracking resumes.
     TrackingUnavailable { reason: &'static str },
-    /// After a recovery the head settled above upright, so upright was re-anchored to this pitch
-    /// (relative to calibration).
+    /// After a head-up (a look down and back up) the head held still, so upright was re-anchored
+    /// to this pitch (relative to calibration).
     Reanchored {
         #[serde(serialize_with = "two_places")]
         upright: f64,

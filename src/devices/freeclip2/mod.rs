@@ -11,7 +11,7 @@
 //!   send no 43/54 on connect while audio already plays; a 43/89 reading shows it then. The earbuds
 //!   refuse headup's 43/88 while another device is current, so headup sends it again once this
 //!   computer streams.
-//! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts_up`]).
+//! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts`]).
 //! - While the earbuds sense movement (walking around, handling them), they hold the reading and
 //!   lose the head's movement, so
 //!   tracking is unavailable until the reading moves again (`link`; `rebuild` finds where a hold
@@ -48,9 +48,9 @@ pub struct FreeClip2 {
 
 impl FreeClip2 {
     pub const TRAITS: TrackerTraits = TrackerTraits {
-        // Each re-centre lands ~10° off, always towards "looking up", so the rebuilt pose drifts
-        // over a session (FINDINGS "Ground truth").
-        pose_drifts_up: true,
+        // The earbuds hide slow head movement in their re-centres (FINDINGS "Ground truth",
+        // "Upright drift in normal use"), so the rebuilt pose drifts over a session.
+        pose_drifts: true,
     };
 
     /// Start the task on a connected `stream`. `adapter` is this computer's Bluetooth address.

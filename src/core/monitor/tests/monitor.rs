@@ -13,10 +13,10 @@ fn tilt(deg: f64) -> Quat {
     }
 }
 
-/// A tracker without quirks, and one whose pose drifts up (so upright is re-anchored).
+/// A tracker without quirks, and one whose pose drifts (so a head-up re-anchors upright).
 fn traits(drifts: bool) -> TrackerTraits {
     TrackerTraits {
-        pose_drifts_up: drifts,
+        pose_drifts: drifts,
     }
 }
 
@@ -80,12 +80,13 @@ fn a_silent_slouch_reminds_at_the_due_time() {
     assert_eq!(m.check(due), [Output::Remind(Cue::Tone)]);
 }
 
-// For a tracker whose pose drifts up, sitting back up past upright re-anchors after the tink.
+// For a tracker whose pose drifts, a head-up past upright re-anchors after the tink.
 #[test]
 fn sitting_up_past_upright_reanchors_after_the_tink() {
     let mut m = Monitor::new(Quat::IDENTITY, traits(true));
     let mut out = vec![];
-    let t = hold(&mut m, 0.0, 15.0, 40.0, &mut out);
+    let t = hold(&mut m, 0.0, 3.0, 0.0, &mut out);
+    let t = hold(&mut m, t, 15.0, 40.0, &mut out);
     hold(&mut m, t, 3.0, -10.0, &mut out);
     let got = outputs(&out);
     assert_eq!(
@@ -96,6 +97,40 @@ fn sitting_up_past_upright_reanchors_after_the_tink() {
         panic!("{got:?}");
     };
     assert!((upright + 10.0).abs() < 0.5, "{upright}");
+}
+
+// A head-up that settles while the tracker is silent ends the slouch with the re-anchor: no slouch
+// reminder follows (the slouch ended before its first tone, so no tink either).
+#[test]
+fn head_up_in_silence_stops_reminders() {
+    let mut m = Monitor::new(Quat::IDENTITY, traits(true));
+    let mut out = vec![];
+    let t = hold(&mut m, 0.0, 3.0, 25.0, &mut out);
+    let t = hold(&mut m, t, 1.0, 50.0, &mut out);
+    let t = hold(&mut m, t, 0.6, 25.0, &mut out);
+    let mut now = t;
+    while now < t + 30.0 {
+        out.extend(m.check(secs(now)).into_iter().map(|o| (now, o)));
+        now += 0.5;
+    }
+    assert_eq!(outputs(&out), [Output::Reanchored { upright: 25.0 }]);
+    assert!(!m.status().slouching);
+}
+
+// Poses passed in one batch are each judged at their own time: a slouch that starts mid-batch
+// (smoothing crosses 20° about 0.09 s after a step to 40°) is timed from that pose, so its tone
+// falls due 10 s later, not 10 s after the check.
+#[test]
+fn a_batch_is_judged_at_each_pose_time() {
+    let mut m = Monitor::new(Quat::IDENTITY, traits(false));
+    let mut t = 0.0;
+    while t < 4.0 {
+        m.pose(secs(t), tilt(if t < 2.0 { 0.0 } else { 40.0 }));
+        t += 0.02;
+    }
+    assert_eq!(m.check(secs(4.0)), []);
+    let due = m.next_due().expect("slouching");
+    assert!((secs(12.0)..secs(12.15)).contains(&due), "{due:?}");
 }
 
 // Angles are relative to the calibrated baseline.

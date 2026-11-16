@@ -987,8 +987,9 @@ at ~15 min) and −28° (minutes 28–30, with no slouch). The stream was silent
 (sequence counted 93 270, sent 21 102). Those silent stretches came to about 320 silent re-centres (pause length
 / 209), each able to absorb up to ~4° of slow movement ("Re-centre and stillness"). Every re-anchor in `data/*.jsonl`
 moved upright towards "looking up" (2.2–22.6°, 14 re-anchors). So: a slow creep down is absorbed silently, and the
-fast return up is seen, which makes upright read as "looking up". The detector re-anchors only after a slouch
-it detected, so a creep that never read as a slouch leaves upright off until recalibration.
+fast return up is seen, which makes upright read as "looking up". The detector then re-anchored only after a
+slouch it detected, so a creep that never read as a slouch left upright off until recalibration (since replaced by
+re-anchoring after each head-up, DECISIONS 2026-11-16).
 
 **A gravity-referenced cue that is too sparse [recordings].** The stream is `q ⊗ conj(ref)` in a gravity-aligned
 frame, so the world-frame rotation of a movement (`q2 ⊗ conj(q1)`) does not depend on the reference. Head turns

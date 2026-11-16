@@ -10,8 +10,8 @@ use std::time::Duration;
 
 // Ground truth (guided.py --slouch): five cycles of upright, then look down (held ~25 s, the stream
 // going quiet after a few seconds), then back to the same screen point. The earbuds' re-centres add
-// ~10° towards "looking up" per cycle. Without the detector's re-anchoring, upright drifts to about
-// -40° and the later look-downs never count as slouches. Through the real session, every look-down
+// ~10° towards "looking up" per cycle. Without re-anchoring after each head-up, upright drifts to
+// about -40° and the later look-downs never count as slouches. Through the real session, every look-down
 // cues a tone, and every return to the screen after one plays the recovery cue.
 #[tokio::test(start_paused = true)]
 async fn repeated_slouches_stay_detectable_end_to_end() {
@@ -115,6 +115,16 @@ async fn live_session_with_two_slouches_end_to_end() {
         (secs(20.0)..secs(20.1)).contains(&reminder),
         "spoken reminder {reminder:?} after the tone"
     );
+}
+
+// live8 again: after a re-anchor that lands high (about -11°), a later head-up brings upright back
+// down (to about -4°). Re-anchoring corrects drift in both directions.
+#[tokio::test(start_paused = true)]
+async fn a_head_up_moves_upright_back_down_end_to_end() {
+    let mut tracker = ReplayTracker::new(&read_csv("live8.csv"));
+    let run = run_session(&mut tracker, PlayerSim::default()).await;
+    let down = run.uprights.windows(2).any(|w| w[1] - w[0] > 5.0);
+    assert!(down, "uprights {:?}", run.uprights);
 }
 
 // Three recorded walks (2026-11-13; FINDINGS "Instant resets while walking"). While the user

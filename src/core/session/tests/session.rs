@@ -131,7 +131,7 @@ impl HeadTracker for FakeTracker {
 
     fn traits(&self) -> TrackerTraits {
         TrackerTraits {
-            pose_drifts_up: self.drifts,
+            pose_drifts: self.drifts,
         }
     }
 }
@@ -139,7 +139,7 @@ impl HeadTracker for FakeTracker {
 /// How the simulated tracker and player behave.
 #[derive(Default)]
 struct Sim {
-    /// The tracker declares `pose_drifts_up`.
+    /// The tracker declares `pose_drifts`.
     drifts: bool,
     player: PlayerSim,
 }
@@ -159,7 +159,7 @@ fn unavailable() -> Script {
     })
 }
 
-// Sitting back up "past" upright re-anchors only for trackers whose pose drifts.
+// A head-up past upright re-anchors only for trackers whose pose drifts.
 #[tokio::test(start_paused = true)]
 async fn reanchors_only_for_drifting_trackers() {
     let script = || {

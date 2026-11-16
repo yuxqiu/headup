@@ -638,3 +638,29 @@
   which Bluetooth pairing caps at 8; only request id 44 raises it, and that request enters only through the
   NearLink (SLE) SSAP handler. Read-only SDP and LE scans of the earbuds found no other route. FINDINGS and HANDOFF
   updated; no code changes. Scratch notes: session scratchpad mode0/.
+
+## 2026-11-16 20:44 UTC
+- Upright re-anchoring now follows a head-up (user design): the head dips to a slouch, rises ≥ 20° and holds still;
+  upright moves there, up or down. Replaces re-anchoring after recovery; trait renamed `pose_drifts`. Replayed
+  session6, session7, live8 and slouch_guided through the real code against the previous rule: identical reminders,
+  a few more re-anchors including downward corrections. 133 tests, clippy and fmt pass. DECISIONS, the FreeClip 2
+  user page and HANDOFF updated. Not yet live-tested.
+
+## 2026-11-16 21:02 UTC
+- Thermos review of the whole codebase. Fixed: a head-up settling during silence left the slouch on (reminders after
+  the re-anchor); stale comments about re-anchoring after recovery; detector leftovers (`State` stepping in place,
+  `HeadUp` holding its threshold, `deepest`); `prev.seq + 1` overflow in rebuild. Added five tests, two of them
+  failing without the fix. 138 tests, clippy, fmt and rustdoc pass. Open: whether the head-up keeps its dip gate
+  (since settled: a pure down-then-up gesture, DECISIONS 2026-11-16), and the review's optional items (slouch state stored twice; steadiness rules in three files).
+
+## 2026-11-16 21:12 UTC
+- Head-up as a pure down-then-up gesture (user: option 2), then moved into its own module `monitor/head_up.rs` with
+  its own `Settle`; `Detector` keeps slouch detection with `reanchor(t, upright)`. Replays identical to the gated
+  version; monitor, session and end-to-end tests unchanged. 141 tests, clippy, fmt and rustdoc pass. Not yet
+  live-tested.
+
+## 2026-11-16 21:29 UTC
+- Redesigned monitoring (user): `Monitor` owns upright as a pitch and orders reminders, head-up and posture in one
+  `judge(t)`; `Detector` became `Posture` (smoothing and hysteresis against a given upright). Behaviour unchanged:
+  existing monitor, head-up, session and end-to-end tests untouched, replays identical. 141 tests, clippy, fmt and
+  rustdoc pass.

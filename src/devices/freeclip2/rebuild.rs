@@ -247,11 +247,11 @@ impl GlideFilter {
             }
             Some((prev, Arrival::ToIdentity)) => {
                 self.end_glide(&prev, &sample, &mut steps);
-                sample.seq.saturating_sub(prev.seq + 1)
+                sample.seq.saturating_sub(prev.seq).saturating_sub(1)
             }
             Some((prev, Arrival::Sample)) => {
                 self.glides.observe(&sample);
-                sample.seq.saturating_sub(prev.seq + 1) // 0 for a repeated sequence number
+                sample.seq.saturating_sub(prev.seq).saturating_sub(1) // 0 for a repeated sequence number
             }
         };
         self.last = Some(sample);

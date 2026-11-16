@@ -1541,3 +1541,83 @@
   same, and `glide_check.py` says "step back" for iterating backwards. "Walk" stays only where it names real walks:
   the recordings and fixtures from walks (`walk_*.csv`, `turn_walk.csv`, `data/walk3*`), the end-to-end tests named
   after them, walking as one listed cause, and the FINDINGS section "Instant resets while walking" that others cite.
+
+## 2026-11-16: Re-anchor upright after each head-up, in either direction (user)
+- **What.** With `TrackerTraits::pose_drifts` (renamed from `pose_drifts_up`, since the rule now corrects both ways),
+  the detector re-anchors upright after a head-up: the unsmoothed pitch dips at least `on_deg` (20°) below upright,
+  rises at least `on_deg` from its lowest point since the head last held still, and the head holds still (the
+  existing 1 s / 2° settle). Upright moves to where it holds, above or below the old upright. `Config` field
+  `reanchor_on_head_up`; private `HeadUp` in `detector.rs`; the `Reanchoring` posture state is gone. Replaces
+  "Re-anchor upright after each recovery" (2026-11-11), which re-anchored only upwards and only after a slouch the
+  detector had recognised.
+- **Why.** FreeClip 2 hides slow movement in its re-centres (FINDINGS "Upright drift in normal use"), and no host
+  lever turns that off (same section: the mode without re-centres needs NearLink). The one-sided rule could not undo
+  an upright that landed too high, which left false reminders until recalibration. User: after looking down, people
+  look back at their screen, so that pose is upright; if a re-anchor is wrong, the same move fixes it on purpose.
+- **Guards (user).** The dip must reach a slouch (≥ `on_deg` below upright), so looking up at a shelf from upright
+  never re-anchors; the rise must be ≥ `on_deg`, so a small lift during a slouch does not end it. Both reuse the
+  slouch threshold; no new tuned number. Rejected: a minimum speed for the rise and a ban on re-anchoring below the
+  slouch threshold (user: too heuristic, and the latter does not fix the drift); any rise of ≥ 20° (re-anchors on a
+  held look-up, then reminds when the user looks back at the screen); a backend event (`Event::FrameDrift`/"set
+  upright here"), since the head-up is visible in the poses core already has and the backend cannot judge it
+  against upright.
+- **Measured** (temporary test replaying the fixtures through the real rebuilder and session, old vs new): reminder
+  cues identical on session6, session7, live8 and slouch_guided. Re-anchors 2→4, 4→6, 2→4, 5→5; the added ones
+  include downward corrections the old rule could not make (live8: −10.8° → −3.8°; session6: +0.9°).
+- **Tests.** Detector tests changed with the behaviour: `head_up_below_upright_reanchors` (was
+  `partial_recovery_keeps_upright`), plus `dip_short_of_a_slouch_keeps_upright`, `small_rise_keeps_upright` and
+  `rise_undone_before_holding_still_keeps_upright`; the recovery tests are renamed to head-up. Monitor, session and
+  end-to-end tests pass unchanged.
+- **Review fixes (thermos, same day).** A head-up that settled in a `check()` during silence moved upright but did
+  not step the posture, so a slouch stayed on and reminded after the re-anchor: `Detector::judge` now re-anchors
+  and then steps, for poses and checks alike (tests `head_up_settling_in_silence_ends_the_slouch`,
+  `head_up_in_silence_stops_reminders`, both failing without the fix). A head-up ends any slouch, now stated in the
+  docs and pinned by `head_up_during_a_slouch_ends_it`; `head_ups_correct_upright_both_ways` and the replay test
+  `a_head_up_moves_upright_back_down_end_to_end` (live8) pin the downward correction. `State` is `Copy` and steps
+  in place; `HeadUp` holds its threshold; `lowest` is `deepest`. Rebuild's unsent-sample count no longer computes
+  `prev.seq + 1`, which overflowed for sequence number `u32::MAX`.
+- **The head-up is a head movement, not measured against upright (user, same day; replaces the dip guard above).**
+  Phases in `HeadUp`: `Level { top }` (the highest point since the head last held still) until the pitch goes
+  `on_deg` below the top, then `Down { deepest }` until the head holds still at least `on_deg` above the deepest
+  point; a hold while down does not cancel it. Upright and the posture state play no part. Looking up from rest
+  still never counts (no descent first). Known false case, accepted: look up, come back down at least `on_deg`, look
+  up again and hold. Also still accepted: a glance down from a slouch and back, or a partial sit-up of at least
+  `on_deg`, re-anchors at the slouched pose. Rejected: any rise of `on_deg` then hold (every held look-up
+  re-anchors); the dip measured against upright (ties the gesture to an upright that may be the thing that
+  drifted). Replayed session6, session7, live8 and slouch_guided against the dip-guard version: identical uprights
+  and reminders. Detector tests start from rest (`at_rest`), since a gesture needs a level to start from;
+  `looking_up_from_rest_keeps_upright` and `short_descent_keeps_upright` replace the dip-guard tests.
+- **The head-up is its own part (user, same day).** Since the gesture no longer reads upright or the posture, it
+  moved out of the slouch detector: `monitor/head_up.rs` (`HeadUp::pose`, `HeadUp::check` → the pitch a head-up
+  ended at), with its private `Settle` (the 1 s / 2° settle; only the head-up uses it). `Detector` is slouch detection
+  against a movable upright; `Detector::reanchor(t, upright)` moves it and steps the posture at once (the silent
+  re-anchor fix keeps one home). `Monitor` holds `Option<HeadUp>` (from `pose_drifts`) and passes a head-up's pitch
+  to the detector; `Config::reanchor_on_head_up` is gone and `Detector::check` takes no time. Behaviour unchanged:
+  the monitor, session and end-to-end tests pass unchanged. The detector's re-anchoring tests moved to
+  `tests/head_up.rs` (gesture only) plus two detector tests for `reanchor`; `Settle` has two tests of its own.
+  Rejected: keeping `HeadUp` inside the detector (two jobs in one type, a config switch for one of them);
+  `Settle` in `steady.rs` next to `Stillness` (user: only the head-up uses it, so it stays there).
+
+## 2026-11-16: Monitor owns upright; `Detector` becomes `Posture` (user)
+- **What.** Monitoring is four parts, each answering one question: `posture.rs` (`Posture`: smoothing in the fixed
+  calibration frame and the 20°/15° hysteresis, judged against an upright it is given: `judge(upright) ->
+  Option<Change>`), `head_up.rs` (did a head-up end, and where), `reminders.rs` (unchanged), and `Monitor` (where
+  upright is, a plain pitch relative to calibration, and the order things happen in). `Monitor::judge(t)` runs
+  for each pose and each check: reminders due by `t`, then a head-up ending at `t` (moves upright, outputs
+  `Reanchored`), then the posture against upright. `Detector`, its `upright`, its timed event list, `reanchor` and
+  `PostureEvent::Reanchored` are gone; `Change` is `SlouchStarted`/`Recovered`. Replaces the structure of "The
+  head-up is its own part" above (a head-up's result went into the detector and came back as an event).
+- **Why.** Two references for upright (the baseline orientation and a pitch offset inside the detector) and a
+  re-anchor signal pushed down and back up (user: "ugly and unnecessarily complex"). With upright passed in at
+  each judgement, moving it needs no rebase, and a re-anchor in silence ends a slouch at the same judgement.
+  The baseline stays the calibration: the head-up measures pitch, so only pitch moves.
+- **Rejected.** Swapping the baseline orientation and starting a fresh detector (a second way for a slouch to end,
+  adopts yaw and roll nothing measured, changes the log); a `rebase(t, by)` that shifts the detector's smoother
+  (needed only if smoothing runs in the upright frame); re-anchoring at session level by starting a new `Monitor`
+  (pushes slouch and reminder state up); letting the smoother glide to a new frame (no judgement in silence); an
+  `Upright` type around the pitch and the head-up (one user, four lines).
+- **Behaviour.** Unchanged, including timing: the head-up, monitor, session and end-to-end tests pass unchanged,
+  and the four replays give identical uprights and reminders. Log format unchanged. Tests: the detector tests are
+  posture tests on `judge(upright)` (`posture_is_judged_against_the_given_upright`,
+  `upright_moved_to_the_head_ends_a_slouch_at_once`); the batch-ordering test moved to the monitor
+  (`a_batch_is_judged_at_each_pose_time`, failing when poses are not judged at their own time).

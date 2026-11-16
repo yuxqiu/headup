@@ -3,8 +3,7 @@
 //! A `Window` keeps the samples measured since a start and gives the ones that cover the last
 //! stretch of time. Between samples the head stays where the last one put it: a tracker with
 //! nothing to deliver means a head that has not moved. Each judgement of steadiness is a criterion
-//! over such a span: calibration's, [`Stillness`] before a prompt, and the detector's settling
-//! after a recovery.
+//! over such a span: calibration's, [`Stillness`] before a prompt, and the end of a head-up.
 
 use super::quat::Quat;
 use std::collections::VecDeque;

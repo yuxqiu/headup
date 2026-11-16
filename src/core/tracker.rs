@@ -72,8 +72,8 @@ pub trait HeadTracker {
 /// adding a field leaves existing backends unchanged.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct TrackerTraits {
-    /// The reported orientation accumulates error towards "looking up" over a session, so the same
-    /// pose reads higher later. The session then re-anchors upright after each recovery. Drift
-    /// the other way is not corrected, because that would need a different rule.
-    pub pose_drifts_up: bool,
+    /// The reported orientation accumulates error over a session, so the same pose reads
+    /// differently later. The session then re-anchors upright where the head holds still after
+    /// a head-up: a look down and back up.
+    pub pose_drifts: bool,
 }

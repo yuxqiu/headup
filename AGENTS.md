@@ -21,8 +21,9 @@ user, through the earbuds, when they look down for too long. Everything runs loc
   - `calibration.rs`: calibration decisions as a state machine without I/O (like `monitor/`).
   - `steady.rs`: whether the head holds steady over the last stretch of time (`Window`, `Stillness`).
   - `monitor/`: monitoring after calibration, without I/O: `Monitor` takes poses and the time and says what to
-    do (remind, re-anchored). Inside, private: `detector.rs` (when a slouch starts and ends, re-anchoring upright)
-    and `reminders.rs` (when to remind during a slouch, the tink on recovery).
+    do (remind, re-anchored); it owns upright and the order things happen in. Inside, private: `posture.rs`
+    (whether the head is slouched against a given upright), `head_up.rs` (the head-up gesture that moves upright,
+    for trackers whose pose drifts) and `reminders.rs` (when to remind during a slouch, the tink on recovery).
   - `sound/`: what headup plays (`mod.rs`: `Sound`, `Cue`, `Phrase`, the `Player` trait). Inside, private:
     `desktop.rs` (`DesktopPlayer`: plays on this computer, shows notifications), `audio.rs` (plays a sound to the
     end, bounded) and `wav.rs` (clips and tones).
@@ -87,7 +88,7 @@ Run everything inside `nix develop`.
   parts that started at different moments (`Event::Pose { at }`), for reading the clock and waiting (`now`,
   `sleep_until`, deadlines), for wall-clock log times, and where a part only carries a time without computing with
   it (the rebuilder). A `Duration` is a span: use it for constants and intervals, and for the logic of one part that
-  computes with time, measured from that part's own start (session time; `Calibration`, `Stillness` and `Detector`
+  computes with time, measured from that part's own start (session time; `Calibration`, `Stillness` and `Monitor`
   take session time from the session). Convert at most once, at the boundary, and never back: a round trip means
   the conversion is in the wrong place.
 - **Poses carry their measurement time** (`Event::Pose { at, .. }`); smoothing and slouch timers run on it, never on
