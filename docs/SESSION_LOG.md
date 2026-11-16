@@ -610,3 +610,31 @@
   hold blocker is `Moving` ("senses movement, such as walking around or handling the earbuds"). FINDINGS updated.
 - Live run (data/full_live*) passed. Released v0.4.6: the earlier v0.4.6 (tag on fa2c072, a commit the user
   removed from main) was deleted with its tag and re-published at 2dd465e; CI and Release green.
+
+## 2026-11-16 16:34 UTC
+- Investigated upright drift on FreeClip 2. session6 replayed through the real code: facing-screen pitch goes
+  −3° → −9° → −21° → −28° over 30 min; the stream was silent 77% of the time (~320 silent re-centres). Every
+  recorded re-anchor was towards "looking up". Head-turn axes in the gravity frame were tried as an absolute cue:
+  too sparse (7 in 30 min).
+- Firmware (subagent read; key stores and branches re-checked by hand): op 0 of robin_gesture sets mode 0 and
+  bypasses the activity detector for a device whose record length is > 8, which the 43/169 auth-key exchange
+  appears to set. Mode 0 has no re-centre and no pause. Not tested live. FINDINGS section added; no code changes.
+
+## 2026-11-16 18:23 UTC
+- Live-tested the 43/169 ID-auth exchange (with the user): the earbuds accept it from this host, but the 43/89
+  stream still glides and pauses, both on the same connection and after a Bluetooth reconnect plus a new
+  challenge (data/auth_stream1.csv, data/auth_stream2.csv). The test index was cleared (`{1: id, 7: 00}`, status 0
+  after) and headup.service restarted. FINDINGS corrected (the clear is TLV 7, not 6) and updated.
+
+## 2026-11-16 18:37 UTC
+- Traced the firmware's mode-0 request (op 12 → sensor op 0) by hand plus a subagent: the deciding byte is 255 for
+  an unknown host and the record length for a registered one, so both request the same mode; one earbud never
+  sends (gate at 0x60149ec1, set from its side at boot); no host command found that triggers the send. FINDINGS
+  corrected. Conclusion: no known route from the host to the mode without re-centres.
+
+## 2026-11-16 19:23 UTC
+- Followed the re-centre mode to its source (by hand plus five subagent traces, key steps re-checked). The live
+  208/69 timing proves the earbuds send op 0 with b0 = 0. b0 comes from the Bluetooth core's per-device level,
+  which Bluetooth pairing caps at 8; only request id 44 raises it, and that request enters only through the
+  NearLink (SLE) SSAP handler. Read-only SDP and LE scans of the earbuds found no other route. FINDINGS and HANDOFF
+  updated; no code changes. Scratch notes: session scratchpad mode0/.

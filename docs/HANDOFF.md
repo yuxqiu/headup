@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-15 16:48 UTC
+Last updated: 2026-11-16 19:23 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
@@ -21,11 +21,15 @@ Last updated: 2026-11-15 16:48 UTC
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
-1. Optional: find why the hold after a re-wear falls at seq 34 or 69 (the activity detector's state across a stream
+1. Upright drift (FINDINGS "Upright drift in normal use, and a firmware mode without hidden re-centres"): the 43/169
+   firmware route is closed for a Bluetooth host: the mode without re-centres needs a device level > 8, set only
+   by request id 44 over NearLink (SLE). The user rejected a host-side heuristic as a hack; agree a direction
+   with them before coding anything.
+2. Optional: find why the hold after a re-wear falls at seq 34 or 69 (the activity detector's state across a stream
    start; FINDINGS "A hold after putting the earbuds back in").
-2. Waiting on a need or a machine: `Event::FrameChanged` (a backend whose frame changes while available),
+3. Waiting on a need or a machine: `Event::FrameChanged` (a backend whose frame changes while available),
    Windows/macOS Bluetooth backends.
-3. If a 43/88 reply 1 is ever recorded, check the peer-link sentence and the resend rule against it.
+4. If a 43/88 reply 1 is ever recorded, check the peer-link sentence and the resend rule against it.
 
 ## Open questions
 - 43/88 reply 1 (peer link down) has never been recorded; its sentence and the resend rule are `[unverified]`. If

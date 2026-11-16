@@ -977,3 +977,77 @@ Checked as a way to learn "walking" or "stopped walking" without the hold. It ca
   (`0x70385d86`): an adaptive-ANC scene code `[inferred]`, not the head-tracking activity detector.
 - The walking detector (`0x600fab40`, flag `0x6015ba10`) is read only by the re-centre stage; no MBB command
   exposes it. Walking is visible only through the 43/89 stream (the hold: identity, then a pause).
+
+## Upright drift in normal use, and a firmware mode without hidden re-centres (2026-11-16)
+
+**Where the drift comes from [recordings].** Replaying `tests/fixtures/freeclip2/session6.csv` (30 min of normal
+work) through the real `Link` and rebuilder, without the detector's re-anchoring, the pitch read while facing the
+screen moves from −3…+2° (minutes 0–7) to −9° (after the slouch at 7.5 min), −21…−16° (after a 25–34° look-down
+at ~15 min) and −28° (minutes 28–30, with no slouch). The stream was silent for 77% of the session's samples
+(sequence counted 93 270, sent 21 102). Those silent stretches came to about 320 silent re-centres (pause length
+/ 209), each able to absorb up to ~4° of slow movement ("Re-centre and stillness"). Every re-anchor in `data/*.jsonl`
+moved upright towards "looking up" (2.2–22.6°, 14 re-anchors). So: a slow creep down is absorbed silently, and the
+fast return up is seen, which makes upright read as "looking up". The detector re-anchors only after a slouch
+it detected, so a creep that never read as a slouch leaves upright off until recalibration.
+
+**A gravity-referenced cue that is too sparse [recordings].** The stream is `q ⊗ conj(ref)` in a gravity-aligned
+frame, so the world-frame rotation of a movement (`q2 ⊗ conj(q1)`) does not depend on the reference. Head turns
+while upright come out within 4–9° of vertical (headpose_axes*, turns of 58–66°). If turns happen about the
+head's own up axis, their tilt would give the absolute head pitch. But session6 has only 7 fast turns of over 20°
+in 30 min, which is too few to correct drift. Not pursued.
+
+**Mode 0 of the re-centre stage [code, 7.0.0.526; the auth exchange did not switch it on live, see below].**
+- Set-parameter op 0 (`0x600f9bda`, from the queue-52 task) takes `b0` and stores `S+36 = (b0 == 1)` (`0x600faafa`;
+  activity detector bypassed) and `P[16] = (b0 != 1)` (`0x600fab04`; the mode).
+- A countdown starts only if `P[16] ≠ 0` (`0x600fa868–0x600fa882`: `snez a3,a5` with `a5 = P[16]`, and the trigger).
+  The subagent's reading `[code, not re-checked by hand]`: with mode 0 the still counter is not reset and the pause
+  computation is skipped (`0x600fa7fc`, `0x600fa986`), so `ref` is never moved after the warm-up.
+- P[16] (`0x6011c6a8`) starts at 1 (init data in the 0x60116308 segment) and only op 0 writes it, so countdowns
+  run until an op 0 with `b0 = 1` arrives [code, checked by hand].
+- The app-side sender `0x7039b494` computes `b0 = (byte at 0x2000094c) > 8` (`sltu` with 8 at `0x7039b4ca`) and
+  `b1 = word at 0x60142000`, and sends them as app op 12 (`0x7039b52c` → `0x70355f04`), which reaches the sensor
+  dispatcher as op 0 (queue 52, type 5 sub 7, `0x600e1950` → `0x600dfabc`; subagent trace, entry checked by hand).
+  It sends only when `b1 | b0 << 8` differs from the last value sent (`gp-1584 = 0x20007418`, init 0).
+- The byte at `0x2000094c` is written once, at `0x70378f8e` in `0x70378ea4`: the low byte of record+48 for the
+  current device's address, or **255 when the address has no record** [checked by hand]. So an unknown host and a
+  registered one both give `b0 = 1`; the 43/169 exchange cannot change `b0`.
+- `0x7039b494` returns without sending when the byte at `0x60149ec1` is nonzero (`0x7039b49c–0x7039b4a2`). At boot
+  that byte is set to `(state[164] != 2)` (`0x7036e226–0x7036e258`; `state[164]` is the earbud's side or role,
+  which value is which `[unverified]`); afterwards only the handler of internal event 0x8411 (`0x703891e4`) changes
+  it [checked by hand]. So one earbud of the pair never sends op 0.
+- `0x70378ea4` runs on internal events 0x8424 (current device changed) and 0x8427 (record updated); `0x7039b6dc(1)`
+  also calls the sender. No MBB command was found that posts 0x8411, 0x8424 or 0x8427 (subagent trace; the event
+  IDs never appear as literals) `[unverified]`.
+- The op 0 does arrive, with `b0 = 0`, `b1 = 1`: P[8]/P[12] = 6·rate/div and 2·rate/div (`0x600fa29e`), and the
+  live 208/69 fit only rate 104 (mode 9) with div 3; div 3 needs a nonzero op-0 byte (`0x600f9c24`; both bytes are
+  BSS and only op 0 writes them), and P[16] = 1 needs `b0 ≠ 1` [code, checked by hand; live values]. 43/88 {1} is
+  what triggers the send (`0x7039c018` → `0x7039b6dc(1)`; subagent trace).
+- The byte behind `b0` (record+48 of the device list, `0x70379132`) is byte 6 of internal event 0x8427, posted by
+  the Bluetooth-core image (`sec03.img`) from its device record `rec[65]` (`0x1017be7c`). Bluetooth pairing and
+  connection paths write at most 8 to it (7, 4, 2, 1/6/7/8 at `0x100dc336`, `0x100e2262`, `0x1013eff6`,
+  `0x100db896`); it only goes up (`0x100f9db8`). Values 7..14 = `blob[0] + 4` come only from request id 44
+  (service 5, command 0x0D: TLV 1 = version byte, TLV 2 = 32-byte value; handler `0x100dc63c`, which writes the
+  level at `0x100dc696` before comparing the 32 bytes) [code, checked by hand; table and framing by subagent].
+- Id-44 requests (`3F svc cmd TLVs crc16`) enter only through `0x10125e52`, whose single caller is in the SLE
+  (NearLink) SSAP receive handler `0x10145ee8` (log string "[PROFS][SLE][SSAP]PROFS_SleSsapRecvDataHandle") [code,
+  checked by hand]. The earbuds' Bluetooth services (SDP, read live 2026-11-16: RFCOMM 1 Serial Port = MBB,
+  RFCOMM 2 "Private COM" `fd9a`, RFCOMM 3 "Private COM" ByteDance, HFP, A2DP, AVRCP, HID; no LE advertising while
+  connected) do not lead there.
+- **Conclusion:** the mode without hidden re-centres is reserved for hosts that reach the earbuds over NearLink
+  and send id 44 with version ≥ 5. A Bluetooth-only host gets `b0 = 0`; no lever is known.
+- Task 40 drops a paused sample only if its flag is 1 **and** `0x703773ce() < 9` (`0x7039c9c2`, `0x7039c9ca`).
+- The 43/169 handler's decrypt path stores a halfword at record+48 (`0x7037fa36`, `sh s4,48(s1)`). The subagent read
+  the value as 24 (the base64 length of a 16-byte key) `[unverified]`.
+- The vendor app runs 43/169 as an ID-auth exchange (`research/jadx_out/.../auth/helper/l.java`, `auth/m.java`).
+  `id` is the host's Bluetooth address without colons followed by `String.hashCode()` of the user ID. Steps:
+  `{1: id}` → `2 = status` (0 new, 1 indexed, 2 other account, 3 full); `{1: id, 3: 00}` → `3 = <422-byte X.509
+  RSA-3072 key>`; `{1: id, 4: <OAEP-SHA-1 of a base64 16-byte key>}` (two-byte TLV length) → `5 = 00`;
+  `{1: id, 6: 00}` → `6 = <16-byte challenge>`; `43/170 {1: id, 2: HMAC-SHA256(challenge, key)}` → `3 = 00`,
+  `4 = <16-byte salt>`. `{1: id, 7: 00}` clears the index.
+- **Live result [live, 2026-11-16, data/auth_stream1.csv, data/auth_stream2.csv]:** the earbuds accepted every step
+  from this host (status 0, key stored, `43/170 3 = 00`; status 1 on the next connection). The 43/89 stream did not
+  change. Run 1 (same connection as the exchange): glide to identity at seq 280, pause of 1030 samples, look down
+  read 49°, glide back about 6 s later, pause of 733 samples. Run 2 (Bluetooth disconnected and reconnected, then
+  challenge and `43/170` again, then the stream): the same, a glide at seq 280 and pauses of 1071 and 638 samples.
+  `{1: id, 7: 00}` cleared the index afterwards (status 0). This fits the code above: the exchange does not change
+  `b0`.
