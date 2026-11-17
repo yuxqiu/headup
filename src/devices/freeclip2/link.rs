@@ -4,7 +4,9 @@
 
 use super::earbuds::{Availability, Earbuds, SwitchOn};
 use super::mbb::{Decoder, Frame};
-use super::protocol::{Message, RawFrame, RawSample, capability_query, stream_switch, wear_query};
+use super::protocol::{
+    Message, RawFrame, RawSample, capability_query, device_list_query, stream_switch, wear_query,
+};
 use super::rebuild::{Rebuilder, Rebuilt};
 use crate::core::quat::Quat;
 use crate::core::tracker::Event;
@@ -27,10 +29,18 @@ pub struct Link {
 
 impl Link {
     /// A link to earbuds just connected. It starts by asking for the wear state, sending the
-    /// spatial-audio capability query (see [`capability_query`]) and switching the pose stream on.
+    /// spatial-audio capability query (see [`capability_query`]), switching the pose stream on and
+    /// asking for the device list, which says whether this computer streams. The list comes after
+    /// the switch so the switch's answer usually arrives first: a list saying this computer streams
+    /// while no answer stands sends the switch again.
     pub fn new(adapter: Address) -> Self {
         let mut out = Outputs::default();
-        for f in [wear_query(), capability_query(), stream_switch(true)] {
+        for f in [
+            wear_query(),
+            capability_query(),
+            stream_switch(true),
+            device_list_query(),
+        ] {
             out.send(f);
         }
         Link {

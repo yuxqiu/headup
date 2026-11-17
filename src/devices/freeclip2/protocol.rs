@@ -12,6 +12,7 @@ use std::collections::BTreeMap;
 
 const SVC: u8 = 43;
 const CMD_WEAR_STATE: u8 = 37;
+const CMD_DEVICE_LIST: u8 = 49;
 const CMD_DEVICE_STATE: u8 = 54;
 const CMD_STREAM_SWITCH: u8 = 88;
 const CMD_STREAM_DATA: u8 = 89;
@@ -23,6 +24,13 @@ const AUDIO_STREAMING: u8 = 4;
 /// 43/37 query: report the wear state of both earbuds.
 pub fn wear_query() -> Frame {
     Frame::new(SVC, CMD_WEAR_STATE, &[(1, &[]), (2, &[])])
+}
+
+/// 43/49 query: the paired-device list. The earbuds answer with one 43/49 frame per paired device,
+/// each with its audio state, so headup learns at connect whether this computer streams. They send
+/// no 43/54 then (FINDINGS "Asking for the audio state").
+pub fn device_list_query() -> Frame {
+    Frame::new(SVC, CMD_DEVICE_LIST, &[(1, &[])])
 }
 
 /// 43/90 query: spatial-audio capability. Its reply is ignored. headup sends it because tracking
@@ -44,8 +52,8 @@ pub enum Message {
     /// 43/37: whether both earbuds are worn. Head tracking stops as soon as either comes off
     /// (tools/freeclip2/device/single_bud_test.py), so one worn earbud counts as not worn.
     Wear { both_worn: bool },
-    /// 43/54 (TLV 5 form): one connected source device's audio state. Head tracking only flows
-    /// to the earbuds' current device, the one that last started streaming audio.
+    /// 43/54 (TLV 5 form) or a 43/49 device-list entry: one source device's audio state. Head
+    /// tracking only flows to the earbuds' current device, the one that last started streaming.
     DeviceAudio { address: Address, streaming: bool },
     /// 43/88 reply: whether the earbuds accepted a stream switch.
     StreamSwitch(SwitchReply),
@@ -61,6 +69,7 @@ impl Message {
         let parsed = match (f.svc, f.cmd) {
             (SVC, CMD_WEAR_STATE) => wear(f),
             (SVC, CMD_DEVICE_STATE) => device_audio(f),
+            (SVC, CMD_DEVICE_LIST) => device_list_entry(f),
             (SVC, CMD_STREAM_DATA) => sample(f),
             (SVC, CMD_STREAM_SWITCH) => switch_reply(f),
             _ => return Ok(Message::Other),
@@ -99,7 +108,24 @@ fn device_audio(f: &Frame) -> Result<Message> {
     let (Some(address), Some(&state)) = (v.get(..6), v.get(6)) else {
         bail!("TLV 5 too short");
     };
-    let mut be: [u8; 6] = address.try_into()?;
+    device_state(address, state)
+}
+
+/// 43/49, one entry of the paired-device list (sent for each device, in answer to
+/// [`device_list_query`] and when the list changes). TLV 4 = the device's address (little-endian,
+/// as in 43/54), TLV 5 = the same state byte as 43/54: the firmware builds both with one routine
+/// (FINDINGS "43/54 state byte"), and a query read `01` while idle and `09` while streaming
+/// (FINDINGS "Asking for the audio state").
+fn device_list_entry(f: &Frame) -> Result<Message> {
+    let (Some(address), Some(&[state])) = (f.tlv(4), f.tlv(5)) else {
+        bail!("no address (TLV 4) or one-byte state (TLV 5)");
+    };
+    device_state(address, state)
+}
+
+/// A device's little-endian address and state byte `connected | audio << 1`.
+fn device_state(address: &[u8], state: u8) -> Result<Message> {
+    let mut be: [u8; 6] = address.try_into().context("address is not 6 bytes")?;
     be.reverse();
     Ok(Message::DeviceAudio {
         address: Address(be),
@@ -253,6 +279,36 @@ mod tests {
         let phone = "12:34:56:78:9A:BC";
         assert_eq!(parse("bc9a7856341201").unwrap(), audio(phone, false));
         assert!(parse("0102").is_err());
+    }
+
+    // 43/49 entries from a real FreeClip 2 (answers to the query, 2026-11-17), with made-up
+    // addresses: this computer read `01` while idle and `09` while streaming; the phone `01`.
+    #[test]
+    fn device_list_entries_carry_the_audio_state() {
+        let entry = |address: &str, state: &str| {
+            let tlvs = [
+                (2, "02"),
+                (3, "00"),
+                (4, address),
+                (5, state),
+                (6, "04"),
+                (9, "7063"),
+            ];
+            let tlvs: Vec<(u8, Vec<u8>)> = tlvs.iter().map(|(t, v)| (*t, hex(v))).collect();
+            let tlvs: Vec<(u8, &[u8])> = tlvs.iter().map(|(t, v)| (*t, &v[..])).collect();
+            Message::parse(&Frame::new(43, 49, &tlvs))
+        };
+        let audio = |address: &str, streaming| Message::DeviceAudio {
+            address: address.parse().unwrap(),
+            streaming,
+        };
+        let pc = "AA:BB:CC:DD:EE:02";
+        assert_eq!(entry("02eeddccbbaa", "01").unwrap(), audio(pc, false));
+        assert_eq!(entry("02eeddccbbaa", "09").unwrap(), audio(pc, true));
+        let phone = "12:34:56:78:9A:BC";
+        assert_eq!(entry("bc9a78563412", "01").unwrap(), audio(phone, false));
+        assert!(entry("02eeddcc", "01").is_err());
+        assert!(entry("02eeddccbbaa", "0109").is_err());
     }
 
     // 43/54 is the paired-device-list change report ("连接管理—PDL列表变化上报" in the vendor

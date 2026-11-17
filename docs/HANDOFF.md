@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-17 00:18 UTC
+Last updated: 2026-11-17 16:45 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
@@ -17,10 +17,16 @@ Last updated: 2026-11-17 00:18 UTC
 - Decision types (`Calibration`, `Monitor`, `Tracking`) share one rhythm: pass poses, then
   `check(now)`. A calibration waiting for a prompt is a separate `Paused` value; the link records the stream switch
   where it sends it (`Link::send_switch_on`).
-- Tests: 145 pass; `nix flake check` (build + tests, clippy, rustdoc with warnings denied, fmt) passes.
+- Tests: 147 pass; `nix flake check` (build + tests, clippy, rustdoc with warnings denied, fmt) passes.
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
+0. Staged, not committed: FreeClip 2 asks for the device list (43/49) at connect, so an idle computer is reported
+   unavailable at start-up (DECISIONS 2026-11-17). Tests (147), `nix flake check` and two live start-ups pass.
+   Open report from the user: on 2026-11-17 10:00–11:05 slouches stopped giving reminders while upright kept
+   re-anchoring (journal only: upright −28° to −44°, then −0.3° to −8.9° every few seconds to minutes). No pose log
+   from that run; the user suspects re-anchoring only pitch instead of the full orientation. Needs a run with
+   `--log` and `--raw-log` to replay.
 1. Head-up re-anchoring and the monitor timing fixes are committed (ad68689; DECISIONS 2026-11-16). Live run passed
    (data/headup_live2*: tone on a slouch, re-anchor on the head-up, nothing on a quick glance up or a held look-up,
    re-anchor on a deliberate head-up, tone and tink after). Next: a longer everyday session to see

@@ -688,3 +688,23 @@
 - Released v0.5.0 (user asked to commit and release): commit aa149e6, CI green on x86_64 and aarch64, GitHub
   release published with user-facing notes; the Release workflow uploaded the x86_64 and aarch64 tarballs and
   their .sha256 files.
+
+## 2026-11-17 16:20 UTC
+- User reported head tracking seemed always available after the 43/169 enrolment test. Live re-check (service
+  stopped and restarted): with nothing playing, 43/88 accepted but 0 samples in 45 s; playing 6 s of silence gave
+  samples only between 43/54 `…09` and `…03` (data/audio_recheck_*.log). The audio rule is unchanged; FINDINGS
+  updated. No code changes.
+- Follow-up: the user saw no "unavailable" after stopping audio around 10–11 local. Reproduced with the installed
+  v0.5.0 and a raw log (data/audio_stop_recheck*.jsonl): 8 s of silence played, samples stopped, 43/54 `…03`
+  arrived 19 s after playback ended and headup reported "play audio on this computer" at once. The 10–11 log has
+  re-anchors with no cue nearby (10:48, 11:03), so the earbuds were still receiving audio from this computer then
+  `[inferred]`; no raw log from that run to confirm. Also noted: with this computer as the last device to stream,
+  the switch at connect is accepted while idle and headup prints only "using …" (README states this).
+
+## 2026-11-17 16:45 UTC
+- Start-up "unavailable" (user): the earbuds answer a 43/49 query with each device's audio state (`01` idle, `09`
+  playing; 43/54 has no query form). headup now sends it at connect after 43/88 and parses 43/49 entries like 43/54.
+  Two tests added (the link test fails without the parse). Live: idle → unavailable at once; playing → available,
+  no second switch. FINDINGS, user page, DECISIONS updated; 147 tests and `nix flake check` pass; staged.
+- User report, not investigated yet: slouches not re-triggering during 10:00–11:05 while upright re-anchored often.
+  No pose data from that run.

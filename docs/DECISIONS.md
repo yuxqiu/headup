@@ -1664,3 +1664,16 @@
   the rebuild stages; the link creating the pose frame only in `report()`; `Link::on_bytes` returning outputs; one
   stop `select!` around find and connect in `main.rs`.
 - Behaviour unchanged: all session, monitor and end-to-end tests pass as they were.
+
+## 2026-11-17: Ask the earbuds for the audio state at connect (user)
+- What: at connect the FreeClip 2 backend sends the 43/49 device-list query after 43/88. Each 43/49 entry is parsed
+  as the device's audio state (same `DeviceAudio` message as 43/54), so an idle computer is reported unavailable at
+  once.
+- Why: the earbuds push no 43/54 at connect, and a 43/88 sent while idle is accepted when this computer was the last
+  to stream, so headup printed only "using …" until audio started or stopped. The user wants "unavailable" shown at
+  startup when nothing plays.
+- Evidence: FINDINGS "Asking for the audio state" (query idle `01`, playing `09`; live start-up in both cases).
+- Order: the query goes after 43/88 so its answer usually arrives first; a list saying "streaming" with no switch
+  answer yet sends the switch again (existing rule), which only adds a re-centre before calibration.
+- Rejected: a timeout after an accepted switch with no samples (a timer and a tuned constant, while the earbuds can
+  simply be asked); asking PipeWire (a new dependency, Linux only, and not what the earbuds see).

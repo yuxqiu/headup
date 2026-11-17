@@ -962,6 +962,18 @@ identity sample as ground truth for each glide's end.
   handling the earbuds"). It lasted 0.18–0.2 s and came while the session still waited for a still head, so no
   reminder or calibration was affected.
 
+## Asking for the audio state (data/device_list_query.log, data/startup_*_raw.jsonl, 2026-11-17)
+
+- At connect the earbuds push no 43/54 for this computer, playing or idle. When this computer was the last device to
+  stream, a 43/88 sent while idle is accepted (`2 = 00`) and no samples follow (data/audio_recheck_idle.log), so
+  neither message says that nothing plays.
+- **43/49 `{1: }` is answered** with one 43/49 frame per paired device: TLV 4 = address (little-endian, as in 43/54),
+  TLV 5 = the 43/54 state byte (the firmware builds both with one routine, "43/54 state byte"), TLV 9 = the name.
+  This computer's entry read `01` idle and `09` during playback, 0.03–0.1 s after the query. The phone read `01`.
+- 43/54 `{1: }` gets no answer.
+- headup sends the 43/49 query at connect, after 43/88. Live: idle → "play audio on this computer" 0.03 s after
+  connecting; playing → available, the 43/88 answer arrived before the list, 271 samples in 8 s.
+
 ## 43/44 does not report walking (firmware 7.0.0.526, read 2026-11-14) [code]
 
 Checked as a way to learn "walking" or "stopped walking" without the hold. It cannot.
@@ -1052,3 +1064,7 @@ in 30 min, which is too few to correct drift. Not pursued.
   challenge and `43/170` again, then the stream): the same, a glide at seq 280 and pauses of 1071 and 638 samples.
   `{1: id, 7: 00}` cleared the index afterwards (status 0). This fits the code above: the exchange does not change
   `b0`.
+- **Re-check of the audio rule after the exchange [live, 2026-11-17, data/audio_recheck_idle.log,
+  data/audio_recheck_silence.log]:** 43/90 then 43/88 on (accepted, `2 = 00`) with nothing playing on this computer:
+  0 samples in 45 s. Same, then 6 s of silence played: 43/54 `…09` at 4.13 s, 287 samples from 4.15 s to 14.77 s,
+  43/54 `…03` at 14.80 s, none after. Tracking still runs only while this computer streams audio.
