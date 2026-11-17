@@ -974,6 +974,25 @@ identity sample as ground truth for each glide's end.
 - headup sends the 43/49 query at connect, after 43/88. Live: idle → "play audio on this computer" 0.03 s after
   connecting; playing → available, the 43/88 answer arrived before the list, 271 samples in 8 s.
 
+## Upright error after many head turns (data/slouch_retry*.jsonl, 2026-11-17)
+
+- 41 min of work with deliberate head turns and odd postures (user). After the 16:05:43 re-anchor (head turned
+  ~80°), the head resting at the same yaw (~75°) read −3.6° vs upright at 16:06:12 and +12.4° at 16:06:55, then +12° to
+  +15° until 16:11, so a slight head drop reached the 20° slouch threshold. Earlier (15:46–16:03) the resting pitch
+  went the other way, to −28°, with no head-up to re-anchor. So the error is not always towards "looking up".
+- Between 16:06:12 and 16:06:55 the stream had identity re-centres at 16:06:11, :18, :41 and silent gaps of 14.3 s
+  (500 samples, room for two silent re-centres) and 1.9 s, with the head moving around them.
+- The frame headup measures in stays gravity-aligned: the earbuds' `q` is gravity-corrected ("Where the
+  head-tracking computation is") and a lost movement enters on the right of `raw`, so it changes which sensor axis is
+  taken as forward, not where vertical is. Consistent with this, nods late in the session have a horizontal world
+  axis (z ≈ 0 at 16:10:32–16:10:47) but a head-frame axis ~30° off the y axis (x ≈ 0.45), where early nods have
+  x ≈ 0 (scratchpad `move_axes.py`, on the logged angles) `[inferred]`.
+- Re-anchoring the whole orientation instead of pitch removes the same offset at the re-anchor and nothing after it.
+  On the logged angles (rough script, not the real code): 16:07 resting median 11.0° vs 12.2° today; 16:06 −3.6°
+  vs 7.6°.
+- Reading: the known loss of movement in silent windows ("Ground truth: the earbuds' re-centre is ~10° off"), here
+  with large head turns around the silences, so the errors land in any direction `[inferred]`.
+
 ## 43/44 does not report walking (firmware 7.0.0.526, read 2026-11-14) [code]
 
 Checked as a way to learn "walking" or "stopped walking" without the hold. It cannot.

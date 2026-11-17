@@ -708,3 +708,15 @@
   no second switch. FINDINGS, user page, DECISIONS updated; 147 tests and `nix flake check` pass; staged.
 - User report, not investigated yet: slouches not re-triggering during 10:00–11:05 while upright re-anchored often.
   No pose data from that run.
+
+## 2026-11-17 21:30 UTC
+- Recorded 15:32–16:13 local with both logs (data/slouch_retry*). After many head turns, a slight head drop gave a
+  slouch: resting pitch at the same yaw (~75°) rose from −3.6° to +12.4° vs upright within 45 s after the 16:05:43
+  re-anchor, across identity re-centres and gaps during turns. Earlier (15:46–16:03) the resting pitch drifted the
+  other way (to −28°) with no re-anchor. Full-orientation re-anchoring checked with a rough script on the logged
+  angles: little difference. Analysis only; no code changes. headup.service restarted.
+
+## 2026-11-17 22:10 UTC
+- Analysed data/slouch_retry*: the frame stays gravity-aligned (nods' world axes horizontal late on); the head-frame
+  nod axis turned ~30°, consistent with movement lost in silent windows re-labelling the forward axis. A
+  full-orientation re-anchor would not undo errors after it. FINDINGS section added; no code changes.

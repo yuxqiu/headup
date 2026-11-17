@@ -27,6 +27,14 @@ Last updated: 2026-11-17 16:45 UTC
    re-anchoring (journal only: upright −28° to −44°, then −0.3° to −8.9° every few seconds to minutes). No pose log
    from that run; the user suspects re-anchoring only pitch instead of the full orientation. Needs a run with
    `--log` and `--raw-log` to replay.
+   Recorded 2026-11-17 15:32–16:13 local (data/slouch_retry*.jsonl, console in data/slouch_retry_console.txt);
+   headup.service restarted. First look: no reminder 15:46–16:03 while the resting pitch read −11° → −28° (looking up)
+   and yaw crept 0° → 48°; no re-anchor in that stretch. User: turned the head a lot 15:45–16:05; afterwards a
+   slight head drop gave a slouch. Log: re-anchored at 16:05:43 (yaw ~80°); rest at yaw ~75° read −3.6° at 16:06:12
+   and +12.4° at 16:06:55, after head turns with identity re-centres and stream gaps between (16:06:11, :18, :41).
+   So the error builds up after the re-anchor, across re-centres during turns; a full-orientation re-anchor would
+   not undo it (rough script: 16:07 median 11.0° vs 12.2°). FINDINGS "Upright error after many head turns": the
+   frame stays gravity-aligned; lost movement in silent windows re-labels the forward axis. Fix direction undecided.
 1. Head-up re-anchoring and the monitor timing fixes are committed (ad68689; DECISIONS 2026-11-16). Live run passed
    (data/headup_live2*: tone on a slouch, re-anchor on the head-up, nothing on a quick glance up or a held look-up,
    re-anchor on a deliberate head-up, tone and tink after). Next: a longer everyday session to see
