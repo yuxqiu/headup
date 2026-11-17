@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-16 21:47 UTC
+Last updated: 2026-11-16 23:55 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
@@ -21,10 +21,10 @@ Last updated: 2026-11-16 21:47 UTC
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
-1. Head-up re-anchoring (DECISIONS 2026-11-16, uncommitted): a look down to a slouch and back up re-anchors upright
-   in either direction, under `TrackerTraits::pose_drifts`. Replays show identical reminders; next is a live run
-   with the user (`systemctl --user stop headup` first) to confirm the head-up gesture fixes a drifted upright.
-   The firmware has no host lever (FINDINGS: the mode without re-centres needs NearLink).
+1. Head-up re-anchoring and the monitor timing fixes are committed (ad68689; DECISIONS 2026-11-16). Live run passed
+   (data/headup_live2*: tone on a slouch, re-anchor on the head-up, nothing on a quick glance up or a held look-up,
+   re-anchor on a deliberate head-up, tone and tink after). Next: a longer everyday session to see
+   whether drift stays bounded.
 2. Optional: find why the hold after a re-wear falls at seq 34 or 69 (the activity detector's state across a stream
    start; FINDINGS "A hold after putting the earbuds back in").
 3. Waiting on a need or a machine: `Event::FrameChanged` (a backend whose frame changes while available),

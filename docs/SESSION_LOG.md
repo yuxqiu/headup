@@ -672,3 +672,10 @@
 - Simplifications: `next_event` without a timeout (cancel-safe contract, the session owns the deadline);
   `Found.adapter` removed; posture and reminder settings are constants; one `testing::tilt`; small doc fixes.
   145 tests, clippy, fmt and rustdoc pass. Not committed; live run still pending.
+
+## 2026-11-16 23:55 UTC
+- Live run of the staged build with the user (data/headup_live2.jsonl, _raw, _console): all eight guided checks
+  passed. Slouch → tone; head-up → tink and re-anchor (−6.1°); quick glance up, held look-up, return: nothing;
+  deliberate head-up → re-anchor (−3.1°); second slouch → tone; sitting up → tink and re-anchor (−7.6°). The first
+  attempt (data/headup_live1*) did not run its steps: the guide waited for a pose line while the earbuds were
+  silent; the guide now waits for headup's calibration line. headup.service restarted.
