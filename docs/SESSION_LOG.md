@@ -683,3 +683,8 @@
 ## 2026-11-17 00:07 UTC
 - Prepared v0.5.0: version bumped in Cargo.toml and Cargo.lock (tests, clippy, fmt pass with --locked). The user
   commits, waits for green CI, and publishes the `v0.5.0` GitHub release.
+
+## 2026-11-17 00:18 UTC
+- Released v0.5.0 (user asked to commit and release): commit aa149e6, CI green on x86_64 and aarch64, GitHub
+  release published with user-facing notes; the Release workflow uploaded the x86_64 and aarch64 tarballs and
+  their .sha256 files.
