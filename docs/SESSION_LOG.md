@@ -679,3 +679,7 @@
   deliberate head-up → re-anchor (−3.1°); second slouch → tone; sitting up → tink and re-anchor (−7.6°). The first
   attempt (data/headup_live1*) did not run its steps: the guide waited for a pose line while the earbuds were
   silent; the guide now waits for headup's calibration line. headup.service restarted.
+
+## 2026-11-17 00:07 UTC
+- Prepared v0.5.0: version bumped in Cargo.toml and Cargo.lock (tests, clippy, fmt pass with --locked). The user
+  commits, waits for green CI, and publishes the `v0.5.0` GitHub release.

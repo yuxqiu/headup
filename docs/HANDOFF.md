@@ -1,11 +1,11 @@
 # HANDOFF
 
-Last updated: 2026-11-16 23:55 UTC
+Last updated: 2026-11-17 00:07 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
   30 s and every 120 s, notification 60 s, tink on recovery), drift re-anchoring, pauses on any loss of tracking.
-  Latest release: v0.4.6 (tag on 2dd465e). Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
+  Latest release: v0.4.6 (tag on 2dd465e); v0.5.0 prepared (version bumped, awaiting commit, CI and publish). Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
 - Layout (AGENTS.md has the full map):
   - `src/core/`: `tracker.rs` (the `HeadTracker` contract, incl. "Late poses"), `calibration.rs` (decision type),
     `monitor/` (`Monitor`; private `posture.rs`, `head_up.rs`, `reminders.rs`), `session/` (the loop; private `tracking.rs`,
