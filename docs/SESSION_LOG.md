@@ -743,3 +743,7 @@
 - Removed one-call forwarders (user): `Earbuds::on_taken_over` (link calls `drop_switch`), `Session::now`
   (`self.time.now()`, already used directly once), `link::Outputs::{event, send, log}` (push on the field).
   Public methods that guard another type's private fields kept. 149 tests, `nix flake check` pass; staged.
+
+## 2026-11-18 23:50 UTC
+- Release prep v0.5.1 (user): Cargo.toml/Cargo.lock bumped, staged. Contents since v0.5.0: device-list query at
+  connect (4db8ee4), resend after another device takes over (96d3f56). CI for 96d3f56 was running at bump time.

@@ -1,11 +1,11 @@
 # HANDOFF
 
-Last updated: 2026-11-18 16:05 UTC
+Last updated: 2026-11-18 23:50 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
   30 s and every 120 s, notification 60 s, tink on recovery), drift re-anchoring, pauses on any loss of tracking.
-  Latest release: v0.5.0 (tag on aa149e6). Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
+  Latest release: v0.5.0 (tag on aa149e6); v0.5.1 bumped (staged), waiting for green CI and the user's GitHub release. Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
 - Layout (AGENTS.md has the full map):
   - `src/core/`: `tracker.rs` (the `HeadTracker` contract, incl. "Late poses"), `calibration.rs` (decision type),
     `monitor/` (`Monitor`; private `posture.rs`, `head_up.rs`, `reminders.rs`), `session/` (the loop; private `tracking.rs`,
@@ -21,13 +21,13 @@ Last updated: 2026-11-18 16:05 UTC
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
-0a. Staged, not committed: another device with any non-idle 43/54 audio state (not only `09`) cancels an accepted
-   43/88, so it is re-sent when this computer streams again. Cause: 2026-11-18 report of no poses after a phone
+0a. Committed (96d3f56), going out in v0.5.1: another device with any non-idle 43/54 audio state (not only `09`)
+   cancels an accepted 43/88, so it is re-sent when this computer streams again. Cause: 2026-11-18 report of no poses after a phone
    call; same shape recorded (phone `05`) and read in the firmware (FINDINGS "Taking over with audio 2"). Not tested
    live with a call. Workaround on v0.5.0: take an earbud out and put it back.
    Side observation, not investigated: data/overlap_live_console.txt shows "calibration attempt 1: 1 samples"
    and no calibration in 95 s while samples flowed at ~52/s.
-0. Staged, not committed: FreeClip 2 asks for the device list (43/49) at connect, so an idle computer is reported
+0. Committed (4db8ee4), going out in v0.5.1: FreeClip 2 asks for the device list (43/49) at connect, so an idle computer is reported
    unavailable at start-up (DECISIONS 2026-11-17). Tests (147), `nix flake check` and two live start-ups pass.
    Open report from the user: on 2026-11-17 10:00–11:05 slouches stopped giving reminders while upright kept
    re-anchoring (journal only: upright −28° to −44°, then −0.3° to −8.9° every few seconds to minutes). No pose log
