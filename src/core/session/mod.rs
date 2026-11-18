@@ -95,11 +95,6 @@ pub async fn run<T: HeadTracker, C: Player>(
 }
 
 impl<T: HeadTracker, C: Player> Session<'_, T, C> {
-    /// Time since the session started; see [`Timeline`].
-    fn now(&self) -> Duration {
-        self.time.now()
-    }
-
     /// One cycle: calibrate, then monitor (or back off after a failed calibration).
     async fn cycle(&mut self) -> Flow<()> {
         match self.calibrate().await? {
@@ -173,10 +168,10 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
 
     /// Consume events for `period`. Interrupts as [`Session::next`] does.
     async fn idle(&mut self, period: Duration) -> Flow<()> {
-        let end = self.now() + period;
+        let end = self.time.now() + period;
         loop {
             // One reading of the clock: a second could pass `end` after the first did not.
-            let now = self.now();
+            let now = self.time.now();
             if now >= end {
                 return Ok(());
             }
@@ -189,7 +184,7 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
     /// Either can take a while, so this waits without a deadline.
     async fn wait_for_tracking(&mut self) -> Flow<()> {
         loop {
-            self.tracking.settle(self.now());
+            self.tracking.settle(self.time.now());
             if let Tracking::Live = self.tracking {
                 return Ok(());
             }
@@ -204,16 +199,16 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
     async fn calibrate(&mut self) -> Flow<Option<Quat>> {
         self.wait_for_tracking().await?;
         self.sounds.prompt(Phrase::SitUpright).await?;
-        let mut cal = Calibration::new(self.now());
+        let mut cal = Calibration::new(self.time.now());
         loop {
             for pose in self.next(JUDGE_EVERY).await? {
                 cal.pose(pose.measured, pose.orientation);
             }
-            cal = match cal.check(self.now()) {
+            cal = match cal.check(self.time.now()) {
                 Next::Measuring(cal) => cal,
                 Next::Nudge(paused) => {
                     self.sounds.prompt(Phrase::MoveHead).await?;
-                    paused.resume(self.now())
+                    paused.resume(self.time.now())
                 }
                 Next::AttemptEnded { report, outcome } => {
                     self.rec.note(&report.to_string());
@@ -224,7 +219,7 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
                         }
                         Outcome::Retry(paused) => {
                             self.sounds.prompt(Phrase::Moved).await?;
-                            paused.resume(self.now())
+                            paused.resume(self.time.now())
                         }
                         Outcome::GaveUp => {
                             self.sounds.prompt(Phrase::Moved).await?;
@@ -247,12 +242,12 @@ impl<T: HeadTracker, C: Player> Session<'_, T, C> {
             let wake = monitor
                 .next_due()
                 .map_or(status_due, |due| due.min(status_due));
-            let wait = wake.saturating_sub(self.now());
+            let wait = wake.saturating_sub(self.time.now());
             for pose in self.next(wait).await? {
                 let angles = monitor.pose(pose.measured, pose.orientation);
                 self.rec.pose(pose.at, angles)?;
             }
-            let t = self.now();
+            let t = self.time.now();
             for output in monitor.check(t) {
                 match output {
                     monitor::Output::Remind(cue) => self.remind(cue)?,

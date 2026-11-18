@@ -5,7 +5,8 @@
 use super::earbuds::{Availability, Earbuds, SwitchOn};
 use super::mbb::{Decoder, Frame};
 use super::protocol::{
-    Message, RawFrame, RawSample, capability_query, device_list_query, stream_switch, wear_query,
+    Audio, Message, RawFrame, RawSample, capability_query, device_list_query, stream_switch,
+    wear_query,
 };
 use super::rebuild::{Rebuilder, Rebuilt};
 use crate::core::quat::Quat;
@@ -32,7 +33,7 @@ impl Link {
     /// spatial-audio capability query (see [`capability_query`]), switching the pose stream on and
     /// asking for the device list, which says whether this computer streams. The list comes after
     /// the switch so the switch's answer usually arrives first: a list saying this computer streams
-    /// while no answer stands sends the switch again.
+    /// while the switch is not on sends it again.
     pub fn new(adapter: Address) -> Self {
         let mut out = Outputs::default();
         for f in [
@@ -41,7 +42,7 @@ impl Link {
             stream_switch(true),
             device_list_query(),
         ] {
-            out.send(f);
+            out.outbox.push(f);
         }
         Link {
             decoder: Decoder::default(),
@@ -80,27 +81,38 @@ impl Link {
     /// Send the stream switch, and record it as sent: unconfirmed until the earbuds answer.
     fn send_switch_on(&mut self) {
         self.earbuds.switch_sent();
-        self.out.send(stream_switch(true));
+        self.out.outbox.push(stream_switch(true));
     }
 
     /// Switch the pose stream off, leaving the earbuds as they were before headup.
     pub fn stop(&mut self) {
-        self.out.send(stream_switch(false));
+        self.out.outbox.push(stream_switch(false));
     }
 
     /// Log the frame, update the earbuds' facts with it (a reading also goes into the pose
     /// frame), send the stream switch if the facts ask for it, then tell the session what changed.
     fn on_frame(&mut self, now: Instant, f: &Frame) -> Result<()> {
         let msg = Message::parse(f);
-        self.out.log(match msg {
+        self.out.log.push(match msg {
             Ok(Message::Sample { seq, raw }) => LogRecord::Sample(RawSample::new(seq, raw)),
             _ => LogRecord::Frame(RawFrame::from(f)), // even if malformed, for debugging
         });
         let switch_on = match msg? {
             Message::Wear { both_worn } => self.earbuds.on_wear(both_worn),
-            Message::DeviceAudio { address, streaming } => {
-                self.earbuds.on_audio(address == self.adapter, streaming)
+            Message::DeviceAudio { address, audio } if address == self.adapter => self
+                .earbuds
+                .on_audio(audio == Audio::Current { streaming: true }),
+            Message::DeviceAudio {
+                audio: Audio::Current { .. },
+                ..
+            } => {
+                self.earbuds.drop_switch();
+                None
             }
+            Message::DeviceAudio {
+                audio: Audio::Quiet,
+                ..
+            } => None,
             Message::StreamSwitch(reply) => {
                 self.earbuds.on_reply(reply);
                 None
@@ -133,10 +145,10 @@ impl Link {
         for out in self.frame.push(now, seq, raw) {
             match out {
                 Rebuilt::Pose { at, orientation } => {
-                    self.out.event(Event::Pose { at, orientation })
+                    self.out.events.push_back(Event::Pose { at, orientation })
                 }
                 Rebuilt::HoldStarted { seq } => {
-                    self.out.log(LogRecord::Hold(Hold { hold: seq }));
+                    self.out.log.push(LogRecord::Hold(Hold { hold: seq }));
                     self.earbuds.on_hold_started();
                 }
             }
@@ -152,7 +164,7 @@ impl Link {
             if let Event::Unavailable { .. } = event {
                 self.frame.end();
             }
-            self.out.event(event);
+            self.out.events.push_back(event);
         }
     }
 }
@@ -190,20 +202,6 @@ struct Outputs {
     events: VecDeque<Event>,
     outbox: Vec<Frame>,
     log: Vec<LogRecord>,
-}
-
-impl Outputs {
-    fn event(&mut self, event: Event) {
-        self.events.push_back(event);
-    }
-
-    fn send(&mut self, frame: Frame) {
-        self.outbox.push(frame);
-    }
-
-    fn log(&mut self, record: LogRecord) {
-        self.log.push(record);
-    }
 }
 
 /// A `--raw-log` record. Each kind serialises as its own fields.

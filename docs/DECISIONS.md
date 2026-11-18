@@ -1677,3 +1677,39 @@
   answer yet sends the switch again (existing rule), which only adds a re-centre before calibration.
 - Rejected: a timeout after an accepted switch with no samples (a timer and a tuned constant, while the earbuds can
   simply be asked); asking PipeWire (a new dependency, Linux only, and not what the earbuds see).
+
+## 2026-11-18: Any other current device cancels an accepted stream switch
+- What: a 43/54 or 43/49 entry for another device with a non-idle audio state (`audio` ≠ 0, not only `09`) now
+  cancels an accepted 43/88, so headup sends it again when this computer streams again. Replaces the rule "another
+  device starting to stream cancels" (2026-11-12, `earbuds.rs` rule 3).
+- Why: user report 2026-11-18 10:53 (installed v0.5.0, journal only): after a phone call, headup reported
+  unavailable, then available 10 s later, and waited for a still head with no poses. The same shape is recorded
+  in data/slouch_retry_raw.jsonl (phone `05`, then this computer `09`, no samples for 77 s, no 43/88). The firmware
+  makes a device with audio 2 current at once and pushes 43/54 for it; non-zero `audio` is reported only for the
+  current device; a 43/88 restarts the stream (FINDINGS "Taking over with audio 2"). Test
+  `switch_is_resent_after_another_device_was_current_without_streaming` mirrors the recorded sequence and fails
+  without the change; `another_device_quiet_keeps_the_switch` pins that a quiet entry (every device-list answer)
+  does not drop it.
+- `[unverified]`: that audio 2 is a call, and a live call with the fix. The user cannot make a test call; if the
+  bug recurs, a run with `--raw-log` across a call settles it.
+- Rejected: re-sending 43/88 every time this computer starts streaming (each restart adds a re-centre, and an
+  accepted switch survives audio gaps: 2026-11-12); a no-samples timeout (rejected 2026-11-17); resending other
+  commands (43/90 is stored at connect, and 43/88 never depends on `R`: `0x7039c018`).
+
+## 2026-11-18: FreeClip 2 earbuds keep the switch's state, not its last reply (user)
+- What: `Earbuds` holds `Switch` (`Unconfirmed`, `On`, `Refused(Refusal)`) instead of `Option<SwitchReply>`;
+  `protocol::SwitchReply` is `Accepted` or `Refused(Refusal)`; `protocol::Audio` is `Quiet` or
+  `Current { streaming }`; `Link` sends this computer's entries to `Earbuds::on_audio(streaming)` and another
+  device's `Current` to `Earbuds::drop_switch` (rule 3). Refactor: link tests unchanged; the parser tests assert the new
+  values.
+- Why: the reply-plus-`None` encoding made readers decode "no answer, waiting, or cancelled"; "streaming but not
+  current" was representable; a `this_computer: bool` flag chose between two unrelated rules. One `Unconfirmed`
+  state: "sent, no answer yet" and "dropped" must act the same (a refusal may be in transit, so both send when
+  this computer starts streaming), so separate states would carry a distinction nothing reads.
+- Accepted gap: an acceptance arriving after another device took over still sets `On` (earbuds answer within
+  80 ms; also true before).
+- Rejected: keeping `SwitchReply` with a derived "still stands" flag (same decoding burden); separate `Off` and
+  `Requested` states (reviewed: no reader tells them apart); one `on_audio(this_computer, Audio)` handler in
+  `Earbuds` (reviewer suggestion: the flag mixes the two rules; `Link` only knows whose address it is).
+  A handler per message that only forwards to `drop_switch` (user: a name over one call is indirection with no
+  gain; the same applied to `Session::now` and `link::Outputs`' push wrappers).

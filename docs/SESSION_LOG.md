@@ -720,3 +720,26 @@
 - Analysed data/slouch_retry*: the frame stays gravity-aligned (nods' world axes horizontal late on); the head-frame
   nod axis turned ~30°, consistent with movement lost in silent windows re-labelling the forward axis. A
   full-orientation re-anchor would not undo errors after it. FINDINGS section added; no code changes.
+
+## 2026-11-18 16:05 UTC
+- User report: after a phone call, headup (v0.5.0 service) said available but waited for a still head with no poses.
+  Journal: unavailable 10:53:41, available 10:53:51 local; this computer playing, RFCOMM open; no logs (service runs
+  without `--log`), ptrace not allowed, service left running. Inferred: the call made the phone current without an
+  `audio` state of 4, so the accepted switch was not cancelled and no 43/88 was re-sent.
+- Fix (guess, user cannot make a test call): `protocol::Audio` (idle / streaming / other active); any non-idle
+  state for another device cancels an accepted switch. New link test fails without the fix. 148 tests,
+  clippy, fmt, `nix flake check` pass; staged. DECISIONS, FINDINGS, HANDOFF updated.
+- Live test (data/overlap_live*): phone music while this computer played gave no 43/54 and no pause in samples.
+  Firmware (subagent, checked against the recordings): audio 2 (state `05`) makes a device current at once and
+  reverts after; recorded twice (slouch_retry, reconnect), with no samples after this computer's `09`. Test now
+  replays phone `05` and `03`. FINDINGS "Taking over with audio 2", DECISIONS entry rewritten with the evidence.
+- Refactor (user approved): `earbuds::Switch` state instead of the last 43/88 reply; `protocol::Audio` is `Quiet` /
+  `Current { streaming }`; separate `on_audio` / `on_taken_over` handlers. 148 tests, `nix flake check` pass; staged.
+- Thermos review (bug + quality subagents) of the staged work: no correctness issues; recordings show no
+  spurious takeovers. Applied: one `Switch::Unconfirmed` state, `SwitchReply::Refused(Refusal)`, test
+  `another_device_quiet_keeps_the_switch` (fails if quiet reads as current), parser `05` case, comment fixes, the
+  late-acceptance gap noted in rule 3. Kept the split `on_audio` / `on_taken_over` handlers. 149 tests,
+  `nix flake check` pass; staged.
+- Removed one-call forwarders (user): `Earbuds::on_taken_over` (link calls `drop_switch`), `Session::now`
+  (`self.time.now()`, already used directly once), `link::Outputs::{event, send, log}` (push on the field).
+  Public methods that guard another type's private fields kept. 149 tests, `nix flake check` pass; staged.

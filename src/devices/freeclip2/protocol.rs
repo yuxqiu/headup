@@ -20,6 +20,9 @@ const CMD_SPATIAL_CAPABILITY: u8 = 90;
 /// The current device's audio state while it streams. The 43/54 state byte is
 /// `connected | audio << 1`.
 const AUDIO_STREAMING: u8 = 4;
+/// The audio state of a device that is not the earbuds' current one, or of the current one with no
+/// audio (FINDINGS "43/54 state byte").
+const AUDIO_QUIET: u8 = 0;
 
 /// 43/37 query: report the wear state of both earbuds.
 pub fn wear_query() -> Frame {
@@ -54,7 +57,7 @@ pub enum Message {
     Wear { both_worn: bool },
     /// 43/54 (TLV 5 form) or a 43/49 device-list entry: one source device's audio state. Head
     /// tracking only flows to the earbuds' current device, the one that last started streaming.
-    DeviceAudio { address: Address, streaming: bool },
+    DeviceAudio { address: Address, audio: Audio },
     /// 43/88 reply: whether the earbuds accepted a stream switch.
     StreamSwitch(SwitchReply),
     /// 43/89: one pose sample, relative to the earbuds' current reference.
@@ -97,8 +100,8 @@ fn wear(f: &Frame) -> Result<Message> {
 ///
 /// The firmware builds the state byte as `connected | audio << 1`. `audio` is the audio state of
 /// the earbuds' current device, and 0 for any other device. `audio` 4 means streaming (FINDINGS
-/// "43/54 state byte"). Recordings show 0x01, 0x03 and 0x09. Any other `audio` value is read as
-/// not streaming: it is a variant, not a broken frame.
+/// "43/54 state byte"). Recordings show 0x01, 0x03, 0x05 and 0x09. Any other non-zero `audio`
+/// value is read as the current device not streaming: it is a variant, not a broken frame.
 ///
 /// Other forms of 43/54 (e.g. TLV 1 = `01 00`) are other list reports.
 fn device_audio(f: &Frame) -> Result<Message> {
@@ -129,8 +132,26 @@ fn device_state(address: &[u8], state: u8) -> Result<Message> {
     be.reverse();
     Ok(Message::DeviceAudio {
         address: Address(be),
-        streaming: state >> 1 == AUDIO_STREAMING,
+        audio: match state >> 1 {
+            AUDIO_QUIET => Audio::Quiet,
+            audio => Audio::Current {
+                streaming: audio == AUDIO_STREAMING,
+            },
+        },
     })
+}
+
+/// What a 43/54 or 43/49 entry says about one device, from the `audio` part of its state byte.
+/// The firmware reports a non-zero `audio` only for the earbuds' current device (FINDINGS "43/54
+/// state byte").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Audio {
+    /// `audio` 0: not the current device, or the current device with no audio. Tells nothing more.
+    Quiet,
+    /// Non-zero `audio`: the earbuds' current device. `streaming` when `audio` is 4. Recordings
+    /// also show `audio` 1, and 2; 2 makes a device current at once, whatever plays (a call
+    /// `[inferred]`, FINDINGS "Taking over with audio 2").
+    Current { streaming: bool },
 }
 
 /// The earbuds' answer to a 43/88 stream switch (TLV 2 of the reply), from the firmware's 43/88
@@ -139,10 +160,16 @@ fn device_state(address: &[u8], state: u8) -> Result<Message> {
 pub enum SwitchReply {
     /// 0: switched. The stream also needs the earbuds' own conditions (worn, audio).
     Accepted,
-    /// 1: refused while the link between the two earbuds is down (FINDINGS "Reply value 1").
+    Refused(Refusal),
+}
+
+/// Why the earbuds refused a 43/88 stream switch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Refusal {
+    /// 1: the link between the two earbuds is down (FINDINGS "Reply value 1").
     PeerLinkDown,
-    /// 2: refused because this computer is not the earbuds' current device, which is the last
-    /// one to start streaming audio. Seen when headup connects while the phone was last active.
+    /// 2: this computer is not the earbuds' current device, which is the last one to start
+    /// streaming audio. Seen when headup connects while the phone was last active.
     NotCurrentDevice,
 }
 
@@ -150,8 +177,8 @@ pub enum SwitchReply {
 fn switch_reply(f: &Frame) -> Result<Message> {
     let reply = match f.tlv(2) {
         Some([0]) => SwitchReply::Accepted,
-        Some([1]) => SwitchReply::PeerLinkDown,
-        Some([2]) => SwitchReply::NotCurrentDevice,
+        Some([1]) => SwitchReply::Refused(Refusal::PeerLinkDown),
+        Some([2]) => SwitchReply::Refused(Refusal::NotCurrentDevice),
         other => bail!("unknown stream switch result {other:?}"),
     };
     Ok(Message::StreamSwitch(reply))
@@ -263,21 +290,32 @@ mod tests {
     }
 
     // 43/54 pushes from a real FreeClip 2 (tools/freeclip2/device/single_bud_test.py,
-    // data/reclaim_test.log), with made-up addresses. This computer is AA:BB:CC:DD:EE:02, sent
+    // data/reclaim_test.log; the phone's `05` from data/slouch_retry_raw.jsonl), with made-up
+    // addresses. This computer is AA:BB:CC:DD:EE:02, sent
     // little-endian.
     #[test]
     fn device_audio_state() {
         let parse = |s: &str| Message::parse(&Frame::new(43, 54, &[(5, &hex(s))]));
-        let audio = |address: &str, streaming| Message::DeviceAudio {
+        let audio = |address: &str, audio| Message::DeviceAudio {
             address: address.parse().unwrap(),
-            streaming,
+            audio,
         };
         let pc = "AA:BB:CC:DD:EE:02";
-        assert_eq!(parse("02eeddccbbaa09").unwrap(), audio(pc, true));
-        assert_eq!(parse("02eeddccbbaa03").unwrap(), audio(pc, false));
-        assert_eq!(parse("02eeddccbbaa01").unwrap(), audio(pc, false));
+        assert_eq!(
+            parse("02eeddccbbaa09").unwrap(),
+            audio(pc, Audio::Current { streaming: true })
+        );
+        assert_eq!(
+            parse("02eeddccbbaa03").unwrap(),
+            audio(pc, Audio::Current { streaming: false })
+        );
+        assert_eq!(parse("02eeddccbbaa01").unwrap(), audio(pc, Audio::Quiet));
         let phone = "12:34:56:78:9A:BC";
-        assert_eq!(parse("bc9a7856341201").unwrap(), audio(phone, false));
+        assert_eq!(parse("bc9a7856341201").unwrap(), audio(phone, Audio::Quiet));
+        assert_eq!(
+            parse("bc9a7856341205").unwrap(),
+            audio(phone, Audio::Current { streaming: false })
+        );
         assert!(parse("0102").is_err());
     }
 
@@ -298,15 +336,24 @@ mod tests {
             let tlvs: Vec<(u8, &[u8])> = tlvs.iter().map(|(t, v)| (*t, &v[..])).collect();
             Message::parse(&Frame::new(43, 49, &tlvs))
         };
-        let audio = |address: &str, streaming| Message::DeviceAudio {
+        let audio = |address: &str, audio| Message::DeviceAudio {
             address: address.parse().unwrap(),
-            streaming,
+            audio,
         };
         let pc = "AA:BB:CC:DD:EE:02";
-        assert_eq!(entry("02eeddccbbaa", "01").unwrap(), audio(pc, false));
-        assert_eq!(entry("02eeddccbbaa", "09").unwrap(), audio(pc, true));
+        assert_eq!(
+            entry("02eeddccbbaa", "01").unwrap(),
+            audio(pc, Audio::Quiet)
+        );
+        assert_eq!(
+            entry("02eeddccbbaa", "09").unwrap(),
+            audio(pc, Audio::Current { streaming: true })
+        );
         let phone = "12:34:56:78:9A:BC";
-        assert_eq!(entry("bc9a78563412", "01").unwrap(), audio(phone, false));
+        assert_eq!(
+            entry("bc9a78563412", "01").unwrap(),
+            audio(phone, Audio::Quiet)
+        );
         assert!(entry("02eeddcc", "01").is_err());
         assert!(entry("02eeddccbbaa", "0109").is_err());
     }
@@ -327,8 +374,14 @@ mod tests {
         let parse = |v: &[u8]| Message::parse(&Frame::new(43, 88, &[(2, v)]));
         let reply = Message::StreamSwitch;
         assert_eq!(parse(&[0]).unwrap(), reply(SwitchReply::Accepted));
-        assert_eq!(parse(&[2]).unwrap(), reply(SwitchReply::NotCurrentDevice));
-        assert_eq!(parse(&[1]).unwrap(), reply(SwitchReply::PeerLinkDown));
+        assert_eq!(
+            parse(&[2]).unwrap(),
+            reply(SwitchReply::Refused(Refusal::NotCurrentDevice))
+        );
+        assert_eq!(
+            parse(&[1]).unwrap(),
+            reply(SwitchReply::Refused(Refusal::PeerLinkDown))
+        );
         assert!(parse(&[3]).is_err());
         assert!(Message::parse(&Frame::new(43, 88, &[])).is_err());
     }

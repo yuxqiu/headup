@@ -287,6 +287,45 @@ fn switch_is_resent_after_another_device_streamed() {
     assert_eq!(link.take_outbox(), [stream_switch(true)]);
 }
 
+// The phone became the earbuds' current device without streaming: `05` (audio 2, which takes the
+// earbuds over at once, a call `[inferred]`; data/slouch_retry_raw.jsonl 21:12:44 UTC: no samples
+// after this computer's `09` until a new 43/88), or `03` (audio 1). As with a phone that streams,
+// the accepted switch no longer stands, so it is sent again when this computer streams again.
+#[test]
+fn switch_is_resent_after_another_device_was_current_without_streaming() {
+    for phone_state in [0x05, 0x03] {
+        let now = Instant::now();
+        let mut link = link();
+        link.on_bytes(now, &reply(0)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        link.on_bytes(now, &audio(pc(), 0x01)).unwrap();
+        link.on_bytes(now, &audio(phone(), phone_state)).unwrap();
+        link.on_bytes(now, &audio(phone(), 0x01)).unwrap();
+        assert_eq!(link.take_outbox(), []);
+        link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        assert_eq!(
+            link.take_outbox(),
+            [stream_switch(true)],
+            "{phone_state:#04x}"
+        );
+    }
+}
+
+// Another device's quiet entry (`01`, as in every device-list answer) does not show it as current,
+// so a switch that is on stands: this computer streaming again sends nothing.
+#[test]
+fn another_device_quiet_keeps_the_switch() {
+    let now = Instant::now();
+    let mut link = link();
+    link.on_bytes(now, &reply(0)).unwrap();
+    link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    link.on_bytes(now, &list_entry(phone(), 0x01)).unwrap();
+    link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
+    link.on_bytes(now, &audio(phone(), 0x01)).unwrap();
+    link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    assert_eq!(link.take_outbox(), []);
+}
+
 // The switch is refused while this computer streams, because the earbud-to-earbud link was
 // down. Putting the earbuds back on sends the switch again, so tracking is available again.
 #[test]

@@ -489,7 +489,33 @@ its closed case kept the link up and got `00` (data/grounding_test.log).
 - `audio` comes from the Bluetooth core in internal message 0x8400 (`[state, address]`, handler `0x70370044` →
   `0x7037851a`); the core sends it from `0x1017af5a` with callers passing 0 and 4, and folds states 5 and 6 into 3.
 - Recordings show 0x01 (`audio` 0), 0x03 (1) and 0x09 (4, streaming). headup reads streaming as `audio == 4`;
-  other values (the core passes values ≥ 7 through) count as not streaming.
+  other values (the core passes values ≥ 7 through) count as not streaming. Any non-zero `audio` marks the current
+  device, so headup treats another device with one as having taken the earbuds over (section "Taking over with
+  audio 2").
+
+### Taking over with audio 2 (2026-11-18) [code + recordings]
+Image 5 = research/firmware/526/app/body.asm; image 3 (Bluetooth core) disassembled with `disasm.py sec03.img
+--no-stub`, load base 0x10000300.
+- 0x8400 handler `0x7037851a(addr, audio)`: audio 2 makes `addr` current at once, whatever the current device plays
+  (`0x703785d6` → `0x703786f6`: current address, `[16] := 2`, flag `[18] := 1`). While any device holds audio 2 it
+  stays current (`0x70378602`–`0x70378662`); when none does, the current device goes back to the one named by the
+  last 0x8424 (`0x703786be`–`0x703787dc`). Each change pushes 43/54 for the old device (`01`) and the new one
+  (`0x703787e2`–`0x70378808`). No other MBB message reports it. This path never writes `R` or `enable`.
+- An 0x8424 while `[16] == 2` does not move the current device but still runs `0x7039be0c(x)` (`0x70378d94`,
+  `0x70378e5c`).
+- Recorded: data/slouch_retry_raw.jsonl 21:12:44 UTC (2026-11-17): this computer `01`, phone `05` 1 ms later; at
+  21:13:10 phone `01`, this computer `09` 34 ms later; headup reported unavailable, then available, sent no 43/88,
+  and no 43/89 came in the 77 s until the log ended. data/reconnect_raw.jsonl 21:16:23 UTC (2026-11-13): the same
+  `01`/`05` pair, samples stopped 0.85 s later. `05` appears only in these two (all data/*.jsonl: `01` ×22, `03` ×14,
+  `09` ×26, `05` ×2). That audio 2 is a call is `[inferred]` (it preempts, then reverts; user report 2026-11-18 of no
+  poses after a call matches the journal shape); which core path sends audio 2 is not traced (candidates
+  `0x100ea61a`, event 0x32c9, and the stored value at `0x10142774`).
+- Why the earbuds do not restart the stream after audio 2 ends is not settled: the 0x841a handler's re-enable
+  `0x7039b5ae` needs status[3] and an `R` test whose decoding is ambiguous `[unverified]`. A 43/88 sets `enable`
+  (`0x7039c17c`) and never writes `R`; live, an accepted 43/88 after a takeover always restarted samples. After a
+  call it is untested live.
+- Phone music while this computer plays does not take over: data/overlap_live_raw.jsonl (2026-11-18), the phone
+  played ~20 s and paused; no 43/54 or 43/49 arrived and samples continued at ~52/s.
 
 ### After a device change [code]
 - Message 0x8424 (`0x70370e6c` → `0x70378d0c`) moves the current device and ends in `0x7039be0c(x)` with the new
@@ -692,7 +718,7 @@ The earbuds run 7.0.0.526 (MBB 1/7 TLV 7, hardware `HL1SAKM_Ver.A`), the version
 | Re-centre = 68-sample glide, `nlerp(I, held, (68−k)/69)`, ending in an exact identity sample (`rebuild.rs`) | `0x600fa53c`/`0x600faa4e` (N = 69, nlerp); 156 recorded re-centres, 57 clean glides within 0.00014° (`recordings/glide_check.py`) | grounded (code + recordings) |
 | 43/90 is harmless; only records the host (`protocol.rs` connect) | handler `0x7039c82e`; mode test and every session sent it | grounded (code); not needed for the stream on this core |
 | Spatial mode (43/180) does not matter | `data/mode_gate_live.jsonl`: off/follow/fixed all stream | grounded (live) |
-| Another device (phone) streaming takes the earbuds over; this computer's audio does not preempt it, and a 43/88 from this computer is then refused (`link.rs` cancels an accepted switch when another device streams) | `data/grounding_test2.log` "phone_takeover": phone `…09` at 124 s; this computer's audio from 134 s gave no `…09`; 43/88 at 144 s → `2=02` | grounded (live) |
+| Another device (phone) streaming takes the earbuds over; this computer's audio does not preempt it, and a 43/88 from this computer is then refused (`link.rs` cancels an accepted switch when another device is current: streams, or any non-idle state `[unverified]` for calls) | `data/grounding_test2.log` "phone_takeover": phone `…09` at 124 s; this computer's audio from 134 s gave no `…09`; 43/88 at 144 s → `2=02` | grounded (live) |
 | After a takeover, the stream does not resume when this computer is current again; a new 43/88 is needed (`link.rs` re-sends it when this computer starts streaming) | `data/grounding_test3.log` "phone_takeover": phone paused, this computer `…09` at 134.9 s, no poses for 9 s; 43/88 at 144 s → `2=00`, seq from 1 | grounded (live) |
 | After another device (phone) had the earbuds, a 43/88 sent once this computer streams again is accepted and starts the stream (`link.rs`: switch no longer accepted → re-sent on 43/54 `…09`) | live: phone last active, this computer `…09` → 43/88 `2=00` → samples within 0.03 s (`data/refusal_live*.jsonl`, `data/live2_raw.jsonl`, `data/live3_raw.jsonl`); code: `0x7039be0c` would also re-enable by itself ("After a device change") | grounded (live + code) |
 

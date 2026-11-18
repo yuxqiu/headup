@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-17 16:45 UTC
+Last updated: 2026-11-18 16:05 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
@@ -17,10 +17,16 @@ Last updated: 2026-11-17 16:45 UTC
 - Decision types (`Calibration`, `Monitor`, `Tracking`) share one rhythm: pass poses, then
   `check(now)`. A calibration waiting for a prompt is a separate `Paused` value; the link records the stream switch
   where it sends it (`Link::send_switch_on`).
-- Tests: 147 pass; `nix flake check` (build + tests, clippy, rustdoc with warnings denied, fmt) passes.
+- Tests: 149 pass; `nix flake check` (build + tests, clippy, rustdoc with warnings denied, fmt) passes.
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
+0a. Staged, not committed: another device with any non-idle 43/54 audio state (not only `09`) cancels an accepted
+   43/88, so it is re-sent when this computer streams again. Cause: 2026-11-18 report of no poses after a phone
+   call; same shape recorded (phone `05`) and read in the firmware (FINDINGS "Taking over with audio 2"). Not tested
+   live with a call. Workaround on v0.5.0: take an earbud out and put it back.
+   Side observation, not investigated: data/overlap_live_console.txt shows "calibration attempt 1: 1 samples"
+   and no calibration in 95 s while samples flowed at ~52/s.
 0. Staged, not committed: FreeClip 2 asks for the device list (43/49) at connect, so an idle computer is reported
    unavailable at start-up (DECISIONS 2026-11-17). Tests (147), `nix flake check` and two live start-ups pass.
    Open report from the user: on 2026-11-17 10:00–11:05 slouches stopped giving reminders while upright kept
