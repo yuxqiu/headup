@@ -142,32 +142,34 @@ impl Calibration {
     /// Decide at `now`, after passing the poses that have arrived (tracker contract, "Late
     /// poses").
     pub fn check(mut self, now: Duration) -> Next {
-        let judged = self.poses.span(now, CALIBRATION).map(|span| {
-            let (mean, p90) = mean_and_p90(&span);
-            let spread = Spread {
-                samples: span.len(),
-                p90,
-            };
-            (mean, spread)
-        });
-        let report = |spread| Report {
+        let judged = self
+            .poses
+            .span(now, CALIBRATION)
+            .map(|span| mean_and_spread(&span));
+        let report = Report {
             attempt: self.attempts,
-            spread,
+            spread: judged.map(|(_, spread)| spread),
         };
-        match (judged, self.poses.first()) {
-            (Some((mean, spread)), _) if spread.p90 < CALIBRATION_MAX_P90_DEG => {
-                ended(report(Some(spread)), Outcome::Calibrated(mean))
-            }
-            (judged, Some(first)) if now >= first + CALIBRATION_ATTEMPT => {
-                let report = report(judged.map(|(_, spread)| spread));
-                if self.attempts == CALIBRATION_TRIES {
-                    ended(report, Outcome::GaveUp)
+
+        // The head held steady for CALIBRATION: its mean pose is upright.
+        if let Some((upright, spread)) = judged
+            && spread.p90 < CALIBRATION_MAX_P90_DEG
+        {
+            let outcome = Outcome::Calibrated(upright);
+            return Next::AttemptEnded { report, outcome };
+        }
+        match self.poses.first() {
+            // The attempt ran out of time without holding steady.
+            Some(first) if now >= first + CALIBRATION_ATTEMPT => {
+                let outcome = if self.attempts == CALIBRATION_TRIES {
+                    Outcome::GaveUp
                 } else {
-                    let then = AfterPrompt::NextAttempt;
-                    ended(report, Outcome::Retry(self.pause(then)))
-                }
+                    Outcome::Retry(self.pause(AfterPrompt::NextAttempt))
+                };
+                Next::AttemptEnded { report, outcome }
             }
-            (_, None) if now >= self.nudge_at => Next::Nudge(self.pause(AfterPrompt::SameAttempt)),
+            // No pose since the attempt started: ask the user to move a little.
+            None if now >= self.nudge_at => Next::Nudge(self.pause(AfterPrompt::SameAttempt)),
             _ => Next::Measuring(self),
         }
     }
@@ -190,16 +192,17 @@ impl Paused {
     }
 }
 
-fn ended(report: Report, outcome: Outcome) -> Next {
-    Next::AttemptEnded { report, outcome }
-}
-
-/// Mean orientation of `samples` and the 90th-percentile angle (degrees) of samples from it.
-fn mean_and_p90(samples: &[Quat]) -> (Quat, f64) {
-    let mean = Quat::mean(samples);
-    let mut dev: Vec<f64> = samples.iter().map(|q| q.angle_to(mean)).collect();
+/// The mean orientation of `span`, and how spread out its poses are around it.
+fn mean_and_spread(span: &[Quat]) -> (Quat, Spread) {
+    let mean = Quat::mean(span);
+    let mut dev: Vec<f64> = span.iter().map(|q| q.angle_to(mean)).collect();
     dev.sort_by(f64::total_cmp);
-    (mean, dev[(dev.len() * 9 / 10).min(dev.len() - 1)])
+    let p90 = dev[(dev.len() * 9 / 10).min(dev.len() - 1)];
+    let spread = Spread {
+        samples: span.len(),
+        p90,
+    };
+    (mean, spread)
 }
 
 #[cfg(test)]

@@ -764,3 +764,12 @@
   accepted 43/88, then samples, calibration attempt 1 with 43 samples. headup.service restarted.
 - Release prep v0.5.2 (user): Cargo.toml/Cargo.lock bumped, staged. Contents since v0.5.1: stream requested from
   the earbuds' facts (2b74557). Main was 1 commit ahead of origin at bump time (not pushed, no CI yet).
+
+## 2026-11-19 12:00 UTC
+- User asked for a free-hand refactor of the whole codebase. Read all of `src/` and DECISIONS: no rewrite
+  proposed (every shape has a recorded decision). User chose two simplifications: `Link` drops the one-field `View`
+  and `changed` helper (`reported: Option<Availability>`); `main.rs` gets `until_stopped` for the three stop races
+  and the retry wait. AGENTS.md design rule reworded. 149 tests unchanged and passing, `nix flake check` passes;
+  staged. Not run live.
+- Then `Calibration::check` rewritten as ordered early returns; `mean_and_p90` → `mean_and_spread` (two tests
+  follow the rename, assertions unchanged). 149 pass, `nix flake check` passes; staged.

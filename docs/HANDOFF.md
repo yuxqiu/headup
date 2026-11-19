@@ -1,6 +1,6 @@
 # HANDOFF
 
-Last updated: 2026-11-19 00:05 UTC
+Last updated: 2026-11-19 12:00 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
@@ -21,6 +21,11 @@ Last updated: 2026-11-19 00:05 UTC
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
+000. Staged, not committed: three refactors (DECISIONS 2026-11-19 "Two simplifications from a whole-codebase read"):
+   `Link` reports from `reported: Option<Availability>` (no `View`), `main.rs` `until_stopped` helper,
+   `Calibration::check` as ordered early returns (`mean_and_spread`). Tests unchanged
+   (149 pass), `nix flake check` passes. Not run live; the stop paths (Ctrl-C during find/connect/session, second
+   stop during stream-off) are worth one manual check before the next release.
 00. Staged, not committed (for v0.5.2): FreeClip 2 asks for the stream from the facts (`Earbuds::ask`, DECISIONS
    2026-11-18 "Ask for the stream from the facts"); no 43/88 before the device list. Live start-ups passed
    (data/v052_live_*: idle → unavailable, no 43/88; play → one accepted 43/88, 280 samples; start while playing →

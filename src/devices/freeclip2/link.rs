@@ -23,8 +23,8 @@ pub struct Link {
     adapter: Address,
     earbuds: Earbuds,
     frame: PoseFrame,
-    /// The earbuds' view as last reported to the session.
-    reported: View,
+    /// The availability last reported to the session; `None` before the first report.
+    reported: Option<Availability>,
     out: Outputs,
 }
 
@@ -42,7 +42,7 @@ impl Link {
             adapter,
             earbuds: Earbuds::default(),
             frame: PoseFrame(None),
-            reported: View::default(),
+            reported: None,
             out,
         }
     }
@@ -134,17 +134,25 @@ impl Link {
         }
     }
 
-    /// Tell the session what changed. When tracking stops, the pose frame ends; since readings are
-    /// not rebuilt while it is unavailable, the next stretch starts a new one (see [`PoseFrame`]).
+    /// Tell the session if the availability is known and changed. When tracking stops, the pose
+    /// frame ends; since readings are not rebuilt while it is unavailable, the next stretch starts a
+    /// new one (see [`PoseFrame`]).
     fn report(&mut self) {
-        if let Some(event) = self.reported.update_to(View {
-            availability: self.earbuds.availability(),
-        }) {
-            if let Event::Unavailable { .. } = event {
-                self.frame.end();
-            }
-            self.out.events.push_back(event);
+        let Some(current) = self.earbuds.availability() else {
+            return;
+        };
+        if self.reported.replace(current) == Some(current) {
+            return;
         }
+        self.out.events.push_back(match current {
+            Availability::Available => Event::Available,
+            Availability::Unavailable(blocker) => {
+                self.frame.end();
+                Event::Unavailable {
+                    reason: blocker.reason(),
+                }
+            }
+        });
     }
 }
 
@@ -197,34 +205,6 @@ pub enum LogRecord {
 #[derive(Serialize)]
 pub struct Hold {
     hold: u32,
-}
-
-/// Returns `current` if it is known and differs from `reported`, and stores it in `reported`.
-/// Returns `None` otherwise.
-fn changed<T: Copy + PartialEq>(reported: &mut Option<T>, current: Option<T>) -> Option<T> {
-    let current = current?;
-    (reported.replace(current) != Some(current)).then_some(current)
-}
-
-/// What the session sees of the earbuds. `None` while unknown.
-#[derive(Clone, Copy, Default)]
-struct View {
-    /// Whether poses that follow the head can flow to this computer.
-    availability: Option<Availability>,
-}
-
-impl View {
-    /// Update this view (the one last reported) to `current`, and return the event that reports
-    /// the change, if `current` is known and differs.
-    fn update_to(&mut self, current: View) -> Option<Event> {
-        let availability = changed(&mut self.availability, current.availability)?;
-        Some(match availability {
-            Availability::Available => Event::Available,
-            Availability::Unavailable(blocker) => Event::Unavailable {
-                reason: blocker.reason(),
-            },
-        })
-    }
 }
 
 #[cfg(test)]

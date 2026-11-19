@@ -55,7 +55,7 @@ fn wobble(t: Duration) -> Option<f64> {
 
 #[test]
 fn calibration_mean_and_spread() {
-    let (mean, p90) = mean_and_p90(&[tilt(9.0), tilt(10.0), tilt(11.0)]);
+    let (mean, Spread { p90, .. }) = mean_and_spread(&[tilt(9.0), tilt(10.0), tilt(11.0)]);
     assert!((mean.euler().pitch - 10.0).abs() < 1e-6);
     assert!(p90 < 1.01, "p90 {p90}");
 }
@@ -69,7 +69,7 @@ fn calibration_mean_handles_sign_flipped_quaternions() {
         y: -q.y,
         z: -q.z,
     }; // same rotation
-    let (mean, p90) = mean_and_p90(&[q, neg, q]);
+    let (mean, Spread { p90, .. }) = mean_and_spread(&[q, neg, q]);
     assert!((mean.euler().pitch - 10.0).abs() < 1e-6);
     assert!(p90 < 1e-6, "p90 {p90}");
 }

@@ -74,10 +74,10 @@ Run everything inside `nix develop`.
   returns events, frames to send and raw-log records (FreeClip 2: `Link`). The `HeadTracker` impl only moves bytes, so every
   decision can be unit-tested without earbuds.
 - **Device state, derived view, reported changes.** Inside that type, keep what the device said in one struct
-  whose message handlers only update it. Compute from it, after each message, what the session sees (a view, with
-  an event only when a view field changes) and what to send (one decision; a device's answer holds until the fact it
-  answered changes, so nothing is re-sent in a loop). Do not store derived values next to the facts
-  (FreeClip 2: `Earbuds`, `Earbuds::ask`, `View`, `Link::report`).
+  whose message handlers only update it. Compute from it, after each message, what the session sees (with an
+  event only when that changes from what was last reported) and what to send (one decision; a device's answer holds
+  until the fact it answered changes, so nothing is re-sent in a loop). Do not store derived values next to the facts
+  (FreeClip 2: `Earbuds`, `Earbuds::ask`, `Earbuds::availability`, `Link::report`).
 - **One list per registry.** `backends!` (devices) and `voices!` (embedded voice clips) generate their enums and dispatch.
   Extend the list instead of adding a lookup that can miss at runtime.
 - **Independent of sample rate.** Detection and session logic use seconds: timers, windows, and a smoothing time

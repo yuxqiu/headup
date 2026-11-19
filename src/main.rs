@@ -57,11 +57,15 @@ fn open_append(p: &Path) -> Result<LogSink> {
     Ok(Box::new(file))
 }
 
-/// Sleep for `d`; `true` if a stop signal arrived instead.
-async fn sleep_or_stop(d: Duration, stop: &mut StopSignal) -> Result<bool> {
+/// Run `step` until it finishes or a stop signal arrives. `None` if the stop signal came first;
+/// `step` is then dropped.
+async fn until_stopped<T>(
+    step: impl Future<Output = T>,
+    stop: &mut StopSignal,
+) -> Result<Option<T>> {
     tokio::select! {
-        _ = tokio::time::sleep(d) => Ok(false),
-        r = stop => { r?; Ok(true) }
+        out = step => Ok(Some(out)),
+        r = stop => { r?; Ok(None) }
     }
 }
 
@@ -85,9 +89,8 @@ async fn attempt(
     rec: &mut Recorder,
     stop: &mut StopSignal,
 ) -> Result<Attempt> {
-    let found = tokio::select! {
-        r = devices::find(bt, args.device) => r,
-        r = &mut *stop => { r?; return Ok(Attempt::Stopped); }
+    let Some(found) = until_stopped(devices::find(bt, args.device), stop).await? else {
+        return Ok(Attempt::Stopped);
     };
     let found = match found {
         Ok(Some(found)) => found,
@@ -99,29 +102,24 @@ async fn attempt(
         found.device.name, found.device.address
     ));
     let device_log = DeviceLog::new(args.raw_log.as_deref().map(open_append).transpose()?);
-    let connected = tokio::select! {
-        r = AnyTracker::connect(bt, &found, device_log) => r,
-        r = &mut *stop => { r?; return Ok(Attempt::Stopped); }
+    let Some(connected) = until_stopped(AnyTracker::connect(bt, &found, device_log), stop).await?
+    else {
+        return Ok(Attempt::Stopped);
     };
     let mut tracker = match connected {
         Ok(t) => t,
         Err(e) => return Ok(Attempt::Failed(e.context("connecting failed"))),
     };
-    let Err(e) = tokio::select! {
-        r = session::run(&mut tracker, player, rec) => r,
-        r = &mut *stop => {
-            r?;
-            rec.note("stopping (stop again to quit at once)");
-            // Switching the stream off waits on the link; a second stop signal gives up on it.
-            tokio::select! {
-                () = stop_stream(&mut tracker, rec) => {}
-                r = stop_signal()? => {
-                    r?;
-                    rec.warn("quit without switching the earbuds' stream off");
-                }
-            }
-            return Ok(Attempt::Stopped);
+    let Some(Err(e)) = until_stopped(session::run(&mut tracker, player, rec), stop).await? else {
+        rec.note("stopping (stop again to quit at once)");
+        // Switching the stream off waits on the link; a second stop signal gives up on it.
+        if until_stopped(stop_stream(&mut tracker, rec), &mut stop_signal()?)
+            .await?
+            .is_none()
+        {
+            rec.warn("quit without switching the earbuds' stream off");
         }
+        return Ok(Attempt::Stopped);
     };
     stop_stream(&mut tracker, rec).await;
     // Returning drops `tracker`, which releases the Bluetooth link before the retry wait.
@@ -173,7 +171,10 @@ async fn run() -> Result<()> {
                 rec.warn(&format!("{e:#}; retrying in {}s", RETRY.as_secs()));
             }
         }
-        if sleep_or_stop(RETRY, &mut stop).await? {
+        if until_stopped(tokio::time::sleep(RETRY), &mut stop)
+            .await?
+            .is_none()
+        {
             return Ok(());
         }
     }

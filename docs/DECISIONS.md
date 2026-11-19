@@ -1761,3 +1761,23 @@
   and a refusal did not); retrying a refusal on each "streaming" report (a leftover from asking before this
   computer was known to be current); a refusal as an error (reply 1 is a legitimate condition: with
   `Restart=on-failure` it would restart the service every 10 s instead of showing the reason).
+
+## 2026-11-19: Two simplifications from a whole-codebase read (user)
+- **What.** (1) FreeClip 2 `Link` keeps `reported: Option<Availability>` and `Link::report` compares it with
+  `Earbuds::availability` directly; the one-field `View` struct and the generic `changed` helper are gone. AGENTS.md's
+  "Device state, derived view, reported changes" rule now names `Earbuds::availability` instead of `View`.
+  (2) `main.rs` races each step against the stop signal through one helper, `until_stopped(step, stop) ->
+  Result<Option<T>>` (finding, connecting, the session, the stream-off on a second stop, the retry wait), replacing
+  three inline `tokio::select!`s and `sleep_or_stop`.
+- **Why.** `View` was built for several view fields (`worn`, `available`); since "One availability concept"
+  (2026-11-14) it had one, so the struct and helper were indirection without a second use. The stop race was the
+  same code three times; with one helper `attempt` reads as find → connect → run.
+- **Rejected.** A ground-up rewrite (user asked for one, then chose these after review): every other shape has a
+  recorded decision and no reading found a simpler one. Re-adding an `Earbuds` handler for another device's
+  takeover: removed by the user on 2026-11-18.
+- (3) `Calibration::check` checks its three rules in the module doc's order as early returns (calibrated,
+  attempt over, nudge due) instead of one `match` on a `(judged, first pose)` tuple; the `report` closure and
+  `ended` helper are gone. `mean_and_p90` became `mean_and_spread`, returning `(Quat, Spread)` (user: "judge" was
+  not a readable name). Its two tests call it by the new name and take `p90` from the `Spread`; their assertions
+  are unchanged.
+- Refactors: behaviour unchanged; 149 tests pass.
