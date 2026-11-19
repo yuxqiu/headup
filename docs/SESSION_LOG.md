@@ -762,3 +762,5 @@
 - Live check of the new connect sequence (data/v052_live_*, checker exits 0): idle start → "unavailable" at once,
   no 43/88 answered; playing → exactly one accepted 43/88, then samples; restart while playing → exactly one
   accepted 43/88, then samples, calibration attempt 1 with 43 samples. headup.service restarted.
+- Release prep v0.5.2 (user): Cargo.toml/Cargo.lock bumped, staged. Contents since v0.5.1: stream requested from
+  the earbuds' facts (2b74557). Main was 1 commit ahead of origin at bump time (not pushed, no CI yet).
