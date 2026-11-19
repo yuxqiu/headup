@@ -30,18 +30,11 @@ pub struct Link {
 
 impl Link {
     /// A link to earbuds just connected. It starts by asking for the wear state, sending the
-    /// spatial-audio capability query (see [`capability_query`]), switching the pose stream on and
-    /// asking for the device list, which says whether this computer streams. The list comes after
-    /// the switch so the switch's answer usually arrives first: a list saying this computer streams
-    /// while the switch is not on sends it again.
+    /// spatial-audio capability query (see [`capability_query`]) and asking for the device list,
+    /// which says whether this computer streams; the pose stream is switched on once it does.
     pub fn new(adapter: Address) -> Self {
         let mut out = Outputs::default();
-        for f in [
-            wear_query(),
-            capability_query(),
-            stream_switch(true),
-            device_list_query(),
-        ] {
+        for f in [wear_query(), capability_query(), device_list_query()] {
             out.outbox.push(f);
         }
         Link {
@@ -78,26 +71,21 @@ impl Link {
         std::mem::take(&mut self.out.log)
     }
 
-    /// Send the stream switch, and record it as sent: unconfirmed until the earbuds answer.
-    fn send_switch_on(&mut self) {
-        self.earbuds.switch_sent();
-        self.out.outbox.push(stream_switch(true));
-    }
-
     /// Switch the pose stream off, leaving the earbuds as they were before headup.
     pub fn stop(&mut self) {
         self.out.outbox.push(stream_switch(false));
     }
 
     /// Log the frame, update the earbuds' facts with it (a reading also goes into the pose
-    /// frame), send the stream switch if the facts ask for it, then tell the session what changed.
+    /// frame), send the stream switch if the facts now call for it, then tell the session what
+    /// changed.
     fn on_frame(&mut self, now: Instant, f: &Frame) -> Result<()> {
         let msg = Message::parse(f);
         self.out.log.push(match msg {
             Ok(Message::Sample { seq, raw }) => LogRecord::Sample(RawSample::new(seq, raw)),
             _ => LogRecord::Frame(RawFrame::from(f)), // even if malformed, for debugging
         });
-        let switch_on = match msg? {
+        match msg? {
             Message::Wear { both_worn } => self.earbuds.on_wear(both_worn),
             Message::DeviceAudio { address, audio } if address == self.adapter => self
                 .earbuds
@@ -105,26 +93,17 @@ impl Link {
             Message::DeviceAudio {
                 audio: Audio::Current { .. },
                 ..
-            } => {
-                self.earbuds.drop_switch();
-                None
-            }
+            } => self.earbuds.stream_lost(),
             Message::DeviceAudio {
                 audio: Audio::Quiet,
                 ..
-            } => None,
-            Message::StreamSwitch(reply) => {
-                self.earbuds.on_reply(reply);
-                None
-            }
-            Message::Sample { seq, raw } => {
-                self.on_reading(now, seq, raw);
-                None
-            }
-            Message::Other => None,
-        };
-        if let Some(SwitchOn) = switch_on {
-            self.send_switch_on();
+            } => {}
+            Message::StreamSwitch(reply) => self.earbuds.on_reply(reply),
+            Message::Sample { seq, raw } => self.on_reading(now, seq, raw),
+            Message::Other => {}
+        }
+        if let Some(SwitchOn) = self.earbuds.ask() {
+            self.out.outbox.push(stream_switch(true));
         }
         self.report();
         Ok(())

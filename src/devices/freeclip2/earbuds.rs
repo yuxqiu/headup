@@ -1,6 +1,7 @@
-//! What the FreeClip 2 earbuds have said about themselves, and whether head tracking flows from
-//! that. No I/O: the link feeds [`Earbuds`] parsed messages, sends what it asks for, and reports
-//! its [`Availability`] to the session.
+//! What the FreeClip 2 earbuds have said about themselves, and what follows from it: whether head
+//! tracking flows, and whether to ask for it. No I/O: the link feeds [`Earbuds`] parsed messages,
+//! then sends "stream on" if [`Earbuds::ask`] says so and reports its [`Availability`] to the
+//! session. Handlers only record facts; those two functions decide.
 //!
 //! The rules:
 //!
@@ -9,22 +10,29 @@
 //!    first that fails is the [`Blocker`]. A removed earbud stops tracking within about 1 s
 //!    (FINDINGS "Single earbud"); the earbuds send poses only to their current device, the last
 //!    one to start streaming (FINDINGS "Tracking runs only while this computer streams audio").
-//! 2. **"Stream on" (43/88) is sent** at connect, after the earbuds go back in, and when this
-//!    computer starts streaming, unless the switch is still on. A refused switch is sent again on
-//!    every 43/54 saying this computer streams. A switch that is on survives audio gaps: the
-//!    earbuds resume by themselves, and sending again would restart the stream and add a
-//!    re-centre (FINDINGS "Grounding of headup's device logic"). The earbuds answer every 43/88
-//!    (firmware `0x7039c018`; 13 of 13 live, within 80 ms), so no retry timer is needed.
-//! 3. **A switch that is on is dropped** by taking an earbud off (no poses after re-wearing until
-//!    a new 43/88, data/grounding_test.log "rewear") or by another device becoming the earbuds'
-//!    current device (no poses after this computer streams again until a new 43/88,
+//! 2. **"Stream on" (43/88) is asked for once** per stream of this computer's: when it has not
+//!    been asked since the earbuds last lost that stream, this computer streams, and the earbuds
+//!    are not out. Streaming also shows this computer is the earbuds' current device (FINDINGS
+//!    "43/54 state byte"), so the request can take effect; a 43/88 while idle is accepted but
+//!    starts nothing (FINDINGS "Asking for the audio state"). Asking again would restart the
+//!    stream and add a re-centre (FINDINGS "Grounding of headup's device logic"), and an accepted
+//!    stream survives this computer's audio gaps: the earbuds resume by themselves. The earbuds
+//!    answer every 43/88 (firmware `0x7039c018`; 13 of 13 live, within 80 ms), so no retry timer
+//!    is needed.
+//! 3. **The earbuds lose this computer's stream** when an earbud comes off (no poses after
+//!    re-wearing until a new 43/88, data/grounding_test.log "rewear") or another device becomes
+//!    their current device (no poses after this computer streams again until a new 43/88,
 //!    data/grounding_test3.log "phone_takeover", where the phone streamed;
 //!    data/slouch_retry_raw.jsonl, where it took over with `05`, a call `[inferred]`). A 43/54 or
 //!    43/49 entry shows another device as current when its audio state is not quiet (FINDINGS
-//!    "43/54 state byte"). Rule 2 then sends it again. An acceptance that arrives after another
-//!    device took over still counts as on; the earbuds answer within 80 ms, so this is not
-//!    handled.
-//! 4. **A hold** (the earbuds' accelerometer activity detector locks the reference to the head
+//!    "43/54 state byte"). Then the next stream asks again.
+//! 4. **An answer holds for the stream it was asked about**, until the earbuds lose that stream.
+//!    An acceptance needs no record: having asked is enough. A refusal blocks tracking with its
+//!    reason; it is not retried, since no report tells when its cause ends (FINDINGS "Reply value
+//!    1": the earbuds' link to each other comes back unseen), and asking only while this computer
+//!    streams rules out "not the current device". An answer arriving after the stream was lost
+//!    changes nothing.
+//! 5. **A hold** (the earbuds' accelerometer activity detector locks the reference to the head
 //!    while they sense movement: the user walking, or the earbuds handled; FINDINGS "Instant resets
 //!    while walking", "A hold after putting the earbuds back in") starts when the rebuilder
 //!    recognises it
@@ -50,7 +58,7 @@ pub(super) enum Blocker {
     NotStreaming,
     /// The two earbuds cannot reach each other (43/88 reply 1).
     PeerLinkDown,
-    /// The earbuds hold while they sense movement (rule 4).
+    /// The earbuds hold while they sense movement (rule 5).
     Moving,
 }
 
@@ -76,20 +84,19 @@ impl Blocker {
     }
 }
 
-/// A request to send "stream on", from an [`Earbuds`] handler (rule 2).
-#[must_use = "the earbuds' state asks for the switch; send it with `Link::send_switch_on`"]
+/// A request to send "stream on", made by [`Earbuds::ask`], which records it as asked (rule 2).
+#[must_use = "the earbuds' state asks for the switch; send it"]
 pub(super) struct SwitchOn;
 
-/// Where "stream on" (43/88) stands for this computer (rules 2 and 3). The link sends it at
-/// connect, so it starts unconfirmed.
+/// "Stream on" (43/88) for this computer's stream (rules 2 to 4).
 #[derive(Clone, Copy, PartialEq, Default)]
 enum Switch {
-    /// No acceptance holds: sent and not answered yet, or the earbuds dropped it (rule 3).
+    /// Not asked since the earbuds last lost this computer's stream.
     #[default]
-    Unconfirmed,
-    /// Accepted and still holding: the earbuds resume the stream by themselves across audio gaps.
-    On,
-    /// Refused; the refusal is what blocks tracking.
+    Unasked,
+    /// Asked: the answer is pending, or it was an acceptance.
+    Asked,
+    /// Refused: the reason blocks tracking until the stream is lost and asked for again.
     Refused(Refusal),
 }
 
@@ -108,43 +115,46 @@ impl Refusal {
 pub(super) struct Earbuds {
     /// 43/37: both earbuds are in the ears.
     worn: Option<bool>,
-    /// 43/54 (or a 43/89 reading): this computer streams audio to the earbuds.
+    /// 43/54 or 43/49 (or a 43/89 reading): this computer streams audio to the earbuds.
     streaming: Option<bool>,
-    /// 43/88: where "stream on" stands (rules 2 and 3).
+    /// 43/88 (rules 2 to 4).
     switch: Switch,
-    /// The earbuds hold (rule 4).
+    /// The earbuds hold (rule 5).
     holding: bool,
 }
 
 impl Earbuds {
-    /// The link sent "stream on".
-    pub(super) fn switch_sent(&mut self) {
-        self.switch = Switch::Unconfirmed;
-    }
-
-    /// 43/37. Taking an earbud off drops the switch (rule 3); putting them back in starts a new
-    /// stream, which needs a new switch (rule 2) and ends a hold (rule 4).
-    pub(super) fn on_wear(&mut self, worn: bool) -> Option<SwitchOn> {
-        let was = self.worn.replace(worn);
-        if !worn {
-            self.drop_switch();
+    /// Whether to send "stream on" now (rule 2). If so, it counts as asked from here on.
+    pub(super) fn ask(&mut self) -> Option<SwitchOn> {
+        let wanted = self.switch == Switch::Unasked
+            && self.streaming == Some(true)
+            && self.worn != Some(false);
+        if !wanted {
             return None;
         }
-        if was != Some(false) {
-            return None;
-        }
-        self.holding = false;
+        self.switch = Switch::Asked;
         Some(SwitchOn)
     }
 
-    /// 43/89: a hold started (rule 4).
+    /// 43/37. An earbud coming off loses this computer's stream (rule 3); going back in ends a
+    /// hold (rule 5).
+    pub(super) fn on_wear(&mut self, worn: bool) {
+        let was = self.worn.replace(worn);
+        if !worn {
+            self.stream_lost();
+        } else if was == Some(false) {
+            self.holding = false;
+        }
+    }
+
+    /// 43/89: a hold started (rule 5).
     pub(super) fn on_hold_started(&mut self) {
         self.holding = true;
     }
 
     /// 43/89. A reading also tells that this computer streams, if no 43/54 has said so yet (the
     /// earbuds send none on connect while audio is already playing). A reading that is not
-    /// identity ends a hold (rule 4).
+    /// identity ends a hold (rule 5).
     pub(super) fn on_reading(&mut self, raw: Quat) {
         self.streaming.get_or_insert(true);
         if raw != Quat::IDENTITY {
@@ -152,27 +162,22 @@ impl Earbuds {
         }
     }
 
-    /// 43/54 or 43/49 for this computer: whether it streams. Starting to stream may send the
-    /// switch again (rule 2).
-    pub(super) fn on_audio(&mut self, streaming: bool) -> Option<SwitchOn> {
-        let started = streaming && self.streaming != Some(true);
+    /// 43/54 or 43/49 for this computer: whether it streams.
+    pub(super) fn on_audio(&mut self, streaming: bool) {
         self.streaming = Some(streaming);
-        let send = match self.switch {
-            Switch::On => false,
-            Switch::Refused(_) => streaming,
-            // A reply may still be in transit (the 43/54 can arrive first), or the switch was
-            // dropped: send when this computer starts streaming, not on every push.
-            Switch::Unconfirmed => started,
-        };
-        send.then_some(SwitchOn)
     }
 
-    /// 43/88 reply.
+    /// The earbuds lost this computer's stream: an earbud came off, or another device became
+    /// their current device (rule 3).
+    pub(super) fn stream_lost(&mut self) {
+        self.switch = Switch::Unasked;
+    }
+
+    /// 43/88 reply. Only a refusal of the request asked for counts (rule 4).
     pub(super) fn on_reply(&mut self, reply: SwitchReply) {
-        self.switch = match reply {
-            SwitchReply::Accepted => Switch::On,
-            SwitchReply::Refused(refusal) => Switch::Refused(refusal),
-        };
+        if let (Switch::Asked, SwitchReply::Refused(refusal)) = (self.switch, reply) {
+            self.switch = Switch::Refused(refusal);
+        }
     }
 
     /// Whether tracking flows (rule 1). `None` while it is unknown whether this computer streams.
@@ -188,13 +193,5 @@ impl Earbuds {
             }
         };
         Some(blocker.map_or(Availability::Available, Availability::Unavailable))
-    }
-
-    /// The earbuds dropped a switch that was on: an earbud came off, or another device became
-    /// their current device (rule 3).
-    pub(super) fn drop_switch(&mut self) {
-        if self.switch == Switch::On {
-            self.switch = Switch::Unconfirmed;
-        }
     }
 }

@@ -595,7 +595,8 @@
   both events). No test changed; all 69 pass.
 - The pattern is a reducer with a derived view (as in the Elm architecture): state transitions in one place, outputs
   computed from state rather than stored, events as differences between views.
-- Rejected: level-triggered sending (send whenever the view says the stream should be on and is not). A refusal
+- Rejected (replaced 2026-11-18 "Ask for the stream from the facts"): level-triggered sending (send whenever the
+  view says the stream should be on and is not). A refusal
   while this computer streams (reply 1) would be re-sent at once and refused again in a loop; the send rules need the
   message that triggered them, so they stay edge-triggered in the handlers.
 - Rejected: one enum for the whole link state. Wear, audio and the switch change independently; their product
@@ -1713,3 +1714,50 @@
   `Earbuds` (reviewer suggestion: the flag mixes the two rules; `Link` only knows whose address it is).
   A handler per message that only forwards to `drop_switch` (user: a name over one call is indirection with no
   gain; the same applied to `Session::now` and `link::Outputs`' push wrappers).
+
+## 2026-11-18: Ask for the stream from the facts (user: the edge-triggered send rules were hard to read)
+- What: `Earbuds` handlers only record facts. After each frame `Link` calls `Earbuds::ask`, the one sending rule:
+  send 43/88 when not yet asked for this computer's stream (`Switch::Unasked`), this computer streams, and the
+  earbuds are not out. `Switch` is `Unasked`, `Asked` (pending or accepted), `Refused(Refusal)`.
+  `Earbuds::stream_lost` (an earbud off, or another device current, called directly by `Link`) sets `Unasked`. An
+  answer holds for the stream it was asked about: a refusal of the pending request sets `Refused`, whose reason
+  blocks tracking until the stream is lost; an acceptance changes nothing (having asked is enough, and one arriving
+  after the stream was lost cannot mark it on). Refusals are not retried (user: a retry rule had nothing to wait
+  for): asking only while this computer streams rules out reply 2 (all 10 recorded `02`s answered requests sent
+  before this computer was known to stream), and reply 1 ends when the earbuds' link to each other returns, which
+  no message reports (FINDINGS "Reply value 1"); re-seating the earbuds loses the stream and asks again.
+  `Link::new` no longer sends 43/88: the device-list answer at connect triggers it. Replaces 2026-11-12 "Link as
+  state, view and reported changes", bullet "Rejected: level-triggered sending", and AGENTS.md "Rules for sending
+  stay in the handler".
+- Why the 2026-11-12 objection no longer holds: it feared a refusal while streaming would be re-sent at once in a
+  loop. Here a refusal holds until the stream is lost. The earbuds send no 43/54 or 43/49 in answer to a 43/88 (data/*.jsonl: of 59 replies, 8 were followed
+  within 1 s by a report for this computer, all list answers headup asked for or audio starting), so asking cannot
+  feed itself.
+- Behaviour changes (tests changed accordingly):
+  - No 43/88 at connect before the device list answers: one request instead of two when playing (one fewer
+    re-centre before calibration), none while idle (`starts_by_querying_the_earbuds`,
+    `device_list_at_connect_tells_whether_this_computer_streams`).
+  - An acceptance arriving after a takeover no longer counts (`an_acceptance_arriving_after_a_takeover_does_not_count`;
+    the gap accepted in "Any other current device cancels…").
+  - After a takeover, any report that this computer streams asks again, not only a not-streaming → streaming change.
+  - Re-wearing asks only if this computer streams (a 43/88 while idle starts nothing, FINDINGS "Asking for the
+    audio state").
+  - Removed `audio_starting_before_any_reply_switches_on_again`: headup asks only while this computer streams,
+    which shows it is current, so a "not current device" refusal can only follow a takeover, which already loses
+    the stream.
+  - Other link tests now ask before replying (a reply with no request pending is ignored);
+    `refused_stream_switch_waits_for_this_computer_to_stream` became `a_refusal_holds_until_the_stream_is_lost`
+    (a refusal is no longer retried on the next "streaming" report).
+- Accepted gap: a refusal of a lost stream's request that arrives after a new request would count for the new one
+  (needs a takeover and its end within the earbuds' ~80 ms reply time); headup then shows the refusal until the
+  stream is lost again.
+- Kept: a 43/89 reading shows this computer streams (readings go only to the current device); the replay fixtures
+  hold readings only and depend on it.
+- Evidence: 149 tests pass; with takeovers not losing the stream, three takeover tests fail.
+- Rejected: edge detection on `streaming` (the reader must reconstruct "just started" from an old-versus-new
+  comparison); recording acceptance as `On` with `Asked { stale }` for replies that outlived their request (a flag
+  and staleness rules whose only job was to keep a late acceptance from counting, which needing no acceptance
+  record does by itself); generation counters on requests (two counters, since an acceptance survives audio gaps
+  and a refusal did not); retrying a refusal on each "streaming" report (a leftover from asking before this
+  computer was known to be current); a refusal as an error (reply 1 is a legitimate condition: with
+  `Restart=on-failure` it would restart the service every 10 s instead of showing the reason).

@@ -1,11 +1,11 @@
 # HANDOFF
 
-Last updated: 2026-11-18 23:50 UTC
+Last updated: 2026-11-19 00:05 UTC
 
 ## Current state
 - headup works end to end on HUAWEI FreeClip 2 (firmware 7.0.0.526): calibration, reminders (tone 10 s, speech
   30 s and every 120 s, notification 60 s, tink on recovery), drift re-anchoring, pauses on any loss of tracking.
-  Latest release: v0.5.0 (tag on aa149e6); v0.5.1 bumped (staged), waiting for green CI and the user's GitHub release. Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
+  Latest release: v0.5.0 (tag on aa149e6); v0.5.1 released by the user. Live checks on 2026-11-15 passed (data/slouch_live*, data/stop_live*, data/hear_live*).
 - Layout (AGENTS.md has the full map):
   - `src/core/`: `tracker.rs` (the `HeadTracker` contract, incl. "Late poses"), `calibration.rs` (decision type),
     `monitor/` (`Monitor`; private `posture.rs`, `head_up.rs`, `reminders.rs`), `session/` (the loop; private `tracking.rs`,
@@ -21,6 +21,10 @@ Last updated: 2026-11-18 23:50 UTC
 - Git: the user commits; work since the last commit is staged. `data/` and `research/` are gitignored.
 
 ## Next actions
+00. Staged, not committed (for v0.5.2): FreeClip 2 asks for the stream from the facts (`Earbuds::ask`, DECISIONS
+   2026-11-18 "Ask for the stream from the facts"); no 43/88 before the device list. Live start-ups passed
+   (data/v052_live_*: idle → unavailable, no 43/88; play → one accepted 43/88, 280 samples; start while playing →
+   one accepted 43/88, 279 samples). Ready for the v0.5.2 bump.
 0a. Committed (96d3f56), going out in v0.5.1: another device with any non-idle 43/54 audio state (not only `09`)
    cancels an accepted 43/88, so it is re-sent when this computer streams again. Cause: 2026-11-18 report of no poses after a phone
    call; same shape recorded (phone `05`) and read in the firmware (FINDINGS "Taking over with audio 2"). Not tested

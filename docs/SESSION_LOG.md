@@ -747,3 +747,18 @@
 ## 2026-11-18 23:50 UTC
 - Release prep v0.5.1 (user): Cargo.toml/Cargo.lock bumped, staged. Contents since v0.5.0: device-list query at
   connect (4db8ee4), resend after another device takes over (96d3f56). CI for 96d3f56 was running at bump time.
+
+## 2026-11-19 00:05 UTC
+- v0.5.1 released (user). Redesign for v0.5.2 (user): `Earbuds` handlers record facts; `Earbuds::ask` is the one
+  sending rule; `Switch { Unasked, Asked { stale }, On, Refused }`; stale replies ignored; no 43/88 before the
+  device list. Checked recordings: 43/88 replies do not trigger reports for this computer. Link tests rewritten to
+  ask before replying; two new staleness tests (fail when the rule is broken). AGENTS.md design rule, module doc,
+  FINDINGS, DECISIONS updated. 150 tests, `nix flake check` pass; staged.
+- Simplified (user): `Switch { Unasked, Asked, Refused }`; acceptances need no record, so no stale flag;
+  `Earbuds::stream_lost` called directly for takeovers. 149 tests, `nix flake check` pass; staged.
+- Refusals no longer retried (user): an answer holds for the stream it was asked about, until `stream_lost`.
+  Recorded refusals: 10 × `02`, all to requests sent before this computer was known to stream. 149 tests,
+  `nix flake check` pass; staged.
+- Live check of the new connect sequence (data/v052_live_*, checker exits 0): idle start → "unavailable" at once,
+  no 43/88 answered; playing → exactly one accepted 43/88, then samples; restart while playing → exactly one
+  accepted 43/88, then samples, calibration attempt 1 with 43 samples. headup.service restarted.

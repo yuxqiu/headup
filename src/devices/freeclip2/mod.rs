@@ -8,9 +8,9 @@
 //! - 43/54 reports the audio state of each connected source device. Head tracking only flows to
 //!   the earbuds' current device, which is the last one to start streaming audio. Whether this
 //!   computer is that device becomes [`Event::Available`] or [`Event::Unavailable`]. The earbuds
-//!   send no 43/54 on connect while audio already plays; a 43/89 reading shows it then. The earbuds
-//!   refuse headup's 43/88 while another device is current, so headup sends it again once this
-//!   computer streams.
+//!   send no 43/54 on connect, so headup asks for the device list, which carries the same state; a
+//!   43/89 reading also shows it. headup switches the stream on (43/88) once this computer streams,
+//!   and again after an answer stops standing (another device took over, a refusal, re-wearing).
 //! - Re-centres are inaccurate, so the rebuilt pose drifts ([`TrackerTraits::pose_drifts`]).
 //! - While the earbuds sense movement (walking around, handling them), they hold the reading and
 //!   lose the head's movement, so

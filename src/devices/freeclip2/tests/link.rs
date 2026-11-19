@@ -78,18 +78,15 @@ fn reading(link: &mut Link, seq: u32, raw: Quat) -> Vec<Event> {
         .collect()
 }
 
+// At connect headup only asks; the stream is switched on once the device list says this
+// computer streams.
 #[test]
-fn starts_by_querying_and_switching_the_stream_on() {
+fn starts_by_querying_the_earbuds() {
     let mut link = Link::new(pc());
     let sent = link.take_outbox();
     assert_eq!(
         sent,
-        [
-            wear_query(),
-            capability_query(),
-            stream_switch(true),
-            device_list_query()
-        ]
+        [wear_query(), capability_query(), device_list_query()]
     );
     assert_eq!(link.take_outbox(), []);
     link.stop();
@@ -104,7 +101,8 @@ fn list_entry(address: Address, state: u8) -> Vec<u8> {
 }
 
 // At connect the earbuds push no audio state. The device list answers whether this computer
-// streams: idle makes tracking unavailable at once, even after an accepted switch.
+// streams: idle makes tracking unavailable at once and asks for nothing (a 43/88 while idle starts
+// no stream); playing switches the stream on.
 #[test]
 fn device_list_at_connect_tells_whether_this_computer_streams() {
     let now = Instant::now();
@@ -113,7 +111,6 @@ fn device_list_at_connect_tells_whether_this_computer_streams() {
     };
     let mut idle = link();
     idle.on_bytes(now, &wear(1, 1)).unwrap();
-    idle.on_bytes(now, &reply(0)).unwrap();
     assert_eq!(events(&mut idle), []);
     idle.on_bytes(now, &list_entry(pc(), 0x01)).unwrap();
     idle.on_bytes(now, &list_entry(phone(), 0x01)).unwrap();
@@ -122,9 +119,11 @@ fn device_list_at_connect_tells_whether_this_computer_streams() {
 
     let mut playing = link();
     playing.on_bytes(now, &wear(1, 1)).unwrap();
-    playing.on_bytes(now, &reply(0)).unwrap();
     playing.on_bytes(now, &list_entry(pc(), 0x09)).unwrap();
     assert_eq!(events(&mut playing), [Event::Available]);
+    assert_eq!(playing.take_outbox(), [stream_switch(true)]);
+    playing.on_bytes(now, &reply(0)).unwrap();
+    assert_eq!(events(&mut playing), []);
     assert_eq!(playing.take_outbox(), []);
 }
 
@@ -139,7 +138,8 @@ fn rewearing_restarts_the_stream() {
     assert_eq!(link.take_outbox(), []);
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(events(&mut link), [Event::Available]);
-    link.take_outbox();
+    assert_eq!(link.take_outbox(), [stream_switch(true)]);
+    link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &wear(0, 1)).unwrap();
     let not_worn = Event::Unavailable {
         reason: Blocker::NotWorn.reason(),
@@ -212,13 +212,16 @@ fn this_computer_starting_audio_rearms_the_stream() {
     assert_eq!(link.take_outbox(), []);
 }
 
-// headup connected while the phone was the earbuds' current device. The 43/88 is refused with
-// `02`, and tracking is unavailable. Once this computer streams, the stream is switched on
-// again (data/live2_raw.jsonl: `2=02`, 43/54 `…09`, re-sent 43/88 `2=00`, then samples).
+// A refusal holds for the stream it answered: tracking stays unavailable with its reason, and
+// neither a repeated reply nor a new report that this computer streams asks again. Once the
+// earbuds lose the stream (here another device takes over), the next stream asks again.
 #[test]
-fn refused_stream_switch_waits_for_this_computer_to_stream() {
+fn a_refusal_holds_until_the_stream_is_lost() {
     let now = Instant::now();
     let mut link = link();
+    link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    assert_eq!(events(&mut link), [Event::Available]);
+    assert_eq!(link.take_outbox(), [stream_switch(true)]);
     link.on_bytes(now, &reply(2)).unwrap();
     assert_eq!(
         events(&mut link),
@@ -227,13 +230,15 @@ fn refused_stream_switch_waits_for_this_computer_to_stream() {
         }]
     );
     link.on_bytes(now, &reply(2)).unwrap();
+    link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(events(&mut link), []);
     assert_eq!(link.take_outbox(), []);
+    link.on_bytes(now, &audio(pc(), 0x01)).unwrap();
+    link.on_bytes(now, &audio(phone(), 0x09)).unwrap();
+    link.on_bytes(now, &audio(phone(), 0x01)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(events(&mut link), [Event::Available]);
     assert_eq!(link.take_outbox(), [stream_switch(true)]);
-    link.on_bytes(now, &reply(0)).unwrap();
-    assert_eq!(events(&mut link), []);
 }
 
 // An accepted switch survives an audio gap. When this computer streams again, the earbuds
@@ -244,8 +249,9 @@ fn refused_stream_switch_waits_for_this_computer_to_stream() {
 fn audio_resuming_after_an_accepted_switch_keeps_the_stream() {
     let now = Instant::now();
     let mut link = link();
-    link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    assert_eq!(link.take_outbox(), [stream_switch(true)]);
+    link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(
@@ -261,12 +267,20 @@ fn audio_resuming_after_an_accepted_switch_keeps_the_stream() {
     assert_eq!(link.take_outbox(), []);
 }
 
-// Until the earbuds accept a switch, this computer starting to stream switches the stream on
-// again (the reply may not have arrived yet).
+// The phone took over while a request waited for its answer; the acceptance that follows answers
+// a question that no longer stands, so it does not count, and the switch is asked for again when
+// this computer streams again.
 #[test]
-fn audio_starting_before_any_reply_switches_on_again() {
+fn an_acceptance_arriving_after_a_takeover_does_not_count() {
     let now = Instant::now();
     let mut link = link();
+    link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    assert_eq!(link.take_outbox(), [stream_switch(true)]);
+    link.on_bytes(now, &audio(pc(), 0x01)).unwrap();
+    link.on_bytes(now, &audio(phone(), 0x05)).unwrap();
+    link.on_bytes(now, &reply(0)).unwrap();
+    link.on_bytes(now, &audio(phone(), 0x01)).unwrap();
+    assert_eq!(link.take_outbox(), []);
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
     assert_eq!(link.take_outbox(), [stream_switch(true)]);
 }
@@ -278,8 +292,9 @@ fn audio_starting_before_any_reply_switches_on_again() {
 fn switch_is_resent_after_another_device_streamed() {
     let now = Instant::now();
     let mut link = link();
-    link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    assert_eq!(link.take_outbox(), [stream_switch(true)]);
+    link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
     link.on_bytes(now, &audio(phone(), 0x09)).unwrap();
     assert_eq!(link.take_outbox(), []);
@@ -296,8 +311,9 @@ fn switch_is_resent_after_another_device_was_current_without_streaming() {
     for phone_state in [0x05, 0x03] {
         let now = Instant::now();
         let mut link = link();
-        link.on_bytes(now, &reply(0)).unwrap();
         link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+        assert_eq!(link.take_outbox(), [stream_switch(true)]);
+        link.on_bytes(now, &reply(0)).unwrap();
         link.on_bytes(now, &audio(pc(), 0x01)).unwrap();
         link.on_bytes(now, &audio(phone(), phone_state)).unwrap();
         link.on_bytes(now, &audio(phone(), 0x01)).unwrap();
@@ -317,8 +333,9 @@ fn switch_is_resent_after_another_device_was_current_without_streaming() {
 fn another_device_quiet_keeps_the_switch() {
     let now = Instant::now();
     let mut link = link();
-    link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x09)).unwrap();
+    assert_eq!(link.take_outbox(), [stream_switch(true)]);
+    link.on_bytes(now, &reply(0)).unwrap();
     link.on_bytes(now, &list_entry(phone(), 0x01)).unwrap();
     link.on_bytes(now, &audio(pc(), 0x03)).unwrap();
     link.on_bytes(now, &audio(phone(), 0x01)).unwrap();

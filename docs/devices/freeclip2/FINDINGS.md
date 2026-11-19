@@ -997,7 +997,8 @@ identity sample as ground truth for each glide's end.
   TLV 5 = the 43/54 state byte (the firmware builds both with one routine, "43/54 state byte"), TLV 9 = the name.
   This computer's entry read `01` idle and `09` during playback, 0.03–0.1 s after the query. The phone read `01`.
 - 43/54 `{1: }` gets no answer.
-- headup sends the 43/49 query at connect, after 43/88. Live: idle → "play audio on this computer" 0.03 s after
+- headup sends the 43/49 query at connect and sends 43/88 once an entry says this computer streams (DECISIONS
+  2026-11-18 "Ask for the stream from the facts"). Live: idle → "play audio on this computer" 0.03 s after
   connecting; playing → available, the 43/88 answer arrived before the list, 271 samples in 8 s.
 
 ## Upright error after many head turns (data/slouch_retry*.jsonl, 2026-11-17)
